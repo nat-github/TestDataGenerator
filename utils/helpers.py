@@ -3,11 +3,28 @@
 from __future__ import annotations
 
 import random
+import re
+import string
+import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from faker import Faker
+
+
+SAFE_DATETIME_MIN = pd.Timestamp("1900-01-01 00:00:00")
+SAFE_DATETIME_MAX = pd.Timestamp("2262-04-11 23:47:16")
+
+
+REGEX_DEFAULT_MAX_REPEAT = 5
+REGEX_GENERATION_RETRIES = 200
+REGEX_WORD_CHARSET = string.ascii_letters + string.digits + "_"
+REGEX_PUNCTUATION_CHARSET = "-_.:/@#"
+REGEX_DOT_CHARSET = string.ascii_letters + string.digits
+SPECIAL_RULE_SEPARATOR = ";;"
+NULL_RATE_RULE_PATTERN = re.compile(r"^NULL_RATE\s*=\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))$", re.IGNORECASE)
+NULL_PCT_RULE_PATTERN = re.compile(r"^NULL_PCT\s*=\s*([+-]?(?:\d+(?:\.\d+)?|\.\d+))$", re.IGNORECASE)
 
 # ----------------------------------------------------------------------
 # ISO 3166-1 alpha-2 mapping (curated subset)
@@ -123,6 +140,16 @@ class DataHelpers:
             "Enschede", "Haarlem", "Arnhem", "Zaanstad", "Zwolle",
             "Leeuwarden", "Leiden", "Maastricht", "Dordrecht", "Amersfoort",
         ]
+        self._generic_payment_codes: Dict[str, List[str]] = {
+            "reason": ["AC01", "AM04", "FF01", "FR01", "MS02", "RC01"],
+            "purpose": ["SALA", "SUPP", "PENS", "GDSV", "OTHR", "TAXS"],
+            "transaction_type": ["PMNT", "TRSF", "CARD", "CASH", "FEE", "SEPA"],
+            "delivery_channel": ["MOB", "WEB", "ATM", "API", "BRN"],
+            "delivery_system": ["SEPA", "SWIFT", "TARGET", "CORE", "RT1"],
+            "local_instrument": ["CORE", "B2B", "INST", "SDVA"],
+            "indicator": ["Y", "N"],
+            "boolean_text": ["True", "False"],
+        }
 
     # ------------------------------------------------------------------
     # ISO 3166-1 helpers (country)
@@ -333,6 +360,337 @@ class DataHelpers:
         values = [v.strip() for v in cleaned.split(';') if v.strip()]
         return values if values else None
 
+    @staticmethod
+    def _split_special_rule_tokens(rule: Optional[str]) -> List[str]:
+        if rule is None or pd.isna(rule):
+            return []
+        return [token.strip() for token in str(rule).split(SPECIAL_RULE_SEPARATOR) if token and token.strip()]
+
+    @staticmethod
+    def _parse_null_modifier(token: str) -> Optional[tuple[str, float]]:
+        token = token.strip()
+        match = NULL_RATE_RULE_PATTERN.fullmatch(token)
+        if match:
+            value = float(match.group(1))
+            if not 0.0 <= value <= 1.0:
+                raise ValueError('NULL_RATE must be between 0 and 1')
+            return 'null_probability', value
+
+        match = NULL_PCT_RULE_PATTERN.fullmatch(token)
+        if match:
+            percent = float(match.group(1))
+            if not 0.0 <= percent <= 100.0:
+                raise ValueError('NULL_PCT must be between 0 and 100')
+            return 'null_probability', percent / 100.0
+
+        return None
+
+    def parse_special_rule_config(self, rule: Optional[str]) -> Dict[str, Any]:
+        tokens = self._split_special_rule_tokens(rule)
+        parsed: Dict[str, Any] = {
+            'value_rule': None,
+            'modifiers': {},
+            'tokens': tokens,
+        }
+
+        for token in tokens:
+            null_modifier = self._parse_null_modifier(token)
+            if null_modifier is not None:
+                key, value = null_modifier
+                if key in parsed['modifiers']:
+                    raise ValueError('Duplicate NULL_RATE/NULL_PCT modifier is not allowed')
+                parsed['modifiers'][key] = value
+                continue
+
+            if parsed['value_rule'] is not None:
+                raise ValueError(
+                    'Only one value-generating special rule is allowed per cell; '
+                    f'use {SPECIAL_RULE_SEPARATOR} only for modifiers such as NULL_RATE'
+                )
+            parsed['value_rule'] = token
+
+        return parsed
+
+    def get_special_rule_value_directive(self, rule: Optional[str]) -> Optional[str]:
+        return self.parse_special_rule_config(rule)['value_rule']
+
+    def get_special_rule_null_probability(self, rule: Optional[str]) -> Optional[float]:
+        return self.parse_special_rule_config(rule)['modifiers'].get('null_probability')
+
+    @staticmethod
+    def is_regex_rule(rule: Optional[str]) -> bool:
+        if rule is None or pd.isna(rule):
+            return False
+        tokens = DataHelpers._split_special_rule_tokens(rule)
+        value_tokens: List[str] = []
+        for token in tokens:
+            try:
+                if DataHelpers._parse_null_modifier(token) is None:
+                    value_tokens.append(token)
+            except ValueError:
+                return False
+        if len(value_tokens) != 1:
+            return False
+        text = value_tokens[0]
+        if not text:
+            return False
+        return text.upper().startswith('REGEX:') or text.upper().startswith('REGEX=')
+
+    @staticmethod
+    def extract_regex_pattern(rule: Optional[str]) -> Optional[str]:
+        if rule is None or pd.isna(rule):
+            return None
+        tokens = DataHelpers._split_special_rule_tokens(rule)
+        value_tokens: List[str] = []
+        for token in tokens:
+            try:
+                if DataHelpers._parse_null_modifier(token) is None:
+                    value_tokens.append(token)
+            except ValueError:
+                return None
+        if len(value_tokens) != 1:
+            return None
+        text = value_tokens[0]
+        if not text:
+            return None
+        if text.upper().startswith('REGEX:') or text.upper().startswith('REGEX='):
+            pattern = text[6:].strip()
+            return pattern or None
+        return None
+
+    def validate_special_rule(
+        self,
+        rule: Optional[str],
+        max_length: Optional[int] = None,
+        is_pk: bool = False,
+    ) -> None:
+        parsed = self.parse_special_rule_config(rule)
+        if is_pk and 'null_probability' in parsed['modifiers']:
+            raise ValueError('NULL_RATE/NULL_PCT is not allowed on primary-key columns')
+
+        value_rule = parsed['value_rule']
+        if value_rule and self.is_regex_rule(value_rule):
+            self.validate_regex_rule(value_rule, max_length=max_length)
+
+    def validate_regex_rule(self, rule: str, max_length: Optional[int] = None) -> None:
+        pattern = self.extract_regex_pattern(rule)
+        if not pattern:
+            raise ValueError('Regex rule must start with REGEX: or REGEX= followed by a pattern')
+
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(f'Invalid regex pattern: {exc}') from exc
+
+        ast = self._parse_regex_pattern(pattern)
+        min_length = self._regex_min_length(ast)
+        if max_length is not None and min_length > max_length:
+            raise ValueError(
+                f'Regex minimum length {min_length} exceeds configured column length {max_length}'
+            )
+
+    def generate_from_regex_rule(self, rule: str, max_length: Optional[int] = None) -> str:
+        pattern = self.extract_regex_pattern(rule)
+        if not pattern:
+            raise ValueError('Regex rule must start with REGEX: or REGEX= followed by a pattern')
+
+        compiled = re.compile(pattern)
+        ast = self._parse_regex_pattern(pattern)
+        min_length = self._regex_min_length(ast)
+        if max_length is not None and min_length > max_length:
+            raise ValueError(
+                f'Regex minimum length {min_length} exceeds configured column length {max_length}'
+            )
+
+        for _ in range(REGEX_GENERATION_RETRIES):
+            candidate = self._generate_from_regex_ast(ast)
+            if max_length is not None and len(candidate) > max_length:
+                continue
+            if compiled.fullmatch(candidate):
+                return candidate
+
+        raise ValueError(
+            f'Could not generate a value matching regex within {REGEX_GENERATION_RETRIES} attempts: {pattern}'
+        )
+
+    def _parse_regex_pattern(self, pattern: str) -> Dict[str, Any]:
+        pos = 0
+
+        def current() -> Optional[str]:
+            return pattern[pos] if pos < len(pattern) else None
+
+        def parse_expression() -> Dict[str, Any]:
+            nonlocal pos
+            options = [parse_sequence()]
+            while current() == '|':
+                pos += 1
+                options.append(parse_sequence())
+            return options[0] if len(options) == 1 else {'type': 'choice', 'options': options}
+
+        def parse_sequence() -> Dict[str, Any]:
+            nonlocal pos
+            parts: List[Dict[str, Any]] = []
+            while pos < len(pattern) and current() not in {')', '|'}:
+                parts.append(parse_quantified())
+            if not parts:
+                return {'type': 'literal', 'value': ''}
+            return parts[0] if len(parts) == 1 else {'type': 'sequence', 'parts': parts}
+
+        def parse_quantified() -> Dict[str, Any]:
+            nonlocal pos
+            node = parse_atom()
+            char = current()
+            if char is None:
+                return node
+            if char == '?':
+                pos += 1
+                return {'type': 'repeat', 'node': node, 'min': 0, 'max': 1}
+            if char == '*':
+                pos += 1
+                return {'type': 'repeat', 'node': node, 'min': 0, 'max': REGEX_DEFAULT_MAX_REPEAT}
+            if char == '+':
+                pos += 1
+                return {'type': 'repeat', 'node': node, 'min': 1, 'max': REGEX_DEFAULT_MAX_REPEAT}
+            if char == '{':
+                pos += 1
+                match = re.match(r'(\d+)(?:,(\d*)?)?}', pattern[pos:])
+                if not match:
+                    raise ValueError(f'Unsupported or invalid regex quantifier near: {pattern[pos - 1:]}')
+                min_count = int(match.group(1))
+                if match.group(2) is None:
+                    max_count = min_count
+                elif match.group(2) == '':
+                    max_count = min_count + REGEX_DEFAULT_MAX_REPEAT
+                else:
+                    max_count = int(match.group(2))
+                if max_count < min_count:
+                    raise ValueError('Regex quantifier upper bound cannot be less than lower bound')
+                pos += len(match.group(0))
+                return {'type': 'repeat', 'node': node, 'min': min_count, 'max': max_count}
+            return node
+
+        def parse_atom() -> Dict[str, Any]:
+            nonlocal pos
+            char = current()
+            if char is None:
+                return {'type': 'literal', 'value': ''}
+            if char in {'^', '$'}:
+                pos += 1
+                return {'type': 'literal', 'value': ''}
+            if char == '(':
+                if pattern[pos:pos + 2] == '(?':
+                    raise ValueError('Unsupported regex feature: lookarounds and special groups are not supported')
+                pos += 1
+                node = parse_expression()
+                if current() != ')':
+                    raise ValueError('Unclosed group in regex pattern')
+                pos += 1
+                return node
+            if char == '[':
+                return parse_char_class()
+            if char == '\\':
+                pos += 1
+                return parse_escape(in_class=False)
+            if char == '.':
+                pos += 1
+                return {'type': 'class', 'chars': list(REGEX_DOT_CHARSET)}
+            pos += 1
+            return {'type': 'literal', 'value': char}
+
+        def parse_char_class() -> Dict[str, Any]:
+            nonlocal pos
+            pos += 1
+            negate = False
+            if current() == '^':
+                negate = True
+                pos += 1
+
+            chars: List[str] = []
+            while pos < len(pattern) and current() != ']':
+                if current() == '\\':
+                    pos += 1
+                    chars.extend(parse_escape(in_class=True)['chars'])
+                    continue
+                start = pattern[pos]
+                if pos + 2 < len(pattern) and pattern[pos + 1] == '-' and pattern[pos + 2] != ']':
+                    end = pattern[pos + 2]
+                    chars.extend(chr(code) for code in range(ord(start), ord(end) + 1))
+                    pos += 3
+                    continue
+                chars.append(start)
+                pos += 1
+
+            if current() != ']':
+                raise ValueError('Unclosed character class in regex pattern')
+            pos += 1
+
+            if negate:
+                chars = [
+                    ch for ch in (REGEX_WORD_CHARSET + REGEX_PUNCTUATION_CHARSET)
+                    if ch not in set(chars)
+                ]
+
+            if not chars:
+                raise ValueError('Regex character class cannot be empty')
+            return {'type': 'class', 'chars': list(dict.fromkeys(chars))}
+
+        def parse_escape(in_class: bool) -> Dict[str, Any]:
+            nonlocal pos
+            if pos >= len(pattern):
+                raise ValueError('Dangling escape in regex pattern')
+            token = pattern[pos]
+            pos += 1
+            mapping = {
+                'd': list(string.digits),
+                'D': list(string.ascii_letters + REGEX_PUNCTUATION_CHARSET),
+                'w': list(REGEX_WORD_CHARSET),
+                'W': list(REGEX_PUNCTUATION_CHARSET),
+                's': [' '],
+                'S': list(string.ascii_letters + string.digits),
+                't': ['\t'],
+                'n': ['\n'],
+                '\\': ['\\'],
+            }
+            if token in mapping:
+                return {'type': 'class', 'chars': mapping[token]}
+            if token.isdigit():
+                raise ValueError('Unsupported regex feature: backreferences are not supported')
+            return {'type': 'literal', 'value': token} if not in_class else {'type': 'class', 'chars': [token]}
+
+        ast = parse_expression()
+        if pos != len(pattern):
+            raise ValueError(f'Unsupported trailing regex pattern content: {pattern[pos:]}')
+        return ast
+
+    def _regex_min_length(self, node: Dict[str, Any]) -> int:
+        node_type = node['type']
+        if node_type == 'literal':
+            return len(node['value'])
+        if node_type == 'class':
+            return 1
+        if node_type == 'sequence':
+            return sum(self._regex_min_length(part) for part in node['parts'])
+        if node_type == 'choice':
+            return min(self._regex_min_length(option) for option in node['options'])
+        if node_type == 'repeat':
+            return node['min'] * self._regex_min_length(node['node'])
+        raise ValueError(f'Unsupported regex AST node type: {node_type}')
+
+    def _generate_from_regex_ast(self, node: Dict[str, Any]) -> str:
+        node_type = node['type']
+        if node_type == 'literal':
+            return node['value']
+        if node_type == 'class':
+            return random.choice(node['chars'])
+        if node_type == 'sequence':
+            return ''.join(self._generate_from_regex_ast(part) for part in node['parts'])
+        if node_type == 'choice':
+            return self._generate_from_regex_ast(random.choice(node['options']))
+        if node_type == 'repeat':
+            count = random.randint(node['min'], node['max'])
+            return ''.join(self._generate_from_regex_ast(node['node']) for _ in range(count))
+        raise ValueError(f'Unsupported regex AST node type: {node_type}')
+
     # ---------- Banking formats & helpers ----------
 
     def _generate_valid_bic(self) -> str:
@@ -466,10 +824,113 @@ class DataHelpers:
     def _generate_dutch_bank_account(self) -> str:
         return ''.join(str(random.randint(0, 9)) for _ in range(9))
 
+    @staticmethod
+    def _infer_base_type(data_type: str) -> str:
+        dt = str(data_type or '').upper()
+        for prefix in ('VA', 'AN', 'NS', 'DC', 'DT', 'TS'):
+            if dt.startswith(prefix):
+                return prefix
+        for prefix in ('N', 'A', 'D', 'T'):
+            if dt.startswith(prefix):
+                return prefix
+        return dt
+
+    @staticmethod
+    def _truncate_text(value: Any, max_length: Optional[int]) -> Any:
+        if value is None or max_length is None:
+            return value
+        text = str(value).strip()
+        if len(text) <= max_length:
+            return text
+        clipped = text[:max_length].rstrip(' ,;-')
+        return clipped or text[:max_length]
+
+    def _target_text_length(self, max_length: int, floor: int = 6) -> int:
+        if max_length <= floor:
+            return max_length
+        upper = min(max_length, max(floor + 4, 120))
+        lower = min(floor, upper)
+        return random.randint(lower, upper)
+
+    def _generate_sentence_like_text(self, max_length: int) -> str:
+        if max_length <= 0:
+            return ""
+        if max_length <= 12:
+            return self._truncate_text(self.faker.word(), max_length)
+        if max_length <= 40:
+            text = self.faker.sentence(nb_words=random.randint(2, 5))
+            return self._truncate_text(text, max_length)
+
+        target = self._target_text_length(max_length, floor=18)
+        chunks: List[str] = []
+        while len(" ".join(chunks)) < target:
+            chunks.append(self.faker.sentence(nb_words=random.randint(4, 10)).strip())
+            if len(chunks) > 4:
+                break
+        return self._truncate_text(" ".join(chunks), max_length)
+
+    def _generate_structured_reference(self, column_name: str, max_length: Optional[int]) -> str:
+        tokens = [token.upper()[:4] for token in re.split(r'[^A-Za-z0-9]+', column_name or '') if token]
+        prefix = ''.join(tokens[:2]) or 'REF'
+        suffix_length = max(4, min(10, (max_length or 16) - len(prefix) - 1))
+        suffix = ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=suffix_length))
+        return self._truncate_text(f"{prefix}-{suffix}", max_length)
+
+    def _select_code_value(self, column_name: str, max_length: Optional[int]) -> str:
+        col = (column_name or '').lower()
+        if any(token in col for token in ['rsn', 'reason']):
+            candidates = self._generic_payment_codes['reason']
+        elif any(token in col for token in ['purp', 'ctgy', 'category']):
+            candidates = self._generic_payment_codes['purpose']
+        elif any(token in col for token in ['tx_tp', 'txn_tp', 'transaction_type', 'dtld_tx_t', 'trn_type']):
+            candidates = self._generic_payment_codes['transaction_type']
+        elif any(token in col for token in ['dlvry_chan', 'channel']):
+            candidates = self._generic_payment_codes['delivery_channel']
+        elif any(token in col for token in ['dlvry_sys', 'system']):
+            candidates = self._generic_payment_codes['delivery_system']
+        elif any(token in col for token in ['lcl_instrm', 'instrument']):
+            candidates = self._generic_payment_codes['local_instrument']
+        elif any(token in col for token in ['cdt_dbt_ind']):
+            candidates = ['CRDT', 'DBIT']
+        elif any(token in col for token in ['flag', 'flg', 'bool']):
+            candidates = self._generic_payment_codes['indicator'] if (max_length or 1) <= 1 else self._generic_payment_codes['boolean_text']
+        elif any(token in col for token in ['ind', 'indicator']):
+            candidates = ['Y', 'N'] if (max_length or 1) <= 1 else ['Yes', 'No']
+        else:
+            return self._generate_structured_reference(column_name, max_length)
+
+        valid = [candidate for candidate in candidates if max_length is None or len(candidate) <= max_length]
+        return random.choice(valid or candidates)
+
+    def _looks_like_name_field(self, col: str) -> bool:
+        return (
+            'name' in col
+            or 'naam' in col
+            or col.endswith('_nm')
+            or '_nm_' in col
+            or col.endswith('_name')
+        )
+
+    def _looks_like_company_field(self, col: str) -> bool:
+        return any(token in col for token in ['org', 'company', 'bank', 'scheme', 'merchant', 'institution', 'corp'])
+
+    def _single_line_address(self, components: Dict[str, str], line_no: int, max_length: Optional[int]) -> str:
+        if line_no == 1:
+            text = f"{components['street']} {components['house_number']}{components['house_letter']}".strip()
+        else:
+            text = f"{components['postcode']} {components['city']}".strip()
+        return self._truncate_text(text, max_length)
+
     # ------------------------------------------------------------------
     # Special rules dispatcher
     # ------------------------------------------------------------------
-    def generate_special_value(self, special_rule: str, data_type: str) -> Any:
+    def generate_special_value(
+        self,
+        special_rule: str,
+        data_type: str,
+        column_name: Optional[str] = None,
+        max_length: Optional[int] = None,
+    ) -> Any:
         """
         Generate values based on special rules (Dutch banking + address + country/currency codes).
         Supported (key ones):
@@ -485,6 +946,18 @@ class DataHelpers:
         if not special_rule or pd.isna(special_rule):
             return None
         rule = str(special_rule).strip().upper()
+        col = (column_name or '').lower()
+        _ = data_type, column_name
+        parsed = self.parse_special_rule_config(special_rule)
+        raw_rule = parsed['value_rule']
+
+        if not raw_rule:
+            return None
+
+        if self.is_regex_rule(raw_rule):
+            return self.generate_from_regex_rule(raw_rule, max_length=max_length)
+
+        rule = raw_rule.upper()
 
         # IBANs
         if rule == 'NL_IBAN':
@@ -506,98 +979,169 @@ class DataHelpers:
 
         # Contact / personal
         if rule == 'EMAIL':
-            return self.faker.email()
+            return self._truncate_text(self.faker.email(), max_length)
         if rule == 'PHONE':
-            return self._generate_dutch_phone()
+            return self._truncate_text(self._generate_dutch_phone(), max_length)
         if rule == 'NAME':
-            return self.faker.name()
+            if self._looks_like_company_field(col):
+                return self._truncate_text(self.faker.company(), max_length)
+            return self._truncate_text(self.faker.name(), max_length)
         if rule == 'ADDRESS':
-            return self.format_nl_address(self.generate_nl_address_components())
+            components = self.generate_nl_address_components()
+            if 'adr_line1' in col or 'address_line1' in col:
+                return self._single_line_address(components, 1, max_length)
+            if 'adr_line2' in col or 'address_line2' in col:
+                return self._single_line_address(components, 2, max_length)
+            return self._truncate_text(self.format_nl_address(components), max_length)
         if rule == 'BANK_ACCOUNT':
-            return self._generate_dutch_bank_account()
+            return self._truncate_text(self._generate_dutch_bank_account(), max_length)
         if rule == 'BANK_NAME':
-            return random.choice(list(self.dutch_banks.values()))
+            return self._truncate_text(random.choice(list(self.dutch_banks.values())), max_length)
         if rule == 'BANK_CODE':
             # Return a normalized 4-letter bank code
             raw = random.choice(list(self.dutch_banks.keys()))
             code4 = "".join(ch for ch in raw if ch.isalpha()).upper()[:4]
-            return (code4 + "X" * 4)[:4] if len(code4) < 4 else code4
+            return self._truncate_text((code4 + "X" * 4)[:4] if len(code4) < 4 else code4, max_length)
 
         # Country/city/postcode
         if rule == 'COUNTRY_CODE':
-            return self.generate_country_code(prefer=['NL', 'BE', 'DE', 'FR', 'US'])
+            return self._truncate_text(self.generate_country_code(prefer=['NL', 'BE', 'DE', 'FR', 'US']), max_length)
         if rule == 'CITY_NM':
-            return self.generate_nl_city_nm()
+            return self._truncate_text(self.generate_nl_city_nm(), max_length)
         if rule == 'CTY_CODE':
-            return self.generate_nl_cty_code()
+            return self._truncate_text(self.generate_nl_cty_code(), max_length)
         if rule == 'PST_CODE':
-            return self.generate_nl_pst_code()
+            return self._truncate_text(self.generate_nl_pst_code(), max_length)
 
         # Currency
         if rule in {'CURRENCY_CODE', 'CURR_CODE', 'ISO_CURRENCY', 'ISO4217', 'CURR'}:
-            return self.generate_currency_code()
+            return self._truncate_text(self.generate_currency_code(), max_length)
 
         return None
 
     # ------------------------------------------------------------------
     # Column-aware realistic generator fallback
     # ------------------------------------------------------------------
-    def generate_realistic_dutch_data(self, column_name: str, data_type: str) -> Any:
-        """Heuristic generator using column name patterns (NL-centric)."""
+    def generate_realistic_dutch_data(
+        self,
+        column_name: str,
+        data_type: str,
+        max_length: Optional[int] = None,
+        min_val: Optional[float] = None,
+        max_val: Optional[float] = None,
+    ) -> Any:
+        """Heuristic generator using column name patterns (NL-centric and bounded by data-type length)."""
         col = (column_name or '').lower()
-        if any(k in col for k in ['iban', 'account', 'bank']):
-            return self._generate_dutch_iban()
+        base_type = self._infer_base_type(data_type)
+
+        if base_type in {'D', 'DT', 'TS', 'N', 'DC'}:
+            return self.generate_sample_value(data_type, {'min_value': min_val, 'max_value': max_val})
+
+        if 'iban' in col:
+            return self._truncate_text(self._generate_dutch_iban(), max_length)
+        if 'bban' in col:
+            return self._truncate_text(self._generate_bban('NL'), max_length)
+        if any(k in col for k in ['account', 'acct']) and any(k in col for k in ['id', 'nr', 'number', 'ref']):
+            return self._truncate_text(self._generate_dutch_iban() if (max_length or 0) >= 18 else self._generate_dutch_bank_account(), max_length)
+        if any(k in col for k in ['bank_name', 'bank_nm']):
+            return self._truncate_text(random.choice(list(self.dutch_banks.values())), max_length)
         if 'bic' in col or 'swift' in col:
-            return self._generate_valid_bic()
+            return self._truncate_text(self._generate_valid_bic(), max_length)
         if 'phone' in col or 'telefoon' in col:
-            return self._generate_dutch_phone()
+            return self._truncate_text(self._generate_dutch_phone(), max_length)
+        if 'email' in col or 'mail' in col:
+            return self._truncate_text(self.faker.email(), max_length)
+
+        if any(k in col for k in ['adr_line1', 'address_line1', 'adresregel1']):
+            return self._single_line_address(self.generate_nl_address_components(), 1, max_length)
+        if any(k in col for k in ['adr_line2', 'address_line2', 'adresregel2']):
+            return self._single_line_address(self.generate_nl_address_components(), 2, max_length)
         if 'address' in col or 'adres' in col:
-            return self.format_nl_address(self.generate_nl_address_components())
-        if 'name' in col or 'naam' in col:
-            if 'debit' in col or 'dbtr' in col:
-                return f"{self.faker.first_name()} {self.faker.last_name()}"
-            if 'credit' in col or 'cdtr' in col:
-                return self.faker.company()
-            return self.faker.name()
+            return self._truncate_text(self.format_nl_address(self.generate_nl_address_components()), max_length)
+
+        if self._looks_like_name_field(col):
+            if self._looks_like_company_field(col) or any(k in col for k in ['cdtr', 'merchant', 'scheme', 'orgtr']):
+                return self._truncate_text(self.faker.company(), max_length)
+            return self._truncate_text(self.faker.name(), max_length)
 
         # NL fields
         if any(k in col for k in ['city_nm', 'city', 'stad', 'plaats']):
-            return self.generate_nl_city_nm()
+            return self._truncate_text(self.generate_nl_city_nm(), max_length)
         if any(k in col for k in ['cty_code', 'country_code', 'ctry', 'land_code', 'land']):
-            return self.generate_nl_cty_code()
+            return self._truncate_text(self.generate_nl_cty_code(), max_length)
         if any(k in col for k in ['pst_code', 'postcode', 'post_code', 'zip']):
-            return self.generate_nl_pst_code()
+            return self._truncate_text(self.generate_nl_pst_code(), max_length)
 
         # Currency fields
         if any(k in col for k in ['currency', 'curr', 'ccy', 'currency_code', 'curr_code', 'iso_currency']):
-            return self.generate_currency_code()
+            return self._truncate_text(self.generate_currency_code(), max_length)
 
         # Country generic
         if 'country' in col or 'land' in col or 'ctry' in col:
-            return self.generate_country_code(prefer=['NL', 'BE', 'DE', 'FR'])
+            return self._truncate_text(self.generate_country_code(prefer=['NL', 'BE', 'DE', 'FR']), max_length)
+
+        if any(k in col for k in ['code', '_cd', 'status', 'type', 'flag', 'ind', 'channel', 'system', 'instrm']):
+            return self._truncate_text(self._select_code_value(column_name, max_length), max_length)
+
+        if any(k in col for k in ['ref', 'identifier', 'msg_id', 'mndt_id', 'tx_id']) or col.endswith('_id'):
+            return self._generate_structured_reference(column_name, max_length)
+
+        if base_type == 'NS':
+            length = max_length or 15
+            return self._generate_numeric_string(length)
+
+        if base_type in {'VA', 'A', 'AN', 'T'}:
+            return self._generate_sentence_like_text(max_length or 64)
 
         # Datetime-like types handled elsewhere by callers; fallback:
-        return self.generate_sample_value(data_type, {})
+        return self.generate_sample_value(data_type, {'min_value': min_val, 'max_value': max_val})
 
     # ------------------------------------------------------------------
     # Generic sampler (legacy paths)
     # ------------------------------------------------------------------
+    @staticmethod
+    def _coerce_safe_timestamp(value: Any, normalize: bool = False) -> Optional[pd.Timestamp]:
+        try:
+            parsed = pd.to_datetime(value, errors='coerce')
+        except Exception:
+            return None
+
+        if pd.isna(parsed):
+            return None
+
+        ts = pd.Timestamp(parsed)
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert(None)
+
+        if ts < SAFE_DATETIME_MIN or ts > SAFE_DATETIME_MAX:
+            return None
+
+        return ts.normalize() if normalize else ts
+
     def generate_sample_value(self, data_type: str, config: Dict[str, Any]) -> Any:
         business_values = config.get('business_values')
         special_rules = config.get('special_rules')
         min_val = config.get('min_value')
         max_val = config.get('max_value')
+        column_name = config.get('column_name')
+        max_length = config.get('max_length')
 
         if business_values:
             selected = random.choice(business_values)
             if data_type in ['D', 'DT', 'TS']:
-                parsed = pd.to_datetime(selected, errors='coerce')
-                if not pd.isna(parsed):
+                parsed = self._coerce_safe_timestamp(selected, normalize=(data_type == 'D'))
+                if parsed is not None:
                     return parsed
-            return selected
+            else:
+                return selected
 
         if special_rules:
-            sv = self.generate_special_value(special_rules, data_type)
+            sv = self.generate_special_value(
+                special_rules,
+                data_type,
+                column_name=column_name,
+                max_length=max_length,
+            )
             if sv is not None:
                 return sv
 
@@ -618,7 +1162,8 @@ class DataHelpers:
             # Produce pandas Timestamp for consistency
             days_offset = random.randint(-365, 0)
             rt = timedelta(hours=random.randint(0, 23), minutes=random.randint(0, 59), seconds=random.randint(0, 59))
-            return pd.Timestamp(datetime.now() + timedelta(days=days_offset) + rt)
+            generated = pd.Timestamp(datetime.now() + timedelta(days=days_offset) + rt)
+            return generated.normalize() if data_type == 'D' else generated
 
         elif isinstance(data_type, str) and data_type.upper().startswith('VA'):
             length_str = data_type[2:] if len(data_type) > 2 else ''
@@ -649,17 +1194,16 @@ class DataHelpers:
         name_lower = (column_name or '').lower()
         mapping: Dict[str, Any] = {'sdtype': 'categorical'}
 
-        if dt.startswith('N') or dt == 'DC':
+        if business_values:
+            mapping['sdtype'] = 'categorical'
+        elif dt.startswith('N') or dt == 'DC':
             mapping['sdtype'] = 'numerical'
         elif dt in ['D', 'DT', 'TS']:
             mapping['sdtype'] = 'datetime'
         elif dt in ['T']:
             mapping['sdtype'] = 'categorical'
-        elif any(k in name_lower for k in ['key', 'id', 'code']):
+        elif name_lower == 'id' or name_lower.endswith('_id') or name_lower.endswith('uuid'):
             mapping['sdtype'] = 'id'
-        elif business_values:
-            mapping['sdtype'] = 'categorical'
-            mapping['order_by'] = business_values
         else:
             mapping['sdtype'] = 'text'
 

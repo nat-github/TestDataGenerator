@@ -1,299 +1,335 @@
 #!/usr/bin/env python3
-"""
-Main SDV-based Data Generator
-"""
+"""Main SDV-based Data Generator with optional delta and SCD2 parquet flows."""
+
+from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Sequence
+
+import pandas as pd
+
 from generators.data_generator import DataGenerator
+from utils.config_parser import ConfigParser
 from utils.data_validator import DataValidator
+from utils.parquet_post_processor import ParquetPostProcessor
 
 
-def parse_arguments():
-    """Parse command line arguments"""
+logger = logging.getLogger(__name__)
+KNOWN_COMMANDS = {"generate", "delta", "scd2"}
+
+
+def _normalize_argv(argv: Sequence[str]) -> List[str]:
+    if not argv:
+        return ["generate"]
+    if argv[0] in KNOWN_COMMANDS:
+        return list(argv)
+    return ["generate", *argv]
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description='SDV-Based Test Data Generator with Relationship Preservation',
+        description="SDV-Based Test Data Generator with snapshot, delta, and SCD2 flows",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog='''
-Examples:
-  # Basic usage
-  python main.py --config config/data_config_SEPADD.xlsx
-
-  # Specific output and records
-  python main.py --config config/data_config_SEPADD.xlsx --output output/test_run --records payment_instruction:5000
-
-  # With validation
-  python main.py --config config/data_config_SEPADD.xlsx --validate
-
-  # Small test run
-  python main.py --config config/data_config_SEPADD.xlsx --output output/test_small --default-records 100
-        '''
     )
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    parser.add_argument('--config', required=True, help='Path to Excel configuration file')
-    parser.add_argument('--output', default='output', help='Output directory for Parquet files')
-    parser.add_argument('--default-records', type=int, default=1000, help='Default records per table')
-    parser.add_argument('--records', nargs='+', help='Table-specific records: table_name:count')
-    parser.add_argument('--validate', action='store_true', help='Validate relationships after generation')
-    parser.add_argument('--verbose', action='store_true', help='Enable detailed logging')
+    generate_parser = subparsers.add_parser("generate", help="Generate parquet snapshots from an Excel or YAML config")
+    generate_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
+    generate_parser.add_argument("--output", default="output", help="Output directory for parquet files")
+    generate_parser.add_argument("--default-records", type=int, default=None, help="Default records per table")
+    generate_parser.add_argument("--records", nargs="+", help="Table-specific records: table_name:count")
+    generate_parser.add_argument("--validate", action="store_true", help="Validate relationships after generation")
+    generate_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+    generate_parser.add_argument("--stream", action="store_true", help="Use streaming/chunked generation and direct export")
+    generate_parser.add_argument("--chunk-size", type=int, default=100_000, help="Chunk size for streaming generation")
 
-    return parser.parse_args()
+    delta_parser = subparsers.add_parser("delta", help="Generate parquet deltas from two snapshot folders")
+    delta_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
+    delta_parser.add_argument("--previous", required=True, help="Previous snapshot parquet directory")
+    delta_parser.add_argument("--current", required=True, help="Current snapshot parquet directory")
+    delta_parser.add_argument("--output", required=True, help="Output directory for delta parquet files")
+    delta_parser.add_argument("--tables", nargs="+", help="Optional list of table names to process")
+    delta_parser.add_argument("--partition-column", help="Override the delta partition column for all processed tables")
+    delta_parser.add_argument("--partition-columns", nargs="+", help="Override the delta partition columns for all processed tables")
+    delta_parser.add_argument("--partition-start-date", help="Override the synthetic delta partition start date (YYYYMMDD or timestamp)")
+    delta_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    scd2_parser = subparsers.add_parser("scd2", help="Build SCD2 parquet outputs from snapshot folders")
+    scd2_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
+    scd2_parser.add_argument("--previous", required=True, help="Previous snapshot or SCD2 parquet directory")
+    scd2_parser.add_argument("--current", required=True, help="Current snapshot parquet directory")
+    scd2_parser.add_argument("--output", required=True, help="Output directory for SCD2 parquet files")
+    scd2_parser.add_argument("--tables", nargs="+", help="Optional list of table names to process")
+    scd2_parser.add_argument("--effective-ts", help="Effective timestamp for the current snapshot rows")
+    scd2_parser.add_argument("--previous-effective-ts", help="Bootstrap effective timestamp for previous snapshot rows")
+    scd2_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    return parser
+
+
+def parse_arguments(argv: Sequence[str] | None = None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    parser = build_parser()
+    return parser.parse_args(_normalize_argv(argv))
+
+
+def configure_logging(verbose: bool) -> None:
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.INFO, format="%(message)s")
 
 
 def create_output_directory(output_dir: str) -> bool:
-    """Create output directory if it doesn't exist"""
     try:
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-        print(f"✅ Output directory: {output_path.absolute()}")
+        logger.info(f"Output directory: {output_path.absolute()}")
         return True
-    except Exception as e:
-        print(f"❌ Error creating output directory: {e}")
+    except Exception as exc:
+        logger.error(f"Error creating output directory: {exc}")
         return False
 
 
 def validate_config_file(config_path: str) -> bool:
-    """Validate that config file exists"""
     config_file = Path(config_path)
     if not config_file.exists():
-        print(f"❌ Configuration file not found: {config_file}")
+        logger.error(f"Configuration file not found: {config_file}")
         return False
-
     if not config_file.is_file():
-        print(f"❌ Configuration path is not a file: {config_file}")
+        logger.error(f"Configuration path is not a file: {config_file}")
         return False
-
-    if config_file.suffix.lower() not in ['.xlsx', '.xls']:
-        print(f"⚠ Warning: Configuration file may not be Excel format: {config_file}")
-
-    print(f"✅ Configuration file: {config_file.absolute()}")
+    if config_file.suffix.lower() not in [".xlsx", ".xls", ".yaml", ".yml"]:
+        logger.warning(f"Configuration file may not be Excel or YAML format: {config_file}")
+    logger.info(f"Configuration file: {config_file.absolute()}")
     return True
 
 
-def get_record_counts(table_names: List[str], args) -> Dict[str, int]:
-    """Get record counts from arguments with validation"""
-    records_config = {table: args.default_records for table in table_names}
+def get_record_counts(generator: DataGenerator, args) -> Dict[str, int]:
+    workbook_default = generator.config_parser.get_setting("default_records_per_table", 1000)
+    default_records = args.default_records if args.default_records is not None else int(workbook_default)
+    records_config = {
+        table_name: max(
+            1,
+            int(default_records if args.default_records is not None else (table_config.num_rows or default_records)),
+        )
+        for table_name, table_config in generator.tables_config.items()
+        if table_config.active
+    }
 
     if args.records:
         for record_arg in args.records:
-            if ':' in record_arg:
-                try:
-                    table_name, count = record_arg.split(':', 1)
-                    table_name = table_name.strip().lower()
-                    count = int(count)
-
-                    # Validate count is positive
-                    if count <= 0:
-                        print(
-                            f"⚠ Warning: Record count must be positive for {table_name}. Using default: {args.default_records}")
-                        count = args.default_records
-
-                    if table_name in records_config:
-                        records_config[table_name] = count
-                        print(f"   📊 {table_name}: {count} records (from command line)")
-                    else:
-                        print(f"⚠ Warning: Table '{table_name}' not found in configuration")
-                except ValueError:
-                    print(f"⚠ Warning: Invalid record format: {record_arg}")
-
-    # Final validation - ensure all counts are positive
-    for table_name, count in records_config.items():
-        if count <= 0:
-            print(f"⚠ Warning: Invalid record count for {table_name}: {count}. Using minimum of 1.")
-            records_config[table_name] = 1
+            if ":" not in record_arg:
+                logger.warning(f"Invalid record format: {record_arg}")
+                continue
+            try:
+                table_name, count = record_arg.split(":", 1)
+                table_name = table_name.strip().lower()
+                count = max(1, int(count))
+                if table_name in records_config:
+                    records_config[table_name] = count
+                    logger.info(f"  {table_name}: {count} records (from command line)")
+                else:
+                    logger.warning(f"Table '{table_name}' not found in configuration")
+            except ValueError:
+                logger.warning(f"Invalid record format: {record_arg}")
 
     return records_config
 
 
-def main():
-    """Main function"""
+def verify_export(output_dir: str) -> int:
+    output_path = Path(output_dir)
+    parquet_files = list(output_path.glob("*.parquet"))
+    if not parquet_files:
+        raise FileNotFoundError(f"No parquet files were found in {output_path}")
+
+    total_file_records = 0
+    logger.info(f"Export successful: {len(parquet_files)} parquet files created")
+    for file in parquet_files:
+        file_data = pd.read_parquet(file)
+        file_records = len(file_data)
+        total_file_records += file_records
+        logger.info(f"  {file.name}: {file_records} records ({file.stat().st_size} bytes)")
+    return total_file_records
+
+
+def load_config_context(config_path: str) -> ConfigParser:
+    parser = ConfigParser(config_path)
+    if not parser.load_config():
+        raise ValueError("Failed to load configuration")
+    parser.parse_tables()
+    parser.parse_relationships()
+    if not parser.validate_config():
+        raise ValueError("Configuration validation failed")
+    return parser
+
+
+def run_generate(args) -> int:
+    logger.info("SDV Test Data Generator")
+    logger.info("=" * 50)
+
+    if not validate_config_file(args.config):
+        return 1
+    if not create_output_directory(args.output):
+        return 1
+
+    logger.info("Initializing SDV data generator...")
+    generator = DataGenerator(args.config)
+    if not generator.load_configuration():
+        logger.error("Failed to load configuration")
+        return 1
+
+    logger.info("Creating SDV metadata...")
+    generator.create_sdv_metadata()
+
+    table_names = [table_name for table_name, cfg in generator.tables_config.items() if cfg.active]
+    if not table_names:
+        logger.error("No active tables found in configuration")
+        return 1
+
+    logger.info(f"Tables detected: {len(table_names)}")
+    for table_name in table_names:
+        logger.info(f"  {table_name}")
+
+    records_config = get_record_counts(generator, args)
+    logger.info("\nGeneration settings:")
+    logger.info(f"  Config file: {args.config}")
+    logger.info(f"  Output directory: {args.output}")
+    logger.info(f"  Total tables to generate: {len(records_config)}")
+
+    logger.info("\nTraining SDV synthesizer...")
+    if generator.train_synthesizer():
+        logger.info("SDV synthesizer trained successfully")
+    else:
+        logger.warning("SDV synthesizer training failed - using fallback generation")
+
+    logger.info("\nStarting data generation...")
+    if args.stream:
+        if hasattr(generator, "generate_and_export_stream"):
+            logger.info("Using streaming generation + incremental export")
+            generator.generate_and_export_stream(records_config, output_dir=args.output, chunk_size=args.chunk_size)
+            total_file_records = verify_export(args.output)
+            logger.info(f"Streaming export created parquet files with {total_file_records} total records")
+            return 0
+        logger.warning("Streaming mode requested, but this generator build does not expose a dedicated streaming export method; falling back to standard generation")
+
+    data = generator.generate_data(records_config)
+    if not data:
+        logger.error("No data generated")
+        return 1
+
+    logger.info("\nValidating generated data...")
+    empty_tables = 0
+    for table_name, table_data in data.items():
+        if table_data.empty:
+            logger.warning(f"Table {table_name} is empty")
+            empty_tables += 1
+        else:
+            logger.info(f"Table {table_name}: {len(table_data)} records")
+
+    logger.info(f"\nExporting to {args.output}...")
+    generator.export_to_parquet(args.output)
+    generator.save_model_artifacts(generator.config_parser.get_setting("model_artifact_path", None))
+    total_file_records = verify_export(args.output)
+
+    report = generator.get_generation_report()
+    logger.info("\nGeneration Report:")
+    logger.info(f"  Total records: {report['total_records']:,}")
+    logger.info(f"  File records verified: {total_file_records:,}")
+    logger.info(f"  Relationships configured: {report['relationships_configured']}")
+    logger.info(f"  Synthesizer fitted: {report['synthesizer_fitted']}")
+    logger.info(f"  Empty tables: {empty_tables}")
+
+    if args.validate:
+        logger.info("\nRunning relationship validation...")
+        validator = DataValidator()
+        is_valid = validator.validate_relationships(data, generator.relationships)
+        val_report = validator.get_validation_report()
+        logger.info(f"  Valid relationships: {val_report.get('valid_count', 0)}")
+        logger.info(f"  Invalid relationships: {val_report.get('invalid_count', 0)}")
+        if not is_valid:
+            logger.warning("Some relationship issues were found")
+
+    logger.info(f"\nAll files saved to: {Path(args.output).absolute()}")
+    return 0
+
+
+def run_delta(args) -> int:
+    if not validate_config_file(args.config):
+        return 1
+    if not create_output_directory(args.output):
+        return 1
+
+    parser = load_config_context(args.config)
+    run_settings = dict(parser.run_settings)
+    if args.partition_columns:
+        run_settings["delta_partition_columns"] = ";".join(args.partition_columns)
+    elif args.partition_column:
+        run_settings["delta_partition_column"] = args.partition_column
+    if args.partition_start_date:
+        run_settings["delta_partition_start_date"] = args.partition_start_date
+
+    processor = ParquetPostProcessor(parser.tables, run_settings)
+    summary = processor.generate_delta(args.previous, args.current, args.output, args.tables)
+    if not summary:
+        logger.warning("No delta output was generated")
+        return 0
+
+    logger.info("\nDelta generation summary:")
+    for table_name, metrics in summary.items():
+        logger.info(f"  {table_name}: {metrics}")
+    return 0
+
+
+def run_scd2(args) -> int:
+    if not validate_config_file(args.config):
+        return 1
+    if not create_output_directory(args.output):
+        return 1
+
+    parser = load_config_context(args.config)
+    processor = ParquetPostProcessor(parser.tables, parser.run_settings)
+    summary = processor.generate_scd2(
+        previous_dir=args.previous,
+        current_dir=args.current,
+        output_dir=args.output,
+        selected_tables=args.tables,
+        effective_timestamp=args.effective_ts,
+        previous_effective_timestamp=args.previous_effective_ts,
+    )
+    if not summary:
+        logger.warning("No SCD2 output was generated")
+        return 0
+
+    logger.info("\nSCD2 generation summary:")
+    for table_name, metrics in summary.items():
+        logger.info(f"  {table_name}: {metrics}")
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_arguments(argv)
+    configure_logging(getattr(args, "verbose", False))
+
     try:
-        # Parse command line arguments
-        args = parse_arguments()
-
-        print("🚀 SDV Test Data Generator")
-        print("=" * 50)
-
-        # Validate configuration file
-        if not validate_config_file(args.config):
-            sys.exit(1)
-
-        # Create output directory
-        if not create_output_directory(args.output):
-            sys.exit(1)
-
-        # Initialize SDV generator
-        print("🔄 Initializing SDV data generator...")
-        generator = DataGenerator(args.config)
-
-        # Load configuration
-        if not generator.load_configuration():
-            print("❌ Failed to load configuration")
-            sys.exit(1)
-
-        # Create SDV metadata
-        print("📋 Creating SDV metadata...")
-        generator.create_sdv_metadata()
-
-        # Get table names
-        table_names = list(generator.tables_config.keys())
-
-        if not table_names:
-            print("❌ No tables found in configuration")
-            sys.exit(1)
-
-        print(f"📋 Tables detected: {len(table_names)}")
-        for table_name in table_names:
-            print(f"   📊 {table_name}")
-
-        # Get record counts
-        records_config = get_record_counts(table_names, args)
-
-        print(f"\n🎯 Generation settings:")
-        print(f"   Config file: {args.config}")
-        print(f"   Output directory: {args.output}")
-        print(f"   Default records per table: {args.default_records}")
-        print(f"   Total tables to generate: {len(table_names)}")
-
-        # Try to train SDV synthesizer (but don't fail if it doesn't work)
-        print("\n🤖 Training SDV synthesizer...")
-        if generator.train_synthesizer():
-            print("✅ SDV synthesizer trained successfully")
-        else:
-            print("⚠ SDV synthesizer training failed - using fallback generation")
-
-        # Generate data
-        print("\n🚀 Starting data generation...")
-        data = generator.generate_data(records_config)
-
-        # EMERGENCY: Double-check datetime columns
-        print("\n🔍 Verifying datetime columns...")
-        for table_name, table_data in data.items():
-            datetime_cols = [col for col in table_data.columns
-                             if pd.api.types.is_datetime64_any_dtype(table_data[col])]
-            if datetime_cols:
-                print(f"   ✅ {table_name}: {len(datetime_cols)} datetime columns")
-                for col in datetime_cols:
-                    print(f"      {col}: {table_data[col].dtype}")
-            else:
-                print(f"   ⚠ {table_name}: No datetime columns found - this may be a problem")
-
-        # Validate generated data
-        print("\n🔍 Validating generated data...")
-        if not data:
-            print("❌ No data generated - dictionaries are empty")
-            sys.exit(1)
-
-        # Check each table
-        empty_tables = 0
-        for table_name, table_data in data.items():
-            if table_data.empty:
-                print(f"❌ Table {table_name} is empty")
-                empty_tables += 1
-            else:
-                print(f"✅ Table {table_name}: {len(table_data)} records")
-
-        total_records = sum(len(df) for df in data.values())
-        if total_records == 0:
-            print("❌ CRITICAL: All tables are empty - no data generated")
-            sys.exit(1)
-
-        if empty_tables > 0:
-            print(f"⚠ Warning: {empty_tables} tables are empty, but {total_records} total records generated")
-        else:
-            print(f"📊 Data validation passed: {total_records} total records")
-
-        # Export to Parquet
-        print(f"\n💾 Exporting to {args.output}...")
-        generator.export_to_parquet(args.output)
-
-        # Verify export worked
-        output_path = Path(args.output)
-        parquet_files = list(output_path.glob("*.parquet"))
-        if parquet_files:
-            print(f"✅ Export successful: {len(parquet_files)} Parquet files created")
-            total_file_records = 0
-            for file in parquet_files:
-                # Read the file to verify it contains data
-                try:
-                    file_data = pd.read_parquet(file)
-                    file_records = len(file_data)
-                    total_file_records += file_records
-                    file_size = file.stat().st_size
-                    print(f"   📁 {file.name}: {file_records} records ({file_size} bytes)")
-                except Exception as e:
-                    print(f"   ❌ Error reading {file}: {e}")
-
-            print(f"📦 Total records in files: {total_file_records}")
-        else:
-            print("❌ CRITICAL: No Parquet files were created")
-            # Check what files exist in output directory
-            all_files = list(output_path.glob("*"))
-            if all_files:
-                print(f"   Other files in directory: {[f.name for f in all_files]}")
-            else:
-                print("   Directory is completely empty")
-            sys.exit(1)
-
-        print("\n🎉 Data generation completed successfully!")
-        print("=" * 50)
-        print(f"📦 Generated data for {len(data)} tables")
-
-        # Show summary from generator report
-        report = generator.get_generation_report()
-        print(f"📈 Total records generated: {report['total_records']:,}")
-
-        for table_name, count in report['table_record_counts'].items():
-            print(f"   {table_name}: {count:,} records")
-
-        # Run validation if requested
-        if args.validate:
-            print("\n" + "=" * 50)
-            print("🔍 Running relationship validation...")
-
-            validator = DataValidator()
-            is_valid = validator.validate_relationships(data, generator.relationships)
-
-            if is_valid:
-                print("✅ All relationships validated successfully!")
-            else:
-                print("⚠ Some relationship issues found - check validation report")
-
-            # Show validation summary
-            val_report = validator.get_validation_report()
-            print(f"   Valid relationships: {val_report.get('valid_count', 0)}")
-            print(f"   Invalid relationships: {val_report.get('invalid_count', 0)}")
-
-        # Generate final report
-        print(f"\n📊 Generation Report:")
-        print(f"   Total records: {report['total_records']:,}")
-        print(f"   Relationships configured: {report['relationships_configured']}")
-        print(f"   Synthesizer fitted: {report['synthesizer_fitted']}")
-        print(f"   Status: {report.get('status', 'UNKNOWN')}")
-
-        print(f"\n✅ All files saved to: {Path(args.output).absolute()}")
-
-        # Final verification
-        if report['total_records'] == 0:
-            print("\n❌ WARNING: Report shows 0 records despite successful export!")
-            print("   This indicates a reporting issue, but files should contain data.")
-        else:
-            print(f"\n🎊 SUCCESS: Generated and exported {report['total_records']:,} records!")
-
-    except FileNotFoundError as e:
-        print(f"❌ File error: {e}")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ Unexpected error: {e}")
+        if args.command == "generate":
+            return run_generate(args)
+        if args.command == "delta":
+            return run_delta(args)
+        if args.command == "scd2":
+            return run_scd2(args)
+        logger.error(f"Unknown command: {args.command}")
+        return 1
+    except FileNotFoundError as exc:
+        logger.error(f"File error: {exc}")
+        return 1
+    except Exception as exc:
+        logger.error(f"Unexpected error: {exc}")
         import traceback
+
         traceback.print_exc()
-        sys.exit(1)
+        return 1
 
-
-# Import pandas for file verification
-import pandas as pd
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -1,0 +1,939 @@
+{
+  "metadata": {
+    "source": "Creditcard.xlsx",
+    "format": "test-data-schema",
+    "version": "1.0",
+    "description": "Credit card transaction and clearing configuration",
+    "tables_count": 11,
+    "columns_count": 79,
+    "generated_at": "2024-01-15T10:30:00.000Z"
+  },
+  "tables": {
+    "ebx_isocurrencies": {
+      "description": "ISO currency codes reference table",
+      "columns": [
+        {
+          "column_name": "NUMERICCODE",
+          "data_type": "N3",
+          "is_pk": true,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ISOCURRENCYCODE",
+          "data_type": "A3",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+    "ebx_card_Issuer_bank_Identif": {
+      "description": "Card issuer bank identification",
+      "columns": [
+        {
+          "column_name": "BIN",
+          "data_type": "N6",
+          "is_pk": true,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "BINDESCRIPTION",
+          "data_type": "A120",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+    "ebx_clearing_acct_type": {
+      "description": "Clearing account type reference",
+      "columns": [
+        {
+          "column_name": "CODE",
+          "data_type": "A4",
+          "is_pk": true,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CODENLDESCRIPTION",
+          "data_type": "A120",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+    "ebx_clearing_card_Input_mode": {
+      "description": "Card input mode reference",
+      "columns": [
+        {
+          "column_name": "CODE",
+          "data_type": "A2",
+          "is_pk": true,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CODENLDESCRIPTION",
+          "data_type": "A120",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+    "ebx_clearing_terminal_type": {
+      "description": "Clearing terminal type reference",
+      "columns": [
+        {
+          "column_name": "CODE",
+          "data_type": "A3",
+          "is_pk": true,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CODENLDESCRIPTION",
+          "data_type": "A120",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+    "ebx_cards_merchant_category": {
+      "description": "Cards merchant category reference",
+      "columns": [
+        {
+          "column_name": "MERCHANTCATEGORY",
+          "data_type": "A120",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "MERCHANTGROUP",
+          "data_type": "A120",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CODE",
+          "data_type": "N4",
+          "is_pk": true,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+    "ebx_clearing_acct_product": {
+      "description": "Clearing account product reference",
+      "columns": [
+        {
+          "column_name": "CODENLDESCRIPTION",
+          "data_type": "A120",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CODE",
+          "data_type": "A4",
+          "is_pk": true,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+    "ebx_clearing_card_trns_source": {
+      "description": "Clearing card transaction source reference",
+      "columns": [
+        {
+          "column_name": "CODE",
+          "data_type": "A4",
+          "is_pk": true,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": ["MCRD", "VISA", "IDEAL", "CACH", "TXNF", "EQNS"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CODENLDESCRIPTION",
+          "data_type": "A120",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+    "ebx_clearing_card_trns_type": {
+      "description": "Clearing card transaction type reference",
+      "columns": [
+        {
+          "column_name": "CODENLDESCRIPTION",
+          "data_type": "A120",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CODE",
+          "data_type": "N2",
+          "is_pk": true,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+    "dc_trx_clrg_issng_dl": {
+      "description": "DC transaction clearing issuing delivery table",
+      "columns": [
+        {
+          "column_name": "DELIVERY_SQN",
+          "data_type": "N18",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_SEQ_NO",
+          "data_type": "N18",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARDHDR_IBAN",
+          "data_type": "A34",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": "NL_IBAN",
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_LCL_DTS",
+          "data_type": "DT",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CLRG_CARDHDR_BILL_N3_CCY_CODE",
+          "data_type": "N3",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_ORIG_N3_CCY_CODE",
+          "data_type": "N3",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "ebx_isocurrencies",
+          "ref_column": "NUMERICCODE",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_ACPTR_NM",
+          "data_type": "A25",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TP_CODE",
+          "data_type": "A3",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": ["CDT"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_TP_CODE",
+          "data_type": "N2",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "ebx_clearing_card_trns_type",
+          "ref_column": "CODE",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_SBTP_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_DB_CR_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_ORIG_CCY_SU_AMT",
+          "data_type": "N17",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CLRG_CARDHDR_BILL_EC_AMT",
+          "data_type": "N17",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CLRG_CARDHDR_BILL_NO_MU_EC_AMT",
+          "data_type": "N17",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_ACPTR_TRMNL_ID",
+          "data_type": "A8",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_ACPTR_ID",
+          "data_type": "A15",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_MRCH_CAT_CODE",
+          "data_type": "N4",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "ebx_cards_merchant_category",
+          "ref_column": "CODE",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_ACPTR_A3_CTY_CODE",
+          "data_type": "A3",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_ACPTR_CITY_NM",
+          "data_type": "A13",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_ORIG_PCS_DCSN_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_PRFL_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_AC_AGRM_REF_ID",
+          "data_type": "A30",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_AC_REF_ID",
+          "data_type": "A20",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_PRIM_ID_NO_LAST_4_DGTS",
+          "data_type": "N4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "AUTH_CARDHDR_BILL_EC_AMT",
+          "data_type": "N17",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_BK_NO",
+          "data_type": "N9",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CLRG_TXN_BK_DT",
+          "data_type": "DT",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_SRC_CODE",
+          "data_type": "A20",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "ebx_clearing_card_trns_source",
+          "ref_column": "CODE",
+          "business_values": ["MCRD", "VISA", "TXNF", "EQNS"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_SCM_SETL_DT",
+          "data_type": "D",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_ISSUR_BNK_IDENTN_NO",
+          "data_type": "N6",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "ebx_card_Issuer_bank_Identif",
+          "ref_column": "BIN",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_ATM_POS_CODE",
+          "data_type": "A3",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_NTW_TP_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_POSVC_CARD_PRSC_F",
+          "data_type": "N1",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_TRC_ID",
+          "data_type": "A15",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CTX_ITT_DVC_TP_CODE",
+          "data_type": "N2",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_EMPE_PCS_DCSN_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CLRG_AUTH_MTCH_F",
+          "data_type": "A1",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_AC_PD_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "ebx_clearing_acct_product",
+          "ref_column": "CODE",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_AC_TP_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "ebx_clearing_acct_type",
+          "ref_column": "CODE",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_INPT_MODE_CODE",
+          "data_type": "A2",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "ebx_clearing_card_Input_mode",
+          "ref_column": "CODE",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_TRMNL_TP_CODE",
+          "data_type": "A3",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "ebx_clearing_terminal_type",
+          "ref_column": "CODE",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_CNP_TP_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_CNP_TXN_ITTR_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_DMN_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_ECOM_SCR_TP_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_TRNST_TP_CODE",
+          "data_type": "N2",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_WLT_PVDR_ID",
+          "data_type": "A3",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARDHDR_AUTH_MTH_CODE",
+          "data_type": "A1",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARDHDR_VERF_MTH_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CLRG_TXN_SUSP_DT",
+          "data_type": "D",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ISOCURRENCYCODE",
+          "data_type": "A3",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_ORIG_CCY_DCM_PNT_POS",
+          "data_type": "N1",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_SEQ_NBR",
+          "data_type": "N3",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CARD_TXN_LCL_TM",
+          "data_type": "T",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    }
+  }
+}

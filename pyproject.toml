@@ -1,10 +1,15 @@
 [tool.poetry]
-name = "testdatageneration"
+name = "fdl-testdatageneration"
 version = "0.1.0"
 description = ""
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
 package-mode = false
+
+[[tool.poetry.source]]
+name = "nexus-cloud"
+url = "https://repo.nexuscloud.aws.rabo.cloud/repository/pypi-org/simple"
+priority = "primary"
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.14"
@@ -94,7 +99,7 @@ typing-inspection = "0.4.1"
 tzdata = "2025.2"
 tzlocal = "5.3.1"
 urllib3 = "2.4.0"
-deltalake = "^1.2.1"
+deltalake = "^1.5.1"
 
 [build-system]
 requires = ["poetry-core"]

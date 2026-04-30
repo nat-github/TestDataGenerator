@@ -1,0 +1,721 @@
+{
+  "metadata": {
+    "source": "FEC_Financial_Transaction_Cash_Deposit.xlsx",
+    "format": "test-data-schema",
+    "version": "1.0",
+    "description": "Cash transaction + deposit configuration extracted from Excel",
+    "generated_at": "2026-02-03T00:00:00Z"
+  },
+  "tables": {
+    "df_cash_rok_txn_dtl": {
+      "description": "df_cash_rok_txn_dtl table",
+      "columns": [
+        {
+          "column_name": "DF_CASH_TXN_ID",
+          "data_type": "A70",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "df_cash_txn",
+          "ref_column": "DF_CASH_TXN_ID",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_TXN_CCY_AMT",
+          "data_type": "DC(18,3)",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_TXN_CCY_CODE",
+          "data_type": "A3",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": ["EUR"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_TXN_PY_OUT_IBAN",
+          "data_type": "A34",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": "NL_IBAN",
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_TXN_PY_OUT_REF_NO",
+          "data_type": "A35",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_TXN_SEALB_ID",
+          "data_type": "A20",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+
+    "df_cash_ca2_dcp_txn_dtl": {
+      "description": "df_cash_ca2_dcp_txn_dtl table",
+      "columns": [
+        {
+          "column_name": "DF_CASH_TXN_ID",
+          "data_type": "A70",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "df_cash_txn",
+          "ref_column": "DF_CASH_TXN_ID",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DCP_CST_LO_ZIP_CODE",
+          "data_type": "A30",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DCP_CST_NM",
+          "data_type": "A80",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DCP_CST_REL_NO",
+          "data_type": "A30",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DCP_LO_NO",
+          "data_type": "A64",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DCP_TXDR_CST_DCL_TOT_COIN_AND_NOTE_AMT",
+          "data_type": "DC(18,3)",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DCP_TXDR_RGST_NO",
+          "data_type": "A20",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DCP_TXDR_STRM_TP_CODE",
+          "data_type": "A6",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DCP_TXDR_TOT_COIN_AMT",
+          "data_type": "DC(18,3)",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DCP_TXDR_TOT_COIN_AND_NOTE_AMT",
+          "data_type": "DC(18,3)",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DCP_TXDR_TOT_NOTE_AMT",
+          "data_type": "DC(18,3)",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+
+    "df_cash_txn": {
+      "description": "df_cash_txn table",
+      "columns": [
+        {
+          "column_name": "CASH_TXN_CST_AC_IBAN",
+          "data_type": "A34",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": "NL_IBAN",
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CASH_TXN_EUR_AMT",
+          "data_type": "DC(18,3)",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DF_CASH_TXN_ID",
+          "data_type": "A70",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CASH_TXN_WD_DEP_TP_NM",
+          "data_type": "A10",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": ["withdrawal", "deposit"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CASH_TXN_SRC_CODE",
+          "data_type": "A10",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": ["GM", "ROK", "DCP"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+
+    "df_cash_rok_slbd": {
+      "description": "df_cash_rok_slbd table",
+      "columns": [
+        {
+          "column_name": "DF_CASH_TXN_ID",
+          "data_type": "A70",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "df_cash_txn",
+          "ref_column": "DF_CASH_TXN_ID",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CASH_TXN_CNT_TOT_NBR_OF_COIN_OR_NOTE",
+          "data_type": "N6",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_SLBD_CNT_TOT_NBR_OF_NOTE",
+          "data_type": "N6",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": ["0"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_SLBD_CNT_AMT",
+          "data_type": "N8",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_SLBD_CNT_DT",
+          "data_type": "D",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_SLBD_MCHN_ID",
+          "data_type": "A10",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_SLBD_MCHN_LO_PST_CODE",
+          "data_type": "A15",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_SLBD_POI_ID",
+          "data_type": "N9",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "ROK_SLBD_SEALB_ID",
+          "data_type": "A20",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+
+    "df_cash_ca2_gm_txn_dtl": {
+      "description": "df_cash_ca2_gm_txn_dtl table",
+      "columns": [
+        {
+          "column_name": "DF_CASH_TXN_ID",
+          "data_type": "A70",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "df_cash_txn",
+          "ref_column": "DF_CASH_TXN_ID",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CASH_TXN_CNT_TOT_NBR_OF_COIN_OR_NOTE",
+          "data_type": "N6",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_CCY_AMT",
+          "data_type": "DC(18,3)",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_CCY_CODE",
+          "data_type": "A3",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": ["EUR"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_CST_CASH_RTRC_F",
+          "data_type": "A5",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": ["false"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_RTRV_REF_NO",
+          "data_type": "A12",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_TOT_NBR_OF_COIN",
+          "data_type": "N6",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": "NULL_PCT=100",
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_TOT_NBR_OF_NOTE",
+          "data_type": "N6",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_TRMNL_ID",
+          "data_type": "A6",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_TRMNL_LO_ADDR_LN_1",
+          "data_type": "A32",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": "ADDRESS",
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_TRMNL_LO_ADDR_LN_2",
+          "data_type": "A32",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": "NULL_PCT=100",
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_TRMNL_LO_CITY_NM",
+          "data_type": "A50",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_TRMNL_LO_CTY_CODE",
+          "data_type": "A2",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": ["CTY_CODE"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_TRMNL_LO_ZIP_CODE",
+          "data_type": "A20",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": "PST_CODE;NULL_PCT=50",
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_CASH_TXN_TRMNL_NM",
+          "data_type": "A80",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_COIN_TXN_DEP_TRGT_TP_CODE",
+          "data_type": "N2",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": "NULL_PCT=100",
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_DST_BNK_CODE",
+          "data_type": "A4",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": ["RABO"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_RQS_MSG_NO",
+          "data_type": "N9",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_SVC_TP_CODE",
+          "data_type": "A2",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": ["cd", "cw"],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    },
+
+    "df_cash_denom": {
+      "description": "df_cash_denom table",
+      "columns": [
+        {
+          "column_name": "DF_CASH_TXN_ID",
+          "data_type": "A70",
+          "is_pk": false,
+          "is_fk": true,
+          "ref_table": "df_cash_txn",
+          "ref_column": "DF_CASH_TXN_ID",
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CASH_TXN_DNMN_CNT_NOU",
+          "data_type": "N5",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CASH_TXN_DNMN_CODE",
+          "data_type": "A10",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": [
+            "C1", "C2", "C5", "C10", "C20", "C50", "C100", "C200", "C500",
+            "C1000", "E5", "E10", "E20", "E50", "E50", "E100", "E200", "E500"
+          ],
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "CASH_TXN_DNMN_CNT_AMT",
+          "data_type": "DC(18,3)",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "DCP_TXDR_ITM_QLY_DSC",
+          "data_type": "A12",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        },
+        {
+          "column_name": "GM_BNKNOTE_DEP_TXN_QLY_CATE_CODE",
+          "data_type": "A2",
+          "is_pk": false,
+          "is_fk": false,
+          "ref_table": null,
+          "ref_column": null,
+          "business_values": null,
+          "special_rules": null,
+          "min_value": null,
+          "max_value": null
+        }
+      ]
+    }
+  }
+}

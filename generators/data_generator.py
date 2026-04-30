@@ -12,7 +12,7 @@ import random
 import re
 import uuid
 from collections import defaultdict
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP , localcontext ,InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -21,7 +21,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
-from sdv.metadata import MultiTableMetadata
+from sdv.metadata import Metadata
 from sdv.multi_table import HMASynthesizer
 
 from models.config_models import TableConfig, RelationshipConfig
@@ -30,16 +30,21 @@ from utils.helpers import DataHelpers
 
 
 class DataGenerator:
+    SAFE_DATETIME_MIN = pd.Timestamp("1900-01-01 00:00:00")
+    SAFE_DATETIME_MAX = pd.Timestamp("2262-04-11 23:47:16")
+
     def __init__(self, config_file: str):
         self.config_file = config_file
         self.config_parser = ConfigParser(config_file)
         self.helpers = DataHelpers()
-        self.metadata: Optional[MultiTableMetadata] = None
+        self.metadata: Optional[Metadata] = None
         self.synthesizer: Optional[HMASynthesizer] = None
 
         self.generated_data: Dict[str, pd.DataFrame] = {}
         self.tables_config: Dict[str, TableConfig] = {}
         self.relationships: List[RelationshipConfig] = []
+        self.sdv_relationship_groups: List[List[RelationshipConfig]] = []
+        self._fitted_sample_sizes: Dict[str, int] = {}
         self.is_fitted = False
         self.logger = self._setup_logging()
 
@@ -79,8 +84,123 @@ class DataGenerator:
                 self.pk_sequences[(table_name, pk_col.column_name)] = 1
                 self.used_pk_values[(table_name, pk_col.column_name)] = set()
 
-    def create_sdv_metadata(self) -> MultiTableMetadata:
-        self.metadata = MultiTableMetadata()
+    @staticmethod
+    def _to_arrow_dc(series: pd.Series, precision: int, scale: int) -> pa.Array:
+        """
+        Convert a Series to Arrow Decimal(precision, scale), raising local context precision
+        to avoid decimal.InvalidOperation on large coefficients.
+        """
+        exp = Decimal(1).scaleb(-scale)  # exponent 10^-scale
+
+        dec_vals: list[Decimal | None] = []
+        with localcontext() as ctx:
+            # safe margin above requested precision
+            ctx.prec = max(precision + 2, 40)
+
+            for v in series:
+                # Nulls
+                if pd.isna(v):
+                    dec_vals.append(None)
+                    continue
+
+                s = str(v).strip().replace(',', '').replace('_', '')
+                sl = s.lower()
+                if sl in {'nan', 'inf', '+inf', '-inf'}:
+                    dec_vals.append(None)
+                    continue
+
+                # Build Decimal (prefer string to avoid float artifacts)
+                try:
+                    d0 = Decimal(s)
+                except Exception:
+                    try:
+                        fv = float(s)
+                        if not (float('-inf') < fv < float('inf')):
+                            dec_vals.append(None)
+                            continue
+                        d0 = Decimal(str(fv))
+                    except Exception:
+                        dec_vals.append(None)
+                        continue
+
+                # >>> Your fixed try/except block <<<
+                try:
+                    dq = d0.quantize(exp, rounding=ROUND_HALF_UP)
+                except InvalidOperation:
+                    # Integral fallback then apply scale
+                    try:
+                        dq = (
+                            d0.to_integral_value(rounding=ROUND_HALF_UP)
+                            .quantize(exp, rounding=ROUND_HALF_UP)
+                        )
+                    except Exception:
+                        dec_vals.append(None)
+                        continue
+
+                dec_vals.append(dq)
+
+        pa_type = pa.decimal128(precision, scale) if precision <= 38 else pa.decimal256(precision, scale)
+        return pa.array(dec_vals, type=pa_type)
+
+    @staticmethod
+    def _count_digits_int_str(x: str) -> int:
+        """Count integer digits in a numeric string (ignoring sign and fractional part)."""
+        s = x.strip()
+        if s.startswith('-') or s.startswith('+'):
+            s = s[1:]
+        if '.' in s:
+            s = s.split('.', 1)[0]
+        # Remove thousands separators/underscores if any
+        s = s.replace(',', '').replace('_', '')
+        return len(s) if s.isdigit() else 0
+
+    @staticmethod
+    def _to_arrow_bigint(series: pd.Series) -> pa.Array:
+
+        dec_vals: list[Decimal | None] = []
+        max_digits = 1
+        for v in series:
+            if pd.isna(v):
+                dec_vals.append(None);
+                continue
+            s = str(v).strip().replace(',', '').replace('_', '')
+            l = s.lower()
+            if l in {'nan', 'inf', '+inf', '-inf'}:
+                dec_vals.append(None);
+                continue
+            try:
+                d = Decimal(s)  # exact (string-based)  [3](https://www.ibantest.com/en/iban-structure/france)
+            except Exception:
+                # fallback: float -> str -> Decimal, still reject non-finite
+                try:
+                    fv = float(s)
+                    if not (float('-inf') < fv < float('inf')):
+                        dec_vals.append(None);
+                        continue
+                    d = Decimal(str(fv))
+                except Exception:
+                    dec_vals.append(None);
+                    continue
+            # Round to integer with HALF_UP (scale=0)
+            di = d.to_integral_value(rounding=ROUND_HALF_UP)
+            dec_vals.append(di)
+            # Update max digits in integer part
+            formatted = format(di, 'f').lstrip('+-').replace('.', '').lstrip('0')
+            max_digits = max(max_digits, len(formatted) or 1)
+
+        # Choose Arrow decimal type (scale=0)
+        if max_digits <= 38:
+            pa_type = pa.decimal128(max_digits, 0)
+        else:
+            pa_type = pa.decimal256(max_digits,
+                                    0)  # up to 76 digits  [7](https://www.52spain.com/d/117547-a-complete-guide-to-spanish-bank-account-iban-format-avoid-transfer-hassles)
+        string_vals = [None if value is None else format(value, 'f') for value in dec_vals]
+        return pa.array(string_vals, type=pa.string()).cast(pa_type)
+
+    def create_sdv_metadata(self) -> Metadata:
+        self.metadata = Metadata()
+        self.sdv_relationship_groups = []
+        primary_keys_by_table: Dict[str, str] = {}
 
         # Add tables
         for table_name in self.tables_config.keys():
@@ -88,16 +208,15 @@ class DataGenerator:
 
         # Add columns & PKs
         for table_name, table_config in self.tables_config.items():
-            pk: Optional[str] = None
+            pk = self._resolve_sdv_primary_key(table_config)
             for column in table_config.columns:
                 business_values = self.helpers.parse_business_values(column.business_values)
                 col_meta = self._enhanced_sdv_type_mapping(column, business_values)
 
-                if column.is_pk:
-                    col_meta["sdtype"] = "id"
-                    pk = column.column_name
-                if column.is_fk:
-                    col_meta["sdtype"] = "id"
+                if column.column_name == pk or column.is_pk:
+                    col_meta = {"sdtype": "id"}
+                elif column.is_fk:
+                    col_meta = {"sdtype": "id"}
 
                 try:
                     self.metadata.add_column(
@@ -116,12 +235,29 @@ class DataGenerator:
             if pk:
                 try:
                     self.metadata.set_primary_key(table_name=table_name, column_name=pk)
+                    primary_keys_by_table[table_name] = pk
                 except Exception as e:
                     self.logger.warning(f"⚠️ Could not set primary key for {table_name}: {e}")
 
         # Add relationships
         added = 0
-        for rel in self.relationships:
+        for relationship_group in self._iter_relationship_groups():
+            if len(relationship_group) != 1:
+                exemplar = relationship_group[0]
+                self.logger.info(
+                    f"ℹ️ Skipping composite relationship for SDV metadata: {exemplar.source_table} → {exemplar.target_table}"
+                )
+                continue
+
+            rel = relationship_group[0]
+            expected_parent_pk = primary_keys_by_table.get(rel.target_table)
+            if expected_parent_pk != rel.target_column:
+                self.logger.info(
+                    f"ℹ️ Skipping unsupported SDV relationship {rel.source_table}.{rel.source_column} → "
+                    f"{rel.target_table}.{rel.target_column}; parent primary key is {expected_parent_pk!r}"
+                )
+                continue
+
             try:
                 self.metadata.add_relationship(
                     parent_table_name=rel.target_table,
@@ -129,6 +265,7 @@ class DataGenerator:
                     child_table_name=rel.source_table,
                     child_foreign_key=rel.source_column,
                 )
+                self.sdv_relationship_groups.append(relationship_group)
                 added += 1
                 self.logger.info(
                     f"✅ Added relationship: {rel.source_table}.{rel.source_column} → {rel.target_table}.{rel.target_column}")
@@ -145,21 +282,55 @@ class DataGenerator:
 
         return self.metadata
 
+    def _resolve_sdv_primary_key(self, table_config: TableConfig) -> Optional[str]:
+        valid_columns = {column.column_name for column in table_config.columns}
+        explicit_primary_keys = [column for column in table_config.primary_key_columns if column in valid_columns]
+        derived_primary_keys = [column.column_name for column in table_config.columns if column.is_pk]
+        business_keys = [column for column in table_config.business_key_columns if column in valid_columns]
+
+        candidates = explicit_primary_keys or derived_primary_keys or business_keys
+        deduplicated_candidates = list(dict.fromkeys(candidates))
+
+        if len(deduplicated_candidates) == 1:
+            return deduplicated_candidates[0]
+
+        if len(deduplicated_candidates) > 1:
+            self.logger.info(
+                f"ℹ️ Table {table_config.name} uses composite keys {deduplicated_candidates}; SDV metadata only supports single-column primary keys, so relationships for this table will be skipped"
+            )
+
+        return None
+
+    def _iter_relationship_groups(self) -> List[List[RelationshipConfig]]:
+        grouped: Dict[Tuple[str, str, str], List[RelationshipConfig]] = {}
+
+        for relationship in self.relationships:
+            base_name = relationship.name or (
+                f"{relationship.source_table}.{relationship.source_column}->{relationship.target_table}.{relationship.target_column}"
+            )
+            if "#" in base_name:
+                base_name = base_name.rsplit("#", 1)[0]
+
+            key = (relationship.source_table, relationship.target_table, base_name)
+            grouped.setdefault(key, []).append(relationship)
+
+        return list(grouped.values())
+
     def _enhanced_sdv_type_mapping(self, column, business_values: Optional[List[str]]) -> Dict[str, Any]:
         """Enhanced SDV type mapping"""
         base_type, length, precision, scale = self.config_parser.parse_data_type_details(column.data_type)
+        name_lower = column.column_name.lower()
 
         mapping = {'sdtype': 'categorical'}
 
-        if base_type in ['N', 'DC']:
-            mapping['sdtype'] = 'numerical'
+        if business_values:
+            mapping['sdtype'] = 'categorical'
         elif base_type in ['D', 'DT', 'TS']:
             mapping['sdtype'] = 'datetime'
-        elif any(keyword in column.column_name.lower() for keyword in ['id', 'code', 'key', 'num', 'nbr', 'seq']):
+        elif column.is_pk or column.is_fk or name_lower == 'id' or name_lower.endswith('_id') or name_lower.endswith('uuid'):
             mapping['sdtype'] = 'id'
-        elif business_values:
-            mapping['sdtype'] = 'categorical'
-            mapping['order_by'] = business_values
+        elif base_type in ['N', 'DC']:
+            mapping['sdtype'] = 'numerical'
         else:
             mapping['sdtype'] = 'text'
 
@@ -168,6 +339,12 @@ class DataGenerator:
     # ---------------------------------------------------------------------
     # FIXED: Guaranteed Unique Primary Key Generation - NO LENGTH CONSTRAINTS
     # ---------------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_generator_max_length(base_type: str, length: Optional[int]) -> Optional[int]:
+        if base_type in {"A", "AN", "NS", "VA"}:
+            return int(length) if length is not None else None
+        return None
 
     # --- In _generate_unique_primary_key(...), add special_rule handling up-front ---
     def _generate_unique_primary_key(self, column, table_name: str, index: int, num_records: int) -> Any:
@@ -181,8 +358,14 @@ class DataGenerator:
         # 0) If PK has explicit special_rules, generate via helpers and ensure uniqueness
         special = getattr(column, "special_rules", None)
         if special and not pd.isna(special):
+            max_length = self._resolve_generator_max_length(base_type, length)
             for attempt in range(200):
-                val = self.helpers.generate_special_value(special, base_type)
+                val = self.helpers.generate_special_value(
+                    special,
+                    column.data_type,
+                    column_name=column.column_name,
+                    max_length=max_length,
+                )
                 # enforce uniqueness for PK
                 if val not in self.used_pk_values[pk_key]:
                     self.used_pk_values[pk_key].add(val)
@@ -515,6 +698,7 @@ class DataGenerator:
             return self._generate_unique_primary_key(column, table_name, index, num_records)
 
         base_type, length, precision, scale = self.config_parser.parse_data_type_details(column.data_type)
+        max_length = self._resolve_generator_max_length(base_type, length)
 
         # Business values first (for non-PK columns)
         business_values = self.helpers.parse_business_values(column.business_values)
@@ -524,9 +708,25 @@ class DataGenerator:
 
         # Special rules
         if column.special_rules and not pd.isna(column.special_rules):
-            special_value = self.helpers.generate_special_value(column.special_rules, base_type)
+            special_value = self.helpers.generate_special_value(
+                column.special_rules,
+                column.data_type,
+                column_name=column.column_name,
+                max_length=max_length,
+            )
             if special_value is not None:
                 return special_value
+
+        if base_type in {"VA", "A", "AN", "NS", "T"}:
+            semantic_value = self.helpers.generate_realistic_dutch_data(
+                column.column_name,
+                column.data_type,
+                max_length=length,
+                min_val=column.min_value,
+                max_val=column.max_value,
+            )
+            if semantic_value is not None:
+                return semantic_value
 
         # Type-based generation (for non-PK columns, respect length constraints)
         if base_type == "DC" and precision and scale:
@@ -549,7 +749,9 @@ class DataGenerator:
         elif base_type in ["D", "DT", "TS"]:
             return self.helpers.generate_sample_value(base_type, {
                 "business_values": business_values,
-                "special_rules": column.special_rules
+                "special_rules": column.special_rules,
+                "column_name": column.column_name,
+                "max_length": max_length,
             })
         else:
             return self.helpers.generate_realistic_dutch_data(column.column_name, base_type)
@@ -599,11 +801,16 @@ class DataGenerator:
         return random.randint(int(min_val), int(max_val))
 
     def _generate_variable_string(self, length: int) -> str:
-        if length <= 10:
+        if length <= 0:
+            return ""
+        if length <= 12:
             return self.helpers.faker.word()[:length]
-        elif length <= 50:
-            return self.helpers.faker.text(max_nb_chars=length)
-        return self.helpers.faker.paragraph(nb_sentences=3)[:length]
+        if length <= 50:
+            target = random.randint(6, length)
+            return self.helpers.faker.sentence(nb_words=random.randint(2, 6))[:target].strip()
+
+        target = random.randint(20, min(length, 140))
+        return self.helpers.faker.text(max_nb_chars=target).strip()
 
     # ---------------------------------------------------------------------
     # NULL Generation Helpers
@@ -611,22 +818,10 @@ class DataGenerator:
     def _parse_null_rate_from_rules(self, rules: Optional[str]) -> Optional[float]:
         if not rules or pd.isna(rules):
             return None
-        s = str(rules).upper()
-        m = re.search(r"NULL_RATE\s*=\s*([0-1]?(?:\.\d+)?)", s)
-        if m:
-            try:
-                v = float(m.group(1))
-                return max(0.0, min(1.0, v))
-            except Exception:
-                pass
-        m = re.search(r"NULL_PCT\s*=\s*(\d+(?:\.\d+)?)", s)
-        if m:
-            try:
-                pct = float(m.group(1))
-                return max(0.0, min(1.0, pct / 100.0))
-            except Exception:
-                pass
-        return None
+        try:
+            return self.helpers.get_special_rule_null_probability(rules)
+        except ValueError:
+            return None
 
     def _get_null_probability(self, column) -> float:
         explicit = getattr(column, "null_rate", None)
@@ -639,6 +834,78 @@ class DataGenerator:
         if parsed is not None:
             return parsed
         return 0.0
+
+    def _column_has_value_generation_rule(self, column) -> bool:
+        business_values = self.helpers.parse_business_values(getattr(column, "business_values", None))
+        if business_values:
+            return True
+
+        try:
+            value_rule = self.helpers.get_special_rule_value_directive(getattr(column, "special_rules", None))
+        except ValueError:
+            return False
+
+        return bool(value_rule)
+
+    def _reconcile_sdv_constraints(self, data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+        """Reapply workbook-driven rules after SDV sampling so constrained columns remain valid."""
+        reconciled: Dict[str, pd.DataFrame] = {}
+        self._initialize_pk_tracking()
+
+        reconciled_columns = 0
+        for table_name, df in data.items():
+            table_config = self.tables_config.get(table_name)
+            if table_config is None:
+                reconciled[table_name] = df.copy()
+                continue
+
+            table_df = df.copy().reset_index(drop=True)
+            row_count = len(table_df)
+
+            for column in table_config.columns:
+                column_name = column.column_name
+                if column_name not in table_df.columns:
+                    continue
+                if column.is_fk:
+                    continue
+
+                has_value_rule = self._column_has_value_generation_rule(column)
+                null_probability = 0.0 if column.is_pk else self._get_null_probability(column)
+
+                if not has_value_rule and null_probability <= 0.0:
+                    continue
+
+                existing_values = table_df[column_name].tolist()
+                regenerated_values: List[Any] = []
+                changed = False
+
+                for index in range(row_count):
+                    if null_probability > 0.0 and random.random() < null_probability:
+                        regenerated_values.append(None)
+                        if existing_values[index] is not None:
+                            changed = True
+                        continue
+
+                    if has_value_rule:
+                        regenerated_value = self._generate_enhanced_value(column, table_name, index, row_count)
+                        regenerated_values.append(regenerated_value)
+                        if regenerated_value != existing_values[index]:
+                            changed = True
+                    else:
+                        regenerated_values.append(existing_values[index])
+
+                if changed:
+                    table_df[column_name] = regenerated_values
+                    reconciled_columns += 1
+
+            table_df = self._validate_and_fix_pk_uniqueness(table_df, table_config)
+            table_df = self._apply_data_type_constraints(table_df, table_config)
+            reconciled[table_name] = table_df
+
+        if reconciled_columns:
+            self.logger.info(f"🩹 Reconciled {reconciled_columns} constrained columns after SDV sampling")
+
+        return reconciled
 
     # ---------------------------------------------------------------------
     # Data Type Constraints & Sanitization
@@ -657,9 +924,8 @@ class DataGenerator:
             # Apply constraints only for non-PK columns
             if base_type == "DC" and (scale is not None):
                 s = int(scale)
-                df[column.column_name] = df[column.column_name].apply(
-                    lambda x: round(float(x), s) if pd.notna(x) else x
-                )
+                numeric_series = pd.to_numeric(df[column.column_name], errors="coerce")
+                df[column.column_name] = numeric_series.round(s)
 
             elif base_type == "NS" and length:
                 L = int(length)
@@ -668,25 +934,19 @@ class DataGenerator:
 
             elif base_type == "AN" and length:
                 L = int(length)
-                df[column.column_name] = df[column.column_name].astype("string").str.ljust(L).str[:L]
+                df[column.column_name] = df[column.column_name].astype("string").str.rstrip().str[:L]
 
             elif base_type == "A" and length:
                 L = int(length)
-                df[column.column_name] = df[column.column_name].astype("string").str.ljust(L).str[:L]
+                df[column.column_name] = df[column.column_name].astype("string").str.rstrip().str[:L]
 
             elif base_type == "N" and length:
                 max_val = 10 ** int(length) - 1
 
-                def _cap(v):
-                    if pd.isna(v):
-                        return v
-                    try:
-                        iv = int(v)
-                    except Exception:
-                        return v
-                    return min(iv, max_val)
-
-                df[column.column_name] = df[column.column_name].apply(_cap)
+                numeric_series = pd.to_numeric(df[column.column_name], errors="coerce")
+                df[column.column_name] = numeric_series.apply(
+                    lambda value: min(int(value), max_val) if pd.notna(value) else value
+                )
 
         return df
 
@@ -706,14 +966,134 @@ class DataGenerator:
 
         coerced: List[Any] = []
         for s in cleaned:
-            ts = pd.to_datetime(s, errors="coerce")
-            if pd.isna(ts):
-                coerced.append(s)
-            else:
-                if data_type == "D":
-                    ts = pd.Timestamp(ts).normalize()
-                coerced.append(pd.Timestamp(ts))
+            ts = self._coerce_safe_timestamp(s, normalize=(data_type == "D"))
+            if ts is not None:
+                coerced.append(ts)
         return coerced
+
+    def _coerce_safe_timestamp(self, value: Any, normalize: bool = False) -> Optional[pd.Timestamp]:
+        try:
+            parsed = pd.to_datetime(value, errors="coerce")
+        except Exception:
+            return None
+
+        if pd.isna(parsed):
+            return None
+
+        ts = pd.Timestamp(parsed)
+        if ts.tzinfo is not None:
+            ts = ts.tz_convert(None)
+
+        if ts < self.SAFE_DATETIME_MIN or ts > self.SAFE_DATETIME_MAX:
+            return None
+
+        return ts.normalize() if normalize else ts
+
+    def _coerce_identifier_series(
+        self,
+        series: pd.Series,
+        table_name: str,
+        column_name: str,
+        enforce_unique: bool = False,
+    ) -> pd.Series:
+        coerced = pd.Series(pd.NA, index=series.index, dtype="string")
+        seen_values: Dict[str, int] = {}
+
+        non_null_mask = series.notna()
+        if non_null_mask.any():
+            for row_index, raw_value in series.loc[non_null_mask].items():
+                text_value = str(raw_value)
+                if enforce_unique:
+                    duplicate_count = seen_values.get(text_value, 0)
+                    seen_values[text_value] = duplicate_count + 1
+                    if duplicate_count:
+                        text_value = f"{text_value}__{duplicate_count + 1}"
+                coerced.at[row_index] = text_value
+
+        missing_mask = coerced.isna()
+        if missing_mask.any():
+            for position, row_index in enumerate(coerced.index[missing_mask], start=1):
+                coerced.at[row_index] = f"{table_name}_{column_name}_{position}"
+
+        return coerced
+
+    def _coerce_datetime_series(self, series: pd.Series, date_only: bool = False, aggressive: bool = False) -> pd.Series:
+        coerced = pd.to_datetime(series, errors="coerce")
+
+        if getattr(coerced.dt, "tz", None) is not None:
+            coerced = coerced.dt.tz_convert(None)
+
+        lower_bound = self.SAFE_DATETIME_MIN.normalize() if date_only else self.SAFE_DATETIME_MIN
+        upper_bound = self.SAFE_DATETIME_MAX.normalize() if date_only else self.SAFE_DATETIME_MAX
+        coerced = coerced.clip(lower=lower_bound, upper=upper_bound)
+
+        if date_only:
+            coerced = coerced.dt.normalize()
+
+        if aggressive and coerced.isna().any():
+            fallback = pd.Timestamp("2024-01-01 00:00:00")
+            if date_only:
+                fallback = fallback.normalize()
+            coerced = coerced.fillna(fallback)
+
+        return coerced
+
+    def _sanitize_sample_data_for_sdv(
+        self,
+        sample_data: Dict[str, pd.DataFrame],
+        aggressive: bool = False,
+    ) -> Dict[str, pd.DataFrame]:
+        sanitized: Dict[str, pd.DataFrame] = {}
+
+        for table_name, df in sample_data.items():
+            table_config = self.tables_config.get(table_name)
+            if table_config is None:
+                sanitized[table_name] = df.copy()
+                continue
+
+            clean_df = df.copy()
+            sdv_primary_key = self._resolve_sdv_primary_key(table_config)
+            for column in table_config.columns:
+                column_name = column.column_name
+                if column_name not in clean_df.columns:
+                    continue
+
+                base_type, _, _, _ = self.config_parser.parse_data_type_details(column.data_type)
+                series = clean_df[column_name]
+
+                if base_type in ["D", "DT", "TS"]:
+                    clean_df[column_name] = self._coerce_datetime_series(
+                        series,
+                        date_only=(base_type == "D"),
+                        aggressive=aggressive,
+                    )
+                elif column_name == sdv_primary_key or column.is_pk or column.is_fk:
+                    clean_df[column_name] = self._coerce_identifier_series(
+                        series,
+                        table_name,
+                        column_name,
+                        enforce_unique=(column_name == sdv_primary_key),
+                    )
+                elif base_type in ["N", "DC"]:
+                    numeric_series = pd.to_numeric(series, errors="coerce")
+                    if aggressive and numeric_series.isna().any():
+                        fill_value = numeric_series.dropna().median() if not numeric_series.dropna().empty else 0
+                        numeric_series = numeric_series.fillna(fill_value)
+                    clean_df[column_name] = numeric_series
+                else:
+                    string_series = pd.Series(pd.NA, index=series.index, dtype="string")
+                    non_null_mask = series.notna()
+                    if non_null_mask.any():
+                        string_series.loc[non_null_mask] = series.loc[non_null_mask].astype("string")
+                    if aggressive and string_series.isna().any():
+                        missing_mask = string_series.isna()
+                        for position, row_index in enumerate(string_series.index[missing_mask], start=1):
+                            string_series.at[row_index] = f"{table_name}_{column_name}_{position}"
+                    clean_df[column_name] = string_series
+
+            sanitized[table_name] = clean_df
+
+        return self._enforce_relationships_in_sample(sanitized)
 
     # ---------------------------------------------------------------------
     # SDV Training & Data Generation
@@ -723,6 +1103,12 @@ class DataGenerator:
             if self.metadata is None:
                 self.logger.error("❌ Metadata not created. Call create_sdv_metadata() first.")
                 return False
+
+            configured_sample_size = self.config_parser.get_setting('synthesizer_sample_size', sample_size)
+            try:
+                sample_size = int(configured_sample_size)
+            except (TypeError, ValueError):
+                sample_size = sample_size
 
             self.logger.info("🧑‍🤖 Initializing HMA Synthesizer...")
 
@@ -734,11 +1120,35 @@ class DataGenerator:
 
             # Generate high-quality sample data
             sample_sizes = {t: min(sample_size, 100) for t in self.tables_config.keys()}
-            sample_data = self._generate_high_quality_sample_data(sample_sizes)
+            sample_data = self._sanitize_sample_data_for_sdv(
+                self._generate_high_quality_sample_data(sample_sizes)
+            )
 
             self.logger.info("🛠️ Fitting synthesizer with enhanced sample data...")
+            fitted_sample_data = sample_data
 
-            self.synthesizer.fit(sample_data)
+            try:
+                self.synthesizer.fit(sample_data)
+            except Exception as first_error:
+                self.logger.warning(f"⚠️ Initial synthesizer fit attempt failed: {first_error}")
+                retry_sample_sizes = {t: max(25, min(sample_size, 75)) for t in self.tables_config.keys()}
+                retry_sample_data = self._sanitize_sample_data_for_sdv(
+                    self._generate_high_quality_sample_data(retry_sample_sizes),
+                    aggressive=True,
+                )
+                self.synthesizer = HMASynthesizer(
+                    metadata=self.metadata,
+                    verbose=True,
+                    locales=['nl_NL']
+                )
+                self.logger.info("🔁 Retrying synthesizer fit with aggressively sanitized sample data...")
+                self.synthesizer.fit(retry_sample_data)
+                fitted_sample_data = retry_sample_data
+
+            self._fitted_sample_sizes = {
+                table_name: len(df)
+                for table_name, df in fitted_sample_data.items()
+            }
             self.is_fitted = True
 
             self.logger.info("✅ SDV synthesizer trained and fitted successfully")
@@ -749,6 +1159,35 @@ class DataGenerator:
             self.logger.info("🔄 Continuing with enhanced fallback generation...")
             self.is_fitted = False
             return False
+
+    def save_model_artifacts(self, output_dir: Optional[str] = None) -> Optional[Path]:
+        """Save fitted synthesizer artifacts when enabled in workbook settings."""
+        if not self.is_fitted or self.synthesizer is None or self.metadata is None:
+            return None
+
+        save_enabled = self.config_parser.get_setting('save_model_artifact', False)
+        if not bool(save_enabled):
+            return None
+
+        target_dir = output_dir or self.config_parser.get_setting('model_artifact_path', 'output/models')
+        artifact_dir = Path(target_dir)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+
+        metadata_file = artifact_dir / 'metadata.json'
+        model_file = artifact_dir / 'hma_synthesizer.pkl'
+
+        try:
+            self.metadata.save_to_json(filepath=str(metadata_file))
+        except Exception as exc:
+            self.logger.warning(f"⚠️ Could not save metadata artifact: {exc}")
+
+        try:
+            self.synthesizer.save(filepath=str(model_file))
+            self.logger.info(f"💾 Saved synthesizer artifact to {model_file}")
+            return artifact_dir
+        except Exception as exc:
+            self.logger.warning(f"⚠️ Could not save synthesizer artifact: {exc}")
+            return artifact_dir if metadata_file.exists() else None
 
     def _generate_high_quality_sample_data(self, sample_sizes: Dict[str, int]) -> Dict[str, pd.DataFrame]:
         """Generate high-quality sample data for SDV training"""
@@ -766,29 +1205,87 @@ class DataGenerator:
         # Enforce relationships in sample data
         return self._enforce_relationships_in_sample(sample_data)
 
+    def _apply_relationship_group(
+        self,
+        data: Dict[str, pd.DataFrame],
+        relationship_group: List[RelationshipConfig],
+    ) -> None:
+        exemplar = relationship_group[0]
+        parent_table = exemplar.target_table
+        child_table = exemplar.source_table
+
+        if parent_table not in data or child_table not in data:
+            return
+
+        parent_df = data[parent_table]
+        child_df = data[child_table]
+        source_columns = [relationship.source_column for relationship in relationship_group]
+        target_columns = [relationship.target_column for relationship in relationship_group]
+
+        if any(column not in parent_df.columns for column in target_columns):
+            return
+        if any(column not in child_df.columns for column in source_columns):
+            return
+
+        if len(relationship_group) == 1:
+            valid_parent_values = parent_df[target_columns[0]].dropna().tolist()
+            if valid_parent_values:
+                child_df[source_columns[0]] = random.choices(valid_parent_values, k=len(child_df))
+                data[child_table] = child_df
+            return
+
+        parent_pairs = parent_df[target_columns].dropna().drop_duplicates()
+        if parent_pairs.empty:
+            return
+
+        sampled_parent_rows = parent_pairs.sample(n=len(child_df), replace=True).reset_index(drop=True)
+        child_df = child_df.copy()
+        for source_column, target_column in zip(source_columns, target_columns):
+            child_df[source_column] = sampled_parent_rows[target_column].tolist()
+        data[child_table] = child_df
+
     def _enforce_relationships_in_sample(self, sample_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
         """Enforce relationships in sample data for better SDV learning"""
-        for relationship in self.relationships:
-            parent_table = relationship.target_table
-            child_table = relationship.source_table
-
-            if parent_table in sample_data and child_table in sample_data:
-                parent_df = sample_data[parent_table]
-                child_df = sample_data[child_table]
-
-                if (relationship.target_column in parent_df.columns and
-                        relationship.source_column in child_df.columns):
-
-                    valid_parent_values = parent_df[relationship.target_column].dropna().unique()
-
-                    if len(valid_parent_values) > 0:
-                        child_df[relationship.source_column] = random.choices(
-                            valid_parent_values.tolist(),
-                            k=len(child_df)
-                        )
-                        sample_data[child_table] = child_df
+        for relationship_group in self.sdv_relationship_groups:
+            self._apply_relationship_group(sample_data, relationship_group)
 
         return sample_data
+
+    def _sample_from_synthesizer(self, records_per_table: Dict[str, int]) -> Dict[str, pd.DataFrame]:
+        if self.synthesizer is None:
+            raise ValueError("Synthesizer is not initialized")
+
+        try:
+            sampled = self.synthesizer.sample(num_rows=records_per_table)
+        except TypeError as exc:
+            if "num_rows" not in str(exc):
+                raise
+
+            requested_ratios = []
+            for table_name, requested_count in records_per_table.items():
+                fitted_count = self._fitted_sample_sizes.get(table_name)
+                if fitted_count:
+                    requested_ratios.append(requested_count / max(1, fitted_count))
+
+            scale = max(requested_ratios) if requested_ratios else 1.0
+            scale = max(scale, 1e-6)
+            sampled = self.synthesizer.sample(scale=scale)
+
+        if not isinstance(sampled, dict):
+            raise ValueError("SDV synthesizer returned a non-dictionary result")
+
+        trimmed: Dict[str, pd.DataFrame] = {}
+        for table_name, requested_count in records_per_table.items():
+            table_df = sampled.get(table_name)
+            if table_df is None or table_df.empty:
+                raise ValueError(f"SDV returned no rows for table {table_name}")
+            if len(table_df) < requested_count:
+                raise ValueError(
+                    f"SDV returned only {len(table_df)} rows for table {table_name}; expected at least {requested_count}"
+                )
+            trimmed[table_name] = table_df.head(requested_count).reset_index(drop=True)
+
+        return trimmed
 
     def generate_data(self, records_per_table: Dict[str, int]) -> Dict[str, pd.DataFrame]:
         """
@@ -799,7 +1296,8 @@ class DataGenerator:
             if self.is_fitted and self.synthesizer:
                 self.logger.info("🎲 Generating data using trained SDV synthesizer...")
                 try:
-                    synthetic_data = self.synthesizer.sample(num_rows=records_per_table)
+                    synthetic_data = self._sample_from_synthesizer(records_per_table)
+                    synthetic_data = self._reconcile_sdv_constraints(synthetic_data)
 
                     # Validate and enforce relationships in SDV data
                     if self._validate_sdv_data(synthetic_data):
@@ -877,25 +1375,8 @@ class DataGenerator:
     def _enforce_all_relationships(self, data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
         """Enforce ALL relationships in data"""
         for _ in range(3):
-            for relationship in self.relationships:
-                parent_table = relationship.target_table
-                child_table = relationship.source_table
-
-                if parent_table in data and child_table in data:
-                    parent_df = data[parent_table]
-                    child_df = data[child_table]
-
-                    if (relationship.target_column in parent_df.columns and
-                            relationship.source_column in child_df.columns):
-
-                        valid_parent_values = parent_df[relationship.target_column].dropna().unique()
-
-                        if len(valid_parent_values) > 0:
-                            child_df[relationship.source_column] = random.choices(
-                                valid_parent_values.tolist(),
-                                k=len(child_df)
-                            )
-                            data[child_table] = child_df
+            for relationship_group in self._iter_relationship_groups():
+                self._apply_relationship_group(data, relationship_group)
 
         return data
 
@@ -922,29 +1403,36 @@ class DataGenerator:
         self.logger.info("🔗 Resolving foreign key relationships...")
         resolved_count = 0
 
-        for relationship in self.relationships:
-            src_t = relationship.source_table
-            tgt_t = relationship.target_table
+        for relationship_group in self._iter_relationship_groups():
+            exemplar = relationship_group[0]
+            src_t = exemplar.source_table
+            tgt_t = exemplar.target_table
 
-            if src_t in self.generated_data and tgt_t in self.generated_data:
-                src_df = self.generated_data[src_t]
-                tgt_df = self.generated_data[tgt_t]
+            if src_t not in self.generated_data or tgt_t not in self.generated_data:
+                continue
 
-                if (relationship.source_column in src_df.columns) and (relationship.target_column in tgt_df.columns):
-                    valid = tgt_df[relationship.target_column].dropna().unique().tolist()
-                    if valid:
-                        original_dtype = src_df[relationship.source_column].dtype
-                        src_df[relationship.source_column] = random.choices(valid, k=len(src_df))
-                        try:
-                            src_df[relationship.source_column] = src_df[relationship.source_column].astype(
-                                original_dtype)
-                        except (ValueError, TypeError):
-                            pass
+            src_df = self.generated_data[src_t]
+            original_dtypes = {
+                relationship.source_column: src_df[relationship.source_column].dtype
+                for relationship in relationship_group
+                if relationship.source_column in src_df.columns
+            }
+            before_frame = src_df[[column for column in original_dtypes]].copy() if original_dtypes else pd.DataFrame()
 
-                        self.generated_data[src_t] = src_df
-                        resolved_count += 1
-                        self.logger.info(
-                            f" ✅ Resolved FK: {src_t}.{relationship.source_column} → {tgt_t}.{relationship.target_column}")
+            self._apply_relationship_group(self.generated_data, relationship_group)
+            src_df = self.generated_data[src_t]
+
+            for source_column, original_dtype in original_dtypes.items():
+                try:
+                    src_df[source_column] = src_df[source_column].astype(original_dtype)
+                except (ValueError, TypeError):
+                    pass
+
+            if not before_frame.empty and not before_frame.equals(src_df[list(original_dtypes)]):
+                resolved_count += 1
+                source_columns = ", ".join(rel.source_column for rel in relationship_group)
+                target_columns = ", ".join(rel.target_column for rel in relationship_group)
+                self.logger.info(f" ✅ Resolved FK: {src_t}.{source_columns} → {tgt_t}.{target_columns}")
 
         self.logger.info(f"✅ Resolved {resolved_count} foreign key relationships")
 
@@ -1005,25 +1493,98 @@ class DataGenerator:
                         arrays.append(arr)
                         names.append(col)
 
+
+
+
+
                     elif base_type == "N":
-                        vals = pd.to_numeric(s, errors="coerce")
-                        has_negative = pd.notna(vals) & (vals < 0)
-                        if has_negative.any():
-                            vals = vals.astype("Int64")
-                            arr = pa.array(vals, type=pa.int64())
+
+                        # Existing numeric export, but robust for N38 (≥20 integer digits)
+
+                        # 1) Parse declared length (if provided)
+
+                        _bt, declared_len, _prec, _sc = self.config_parser.parse_data_type_details(column.data_type)
+
+                        try:
+
+                            declared_len = int(declared_len) if declared_len else None
+
+                        except Exception:
+
+                            declared_len = None
+
+                        # 2) Detect oversize beyond 64-bit (either by declared_len or observed digits)
+
+                        oversize_64 = False
+
+                        if declared_len and declared_len > 19:
+
+                            oversize_64 = True
+
                         else:
-                            max_val = vals.max(skipna=True)
-                            if pd.isna(max_val):
-                                vals = vals.astype("Int64")
-                                arr = pa.array(vals, type=pa.int64())
-                            elif max_val > np.iinfo("int64").max:
-                                vals = vals.astype("UInt64")
-                                arr = pa.array(vals, type=pa.uint64())
+
+                            for v in s.dropna():
+
+                                digits = self._count_digits_int_str(str(v))
+
+                                if digits > 19:
+                                    oversize_64 = True
+
+                                    break
+
+                        if oversize_64:
+
+                            # N38 (or similar): export as Decimal with scale=0 (exact integers)
+
+                            arr = self._to_arrow_bigint(s)
+
+                            arrays.append(arr);
+                            names.append(col)
+
+                        else:
+
+                            # Normal int64 path — build Arrow array from Python ints (avoid pandas UInt64 cast)
+
+                            vals_num = pd.to_numeric(s, errors="coerce")
+
+                            int_list = [None if pd.isna(v) else int(v) for v in vals_num]
+
+                            INT64_MIN = np.iinfo(
+                                np.int64).min  # dtype, not string  [5](https://en.wikipedia.org/wiki/International_Bank_Account_Number)
+
+                            INT64_MAX = np.iinfo(np.int64).max
+
+                            min_val = vals_num.min(skipna=True)
+
+                            max_val = vals_num.max(skipna=True)
+
+                            if pd.isna(min_val) or pd.isna(max_val):
+
+                                arr = pa.array(int_list, type=pa.int64())
+
+                            elif min_val >= INT64_MIN and max_val <= INT64_MAX:
+
+                                arr = pa.array(int_list, type=pa.int64())
+
                             else:
-                                vals = vals.astype("Int64")
-                                arr = pa.array(vals, type=pa.int64())
-                        arrays.append(arr)
-                        names.append(col)
+
+                                # Strictly non-negative & within uint64? use uint64; otherwise fallback to decimal(precision<=38)
+
+                                UINT64_MAX = np.iinfo(np.uint64).max
+
+                                if min_val >= 0 and max_val <= UINT64_MAX:
+
+                                    arr = pa.array(int_list, type=pa.uint64())
+
+                                else:
+
+                                    # Extremely rare; ensure exact integer via Decimal128 up to 38 digits
+
+                                    arr = self._to_arrow_bigint(s)
+
+                            arrays.append(arr);
+                            names.append(col)
+
 
                     elif base_type == "DC":
                         precision = int(precision or 18)

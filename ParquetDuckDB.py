@@ -139,7 +139,7 @@ if __name__ == "__main__":
         subprocess.check_call(["pip", "install", "duckdb"])
 
     # Initialize runner
-    runner = ParquetDuckDBRunner("output/test_orgdeltapart")  # Change to your path
+    runner = ParquetDuckDBRunner("output/test_CreditCardUpdated")  # Change to your path
 
     # Load tables
     runner.load_parquet_files()
@@ -158,7 +158,21 @@ if __name__ == "__main__":
          #HAVING COUNT(*) > 1
           #"""
         """
-        select distinct edl_act_dts from cdf_ggm_org_hist
+        select count(*) from (
+    select * from
+    dc_trx_clrg_issng_dl a
+    inner join ebx_isocurrencies b on a.CARD_TXN_ORIG_N3_CCY_CODE = b.NUMERICCODE
+    inner join ebx_clearing_card_trns_type c on a.CARD_TXN_TP_CODE = c.CODE
+    inner join ebx_cards_merchant_category d on a.CARD_TXN_MRCH_CAT_CODE = d.CODE
+    inner join ebx_clearing_card_trns_source e on a.CARD_TXN_SRC_CODE = e.CODE
+    inner join ebx_card_issuer_bank_identif f on a.CARD_ISSUR_BNK_IDENTN_NO = f.BIN
+    inner join ebx_clearing_acct_product g on a.CARD_AC_PD_CODE = g.CODE
+    inner join ebx_clearing_acct_type h on a.CARD_AC_TP_CODE = h.CODE
+    inner join ebx_clearing_card_input_mode i on a.CARD_INPT_MODE_CODE = i.CODE
+    inner join ebx_clearing_terminal_type j on a.CARD_TXN_TRMNL_TP_CODE = j.CODE
+    where a.CARD_TP_CODE = 'CDT'
+      and a.CARD_TXN_SRC_CODE in ('MCRD', 'VISA', 'TXNF', 'EQNS')
+) as joined_tables
         """
     ]
 
