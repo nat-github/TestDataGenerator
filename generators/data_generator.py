@@ -550,6 +550,11 @@ class DataGenerator:
         """Calculate actual records - NO REDUCTION for PK data type capacity"""
         pk_columns = [col for col in table_config.columns if col.is_pk]
 
+        # Business-value cap only makes sense for single-column PKs.
+        # For composite PKs each component column may repeat values across rows.
+        if len(pk_columns) != 1:
+            return requested_records
+
         for pk_col in pk_columns:
             # 1. Business values constraint (still enforced)
             business_values = self.helpers.parse_business_values(pk_col.business_values)
@@ -1523,12 +1528,12 @@ class DataGenerator:
                         iso = self._to_iso_datetime_strings(s)
                         arr_str = pa.array(iso, type=pa.string())
                         arr_ts_naive = pc.strptime(arr_str, format="%Y-%m-%d %H:%M:%S", unit="us", error_is_null=True)
-                        arr_ts = pc.assume_timezone(arr_ts_naive, "UTC")
+                        arr_ts = arr_ts_naive.cast(pa.timestamp('us', tz='UTC'))
                         arrays.append(arr_ts)
                         names.append(col)
 
                     elif base_type == "D":
-                        dt_series = pd.to_datetime(s, errors="coerce").dt.date
+                        dt_series = pd.to_datetime(s, format="mixed", errors="coerce").dt.date
                         arr_date = pa.array(dt_series, type=pa.date32(), from_pandas=True)
                         arrays.append(arr_date)
                         names.append(col)
