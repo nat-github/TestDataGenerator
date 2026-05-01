@@ -877,6 +877,22 @@ class DataGenerator:
 
         return bool(value_rule)
 
+    def _is_semantic_text_column(self, column) -> bool:
+        """True for text columns where semantic name/company/address generation overrides SDV junk."""
+        base_type, _, _, _ = self.config_parser.parse_data_type_details(column.data_type)
+        if base_type not in {"VA", "A", "AN"}:
+            return False
+        col = column.column_name.lower()
+        return (
+            self.helpers._looks_like_name_field(col)
+            or self.helpers._looks_like_company_field(col)
+            or any(k in col for k in [
+                "iban", "bban", "bic", "swift", "phone", "email",
+                "address", "adres", "ctry", "cty_code", "country",
+                "currency", "curr", "ccy",
+            ])
+        )
+
     def _reconcile_sdv_constraints(self, data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
         """Reapply workbook-driven rules after SDV sampling so constrained columns remain valid."""
         reconciled: Dict[str, pd.DataFrame] = {}
@@ -900,9 +916,10 @@ class DataGenerator:
                     continue
 
                 has_value_rule = self._column_has_value_generation_rule(column)
+                is_semantic = not has_value_rule and self._is_semantic_text_column(column)
                 null_probability = 0.0 if column.is_pk else self._get_null_probability(column)
 
-                if not has_value_rule and null_probability <= 0.0:
+                if not has_value_rule and not is_semantic and null_probability <= 0.0:
                     continue
 
                 existing_values = table_df[column_name].tolist()
@@ -916,7 +933,7 @@ class DataGenerator:
                             changed = True
                         continue
 
-                    if has_value_rule:
+                    if has_value_rule or is_semantic:
                         regenerated_value = self._generate_enhanced_value(column, table_name, index, row_count)
                         regenerated_values.append(regenerated_value)
                         if regenerated_value != existing_values[index]:

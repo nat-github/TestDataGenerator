@@ -982,7 +982,13 @@ class DataHelpers:
             return self._truncate_text(self.faker.email(), max_length)
         if rule == 'PHONE':
             return self._truncate_text(self._generate_dutch_phone(), max_length)
-        if rule == 'NAME':
+        if rule in {'COMPANY', 'COMPANY_NM', 'ORGANISATION', 'ORG_NM', 'COUNTERPARTY'}:
+            return self._truncate_text(self.faker.company(), max_length)
+        if rule in {'FIRST_NAME', 'GIVEN_NAME', 'VOORNAAM'}:
+            return self._truncate_text(self.faker.first_name(), max_length)
+        if rule in {'LAST_NAME', 'SURNAME', 'FAMILY_NAME', 'ACHTERNAAM'}:
+            return self._truncate_text(self.faker.last_name(), max_length)
+        if rule in {'NAME', 'PERSON_NAME', 'FULL_NAME'}:
             if self._looks_like_company_field(col):
                 return self._truncate_text(self.faker.company(), max_length)
             return self._truncate_text(self.faker.name(), max_length)

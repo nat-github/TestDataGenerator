@@ -262,24 +262,32 @@ class ConfigParser:
 
             primary_key_columns = self._split_multi_value(raw_table.get('primary_key_columns'))
             business_key_columns = self._split_multi_value(raw_table.get('business_key_columns'))
-            scd2_tracked_columns = self._split_multi_value(raw_table.get('scd2_tracked_columns'))
+            # Support shorthand alias: track_changes → scd2_tracked_columns
+            scd2_tracked_columns = self._split_multi_value(
+                raw_table.get('scd2_tracked_columns') or raw_table.get('track_changes')
+            )
             partition_columns = self._split_multi_value(raw_table.get('partition_columns'))
             event_time_column = self._optional_string(raw_table.get('event_time_column'))
+
+            # Support shorthand aliases: rows → row_count, delta → delta_eligible, scd2 → scd2_enabled
+            row_count = raw_table.get('row_count') or raw_table.get('num_rows') or raw_table.get('rows')
+            delta_eligible = raw_table.get('delta_eligible', raw_table.get('delta'))
+            scd2_enabled = raw_table.get('scd2_enabled', raw_table.get('scd2'))
 
             tables_rows.append({
                 'table_name': table_name,
                 'table_kind': raw_table.get('table_kind'),
                 'description': raw_table.get('description'),
-                'row_count': raw_table.get('row_count', raw_table.get('num_rows')),
+                'row_count': row_count,
                 'generation_mode': raw_table.get('generation_mode'),
                 'business_key_columns': business_key_columns,
                 'primary_key_columns': primary_key_columns,
                 'partition_enabled': raw_table.get('partition_enabled'),
                 'partition_columns': partition_columns,
                 'event_time_column': event_time_column,
-                'scd2_enabled': raw_table.get('scd2_enabled'),
+                'scd2_enabled': scd2_enabled,
                 'scd2_tracked_columns': scd2_tracked_columns,
-                'delta_eligible': raw_table.get('delta_eligible'),
+                'delta_eligible': delta_eligible,
                 'active': raw_table.get('active', True),
                 'notes': raw_table.get('notes'),
             })
@@ -303,18 +311,26 @@ class ConfigParser:
                 if partition_role is None and event_time_column and column_name == event_time_column:
                     partition_role = 'event_time'
 
+                # Support shorthand aliases: type/pk/fk/values/min/max
+                data_type = raw_column.get('data_type') or raw_column.get('type')
+                is_pk = raw_column.get('is_pk', raw_column.get('pk', column_name in pk_set))
+                is_fk = raw_column.get('is_fk', raw_column.get('fk', False))
+                business_values = raw_column.get('business_values') or raw_column.get('values')
+                min_value = raw_column.get('min_value', raw_column.get('min'))
+                max_value = raw_column.get('max_value', raw_column.get('max'))
+
                 columns_rows.append({
                     'table_name': table_name,
                     'column_name': column_name,
-                    'data_type': raw_column.get('data_type'),
-                    'is_pk': raw_column.get('is_pk', column_name in pk_set),
-                    'is_fk': raw_column.get('is_fk', False),
+                    'data_type': data_type,
+                    'is_pk': is_pk,
+                    'is_fk': is_fk,
                     'ref_table': raw_column.get('ref_table'),
                     'ref_column': raw_column.get('ref_column'),
-                    'business_values': raw_column.get('business_values'),
+                    'business_values': business_values,
                     'special_rules': raw_column.get('special_rules'),
-                    'min_value': raw_column.get('min_value'),
-                    'max_value': raw_column.get('max_value'),
+                    'min_value': min_value,
+                    'max_value': max_value,
                     'nullable': raw_column.get('nullable'),
                     'is_business_key_component': raw_column.get('is_business_key_component', column_name in business_key_set),
                     'event_time': raw_column.get('event_time', bool(event_time_column and column_name == event_time_column)),

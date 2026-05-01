@@ -1,0 +1,580 @@
+# ==============================================================================
+# FDL Synthetic Data Platform — Canonical YAML Template v1.0
+# Based on: Acct_bkng.xlsx (account booking domain)
+# ==============================================================================
+#
+# TIERED STRUCTURE — only specify what your scenario needs:
+#
+#   TIER 1  Minimal snapshot    name + data_type  (everything else defaults)
+#   TIER 2  Realistic data      + rows, values, special_rules, nullable, pk/fk
+#   TIER 3  Delta / SCD2        + delta, scd2, partition, track_changes, relationships
+#
+# SHORTHAND ALIASES  (use either form — both are accepted)
+#   type          = data_type          pk            = is_pk
+#   fk            = is_fk             values        = business_values
+#   rows          = row_count          min / max     = min_value / max_value
+#   delta         = delta_eligible     scd2          = scd2_enabled
+#   track_changes = scd2_tracked_columns
+#
+# SPECIAL RULES (special_rules field)
+#   NL_IBAN       Dutch IBAN (18 chars)       EU_IBAN     European IBAN
+#   BBAN          Domestic bank account        BIC         SWIFT/BIC code
+#   NAME          Person full name             COMPANY     Organisation name
+#   FIRST_NAME    Given name                  LAST_NAME   Family name
+#   EMAIL         Email address               PHONE       Dutch phone number
+#   ADDRESS       NL street address           COUNTRY_CODE ISO 3166-1 alpha-2
+#   CURRENCY_CODE ISO 4217 currency code      ISO4217     same as CURRENCY_CODE
+#   CTY_CODE      Country code (NL bias)      CITY_NM     Dutch city name
+#   PST_CODE      Dutch postcode              REGEX:...   Custom pattern
+#   NULL_PCT=20   20 % null rate (combine with ;; separator)
+# ==============================================================================
+
+config_format: fdl-yaml-v1
+config_version: "1.0"
+
+# ------------------------------------------------------------------------------
+# RUN SETTINGS  — all optional
+# ------------------------------------------------------------------------------
+run_settings:
+  seed: 42                            # remove for non-deterministic runs
+  default_records_per_table: 1000
+  output_format: parquet
+  compression: snappy
+  operation_column: operation_type    # delta CDC label column
+  save_model_artifact: false
+
+# ------------------------------------------------------------------------------
+# TABLES
+# ------------------------------------------------------------------------------
+tables:
+
+  # ============================================================================
+  # TABLE 1 · df_cac_acg_entr   PRIMARY ACCOUNT BOOKING TABLE
+  # TIER 3 — composite PK, partition, delta-eligible
+  # ============================================================================
+  - name: df_cac_acg_entr
+    description: Primary account booking / transaction ledger
+    table_kind: transactional
+    rows: 100000
+
+    # -- Scenario flags (TIER 3) --
+    delta: true
+    scd2: false
+
+    # -- Keys --
+    primary_key_columns: [ACCT_ID, NTRY_SEQ_NB]
+    business_key_columns: [ACCT_ID, NTRY_SEQ_NB]
+
+    # -- Partitioning --
+    partition_enabled: true
+    partition_columns: [YEAR_MONTH]
+    event_time_column: BOOKG_DT_TM_CET
+
+    columns:
+
+      # ── Identity & keys ─────────────────────────────────────────────────────
+      - name: ACCT_ID
+        type: A18
+        pk: true
+        special_rules: NL_IBAN        # always valid Dutch IBAN
+        nullable: false
+
+      - name: NTRY_SEQ_NB
+        type: N19
+        pk: true
+        nullable: false
+
+      - name: ACCT_CCY
+        type: A3
+        values: [EUR, USD, INR]
+        nullable: true
+
+      # ── Amounts ─────────────────────────────────────────────────────────────
+      - name: BOOKG_AMT
+        type: DC(18,3)
+        min: 0.001
+        max: 999999.999
+        nullable: true
+
+      - name: BOOKG_CDT_DBT_IND
+        type: A4
+        values: [CRDT, DBIT]
+        nullable: true
+
+      - name: BOOKG_AMT_NMRC
+        type: N18
+        nullable: true
+
+      - name: INSTD_AMT
+        type: DC(18,3)
+        nullable: true
+
+      - name: INSTD_AMT_CCY
+        type: A3
+        special_rules: ISO4217
+        nullable: true
+
+      - name: BAL_AFTR_BOOKG
+        type: DC(18,3)
+        nullable: true
+
+      - name: BAL_AFTR_BOOKG_CDT_DBT_IND
+        type: A4
+        nullable: true
+
+      # ── Dates & timestamps ───────────────────────────────────────────────────
+      - name: BOOKG_DT_TM_CET
+        type: DT
+        event_time: true
+        nullable: true
+
+      - name: BOOKG_DT_TM_UTC
+        type: DT
+        nullable: true
+
+      - name: BOOKG_DT
+        type: D
+        nullable: true
+
+      - name: VAL_DT
+        type: D
+        nullable: true
+
+      # ── Counterparty — names now generate realistic Faker values ─────────────
+      - name: CTPTY_NM
+        type: A140
+        special_rules: COMPANY        # organisation name instead of random junk
+        nullable: true
+
+      - name: CTPTY_NM_ACCRD_TO_ORGTR
+        type: A140
+        special_rules: COMPANY
+        nullable: true
+
+      - name: CTPTY_ACCT_ID
+        type: A34
+        nullable: true
+
+      - name: CTPTY_ACCT_ID_IBAN
+        type: A34
+        special_rules: EU_IBAN
+        nullable: true
+
+      - name: CTPTY_ACCT_ID_BBAN
+        type: A34
+        special_rules: BBAN
+        nullable: true
+
+      - name: CTPTY_AGT_BIC
+        type: A11
+        special_rules: BIC
+        nullable: true
+
+      - name: CTPTY_CTRY
+        type: A2
+        special_rules: COUNTRY_CODE
+        nullable: true
+
+      - name: CTPTY_ACCT_CCY
+        type: A3
+        special_rules: CURRENCY_CODE
+        nullable: true
+
+      - name: CTPTY_ADR_LINE1
+        type: A70
+        special_rules: ADDRESS
+        nullable: true
+
+      - name: CTPTY_ADR_LINE2
+        type: A70
+        special_rules: ADDRESS
+        nullable: true
+
+      # ── Initiating party ─────────────────────────────────────────────────────
+      - name: INPTY_NM
+        type: A140
+        special_rules: NAME           # person full name (company if col name matches)
+        nullable: true
+
+      - name: INPTY_CTRY
+        type: A2
+        special_rules: CTY_CODE
+        nullable: true
+
+      - name: INPTY_ADR_LINE1
+        type: A70
+        special_rules: ADDRESS
+        nullable: true
+
+      - name: INPTY_ADR_LINE2
+        type: A70
+        special_rules: ADDRESS
+        nullable: true
+
+      # ── Ultimate parties ─────────────────────────────────────────────────────
+      - name: ULCDT_NM
+        type: A140
+        special_rules: COMPANY        # ultimate creditor — organisation
+        nullable: true
+
+      - name: ULDBT_NM
+        type: A140
+        special_rules: NAME           # ultimate debtor — person
+        nullable: true
+
+      # ── References ───────────────────────────────────────────────────────────
+      - name: TX_ACCT_SVCR_REF
+        type: A35
+        nullable: true
+
+      - name: NTRY_ACCT_SVCR_REF
+        type: N38
+        nullable: true
+
+      - name: END_TO_END_ID
+        type: A35
+        nullable: true
+
+      - name: TX_ID
+        type: A35
+        nullable: true
+
+      - name: MSG_ID
+        type: A35
+        nullable: true
+
+      - name: PMT_INF_ID
+        type: A35
+        nullable: true
+
+      - name: MNDT_ID
+        type: A35
+        nullable: true
+
+      - name: RMT_INF_STRD_REF
+        type: A35
+        nullable: true
+
+      - name: CDTR_SCHME_ID
+        type: A35
+        nullable: true
+
+      - name: CARD_TX_ID_REF
+        type: A35
+        nullable: true
+
+      - name: CARD_POI_ID
+        type: A35
+        nullable: true
+
+      # ── Transaction classification ───────────────────────────────────────────
+      - name: TX_TP
+        type: A3
+        nullable: true
+
+      - name: DTLD_TX_TP
+        type: N4
+        nullable: true
+
+      - name: CTGY_PURP_CD
+        type: A4
+        values: [SALA, DCRD]
+        nullable: true
+
+      - name: RSN_CD
+        type: A4
+        values: [AC01, FR01, MS02]
+        special_rules: "NULL_PCT=20"
+        nullable: true
+
+      - name: RSN_TP
+        type: A6
+        nullable: true
+
+      - name: LCL_INSTRM_CD
+        type: A35
+        nullable: true
+
+      # ── FX / exchange ────────────────────────────────────────────────────────
+      - name: BOOKG_AMT_XCHG_SRC_CCY
+        type: A3
+        values: [EUR, USD, INR]
+        special_rules: "NULL_PCT=20"
+        nullable: true
+
+      - name: BOOKG_AMT_XCHG_TRGT_CCY
+        type: A3
+        values: [EUR, USD, INR]
+        special_rules: "NULL_PCT=20"
+        nullable: true
+
+      - name: BOOKG_AMT_XCHG_UNIT_CCY
+        type: A3
+        values: [EUR, USD, INR]
+        special_rules: "NULL_PCT=20"
+        nullable: true
+
+      - name: BOOKG_AMT_XCHG_RATE
+        type: A12
+        nullable: true
+
+      # ── Batch / settlement ───────────────────────────────────────────────────
+      - name: BTCH_BOOKG
+        type: A5
+        values: ["True", "False"]
+        nullable: true
+
+      - name: BTCH_NB_OF_TXS
+        type: N15
+        nullable: true
+
+      # ── Delivery ─────────────────────────────────────────────────────────────
+      - name: DLVRY_CHANL
+        type: A3
+        nullable: true
+
+      - name: DLVRY_SYS
+        type: A3
+        nullable: true
+
+      - name: CARD_SEQ_NR
+        type: N3
+        nullable: true
+
+      - name: RMT_INF_USTRD1
+        type: A300
+        nullable: true
+
+      - name: RMT_INF_USTRD2
+        type: A300
+        nullable: true
+
+      # ── Partition & EDL audit ────────────────────────────────────────────────
+      - name: YEAR_MONTH
+        type: N6
+        partition_role: partition_key
+        nullable: true
+
+      - name: EDL_CHANGE_TYPE
+        type: A6
+        nullable: true
+
+      - name: EDL_ACT_DTS
+        type: DT
+        nullable: true
+
+      - name: EDL_ACT_DTS_UTC
+        type: DT
+        nullable: true
+
+  # ============================================================================
+  # TABLE 2 · df_cac_acg_entr_adl   ADDITIONAL BOOKING DETAIL
+  # TIER 3 — composite FK, delta-eligible
+  # ============================================================================
+  - name: df_cac_acg_entr_adl
+    description: Additional booking detail attributes (child of df_cac_acg_entr)
+    table_kind: transactional
+    rows: 100000
+    delta: true
+    scd2: false
+    primary_key_columns: [ACCT_ID, ACCT_CCY, NTRY_SEQ_NB]
+    business_key_columns: [ACCT_ID, ACCT_CCY, NTRY_SEQ_NB]
+
+    columns:
+      - name: ACCT_ID
+        type: A18
+        pk: true
+        fk: true
+        ref_table: df_cac_acg_entr
+        ref_column: ACCT_ID
+        special_rules: NL_IBAN
+        nullable: false
+
+      - name: ACCT_CCY
+        type: A3
+        pk: true
+        fk: true
+        ref_table: df_cac_acg_entr
+        ref_column: ACCT_CCY
+        values: [EUR, USD, INR]
+        nullable: false
+
+      - name: NTRY_SEQ_NB
+        type: N19
+        pk: true
+        fk: true
+        ref_table: df_cac_acg_entr
+        ref_column: NTRY_SEQ_NB
+        nullable: false
+
+      - name: INTRMY_AGT1_CTRY
+        type: A2
+        special_rules: COUNTRY_CODE
+        nullable: true
+
+      - name: INTRMY_AGT2_CTRY
+        type: A2
+        special_rules: COUNTRY_CODE
+        nullable: true
+
+      - name: INTRMY_AGT3_CTRY
+        type: A2
+        special_rules: COUNTRY_CODE
+        nullable: true
+
+      - name: CTPTY_AGT_CTRY
+        type: A2
+        special_rules: COUNTRY_CODE
+        nullable: true
+
+  # ============================================================================
+  # TABLE 3 · df_cash_bookg   CASH BOOKING CHILD TABLE
+  # TIER 3 — FK to parent, delta-eligible
+  # ============================================================================
+  - name: df_cash_bookg
+    description: Cash booking child transactions
+    table_kind: transactional
+    rows: 25000
+    delta: true
+    scd2: false
+    primary_key_columns: [DF_CASH_TXN_ID]
+    business_key_columns: [DF_CASH_TXN_ID]
+
+    columns:
+      - name: DF_CASH_TXN_ID
+        type: N19
+        pk: true
+        nullable: false
+
+      - name: ACCT_ID
+        type: A18
+        fk: true
+        ref_table: df_cac_acg_entr
+        ref_column: ACCT_ID
+        special_rules: NL_IBAN
+        nullable: false
+
+      - name: ACCT_CCY
+        type: A3
+        fk: true
+        ref_table: df_cac_acg_entr
+        ref_column: ACCT_CCY
+        values: [EUR, USD, INR]
+        nullable: false
+
+      - name: NTRY_SEQ_NB
+        type: N19
+        fk: true
+        ref_table: df_cac_acg_entr
+        ref_column: NTRY_SEQ_NB
+        nullable: false
+
+      - name: DF_CASH_TXN_DTL_SRC_CODE
+        type: A35
+        nullable: true
+
+      - name: DF_CASH_TXN_DTL_AVL_F
+        type: A5
+        values: ["True", "False"]
+        nullable: true
+
+      - name: DF_CASH_BOOKG_AMT
+        type: DC(18,3)
+        min: 0.001
+        max: 50000.000
+        nullable: true
+
+  # ============================================================================
+  # TABLE 4 · fx_rates_2100cet   FX REFERENCE — SNAPSHOT ONLY
+  # TIER 2 — composite PK, partition on date, no delta/scd2
+  # ============================================================================
+  - name: fx_rates_2100cet
+    description: Daily FX close rates at 21:00 CET
+    table_kind: reference
+    rows: 365
+    delta: false
+    scd2: false
+    primary_key_columns: [BASECURRENCY, PRICECURRENCY, RATEDATE]
+    business_key_columns: [BASECURRENCY, PRICECURRENCY, RATEDATE]
+    partition_enabled: true
+    partition_columns: [RATEDATE]
+    event_time_column: RATEDATE
+
+    columns:
+      - name: BASECURRENCY
+        type: A3
+        pk: true
+        special_rules: ISO4217
+        nullable: false
+
+      - name: PRICECURRENCY
+        type: A3
+        pk: true
+        special_rules: ISO4217
+        nullable: false
+
+      - name: RATEDATE
+        type: D
+        pk: true
+        partition_role: partition_key
+        event_time: true
+        nullable: false
+
+      - name: CLOSE_2100CET
+        type: DC(18,8)
+        min: 0.00000001
+        max: 999.99999999
+        nullable: true
+
+  # ============================================================================
+  # TABLE 5 · oktb_250   LOOKUP / MAPPING TABLE — SCD2
+  # TIER 3 — SCD2 history; version bumps when ENGLS_OMS changes
+  # ============================================================================
+  - name: oktb_250
+    description: OKTB target-group lookup (SCD2 versioned history)
+    table_kind: reference
+    rows: 250
+    delta: false
+    scd2: true
+    primary_key_columns: [TAR_GRP]
+    business_key_columns: [TAR_GRP]
+    track_changes: [ENGLS_OMS]        # SCD2: new version row when this column changes
+
+    columns:
+      - name: TAR_GRP
+        type: DC(18,3)
+        pk: true
+        nullable: false
+
+      - name: ENGLS_OMS
+        type: A140
+        scd2_tracked: true
+        nullable: true
+
+# ------------------------------------------------------------------------------
+# RELATIONSHIPS
+# ------------------------------------------------------------------------------
+relationships:
+  - name: fk_entr_adl_to_entr
+    source_table: df_cac_acg_entr_adl
+    source_columns: [ACCT_ID, ACCT_CCY, NTRY_SEQ_NB]
+    target_table: df_cac_acg_entr
+    target_columns: [ACCT_ID, ACCT_CCY, NTRY_SEQ_NB]
+    cardinality: many_to_one
+    preserve_on_delta: true
+
+  - name: fk_cash_bookg_to_entr
+    source_table: df_cash_bookg
+    source_columns: [ACCT_ID, ACCT_CCY, NTRY_SEQ_NB]
+    target_table: df_cac_acg_entr
+    target_columns: [ACCT_ID, ACCT_CCY, NTRY_SEQ_NB]
+    cardinality: many_to_one
+    preserve_on_delta: true
+
+  - name: fk_oktb_to_entr_dtld_tx_tp
+    source_table: oktb_250
+    source_columns: [TAR_GRP]
+    target_table: df_cac_acg_entr
+    target_columns: [DTLD_TX_TP]
+    cardinality: many_to_one
+    preserve_on_delta: false
