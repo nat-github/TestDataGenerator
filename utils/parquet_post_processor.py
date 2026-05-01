@@ -4,6 +4,7 @@ import json
 import importlib
 import logging
 import shutil
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -282,14 +283,33 @@ class ParquetPostProcessor:
 
         export_df, partition_columns = self._prepare_delta_export_frame(table_name, delta_df, table_dir)
         table_dir.mkdir(parents=True, exist_ok=True)
+
+        log_dir = table_dir / "_delta_log"
+        backup_dir: Optional[Path] = None
+        if log_dir.exists():
+            backup_dir = table_dir / f"_delta_log_bak_{uuid.uuid4().hex[:8]}"
+            shutil.copytree(str(log_dir), str(backup_dir))
+
         write_deltalake = _require_deltalake_writer()
-        write_deltalake(
-            str(table_dir),
-            pa.Table.from_pandas(export_df, preserve_index=False),
-            mode="overwrite",
-            partition_by=partition_columns or None,
-            schema_mode="overwrite",
-        )
+        try:
+            write_deltalake(
+                str(table_dir),
+                pa.Table.from_pandas(export_df, preserve_index=False),
+                mode="overwrite",
+                partition_by=partition_columns or None,
+                schema_mode="overwrite",
+            )
+        except Exception:
+            if backup_dir and backup_dir.exists():
+                if log_dir.exists():
+                    shutil.rmtree(str(log_dir))
+                shutil.copytree(str(backup_dir), str(log_dir))
+                self.logger.warning(f"Delta write failed for {table_name}; restored previous _delta_log from backup")
+            raise
+        finally:
+            if backup_dir and backup_dir.exists():
+                shutil.rmtree(str(backup_dir))
+
         return table_dir
 
     def _prepare_delta_export_frame(

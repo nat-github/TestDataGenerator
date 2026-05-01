@@ -33,7 +33,7 @@ class DataGenerator:
     SAFE_DATETIME_MIN = pd.Timestamp("1900-01-01 00:00:00")
     SAFE_DATETIME_MAX = pd.Timestamp("2262-04-11 23:47:16")
 
-    def __init__(self, config_file: str):
+    def __init__(self, config_file: str, seed: Optional[int] = None):
         self.config_file = config_file
         self.config_parser = ConfigParser(config_file)
         self.helpers = DataHelpers()
@@ -46,15 +46,45 @@ class DataGenerator:
         self.sdv_relationship_groups: List[List[RelationshipConfig]] = []
         self._fitted_sample_sizes: Dict[str, int] = {}
         self.is_fitted = False
+        self.seed = seed
+        self._column_audit: Dict[str, Dict[str, Any]] = {}
         self.logger = self._setup_logging()
 
         # Enhanced PK tracking - track used values to prevent duplicates
         self.used_pk_values: Dict[Tuple[str, str], Set[Any]] = defaultdict(set)
         self.pk_sequences: Dict[Tuple[str, str], int] = defaultdict(int)
 
+        self._apply_seed(seed)
+
+    _SEMANTIC_KEYWORDS: frozenset = frozenset({
+        "name", "email", "phone", "address", "city", "country", "zip", "postal",
+        "iban", "bban", "bsn", "kvk", "postcode", "street", "gender", "dob",
+        "birth", "company", "description", "remark", "note",
+    })
+
     def _setup_logging(self):
         logging.basicConfig(level=logging.INFO, format="%(message)s")
         return logging.getLogger(__name__)
+
+    def _apply_seed(self, seed: Optional[int]) -> None:
+        if seed is None:
+            return
+        import random as _random
+        _random.seed(seed)
+        np.random.seed(seed)
+        try:
+            from faker import Faker as _Faker
+            _Faker.seed(seed)
+        except Exception:
+            pass
+
+    def _apply_table_seed(self, table_name: str) -> None:
+        if self.seed is None:
+            return
+        derived = (self.seed + hash(table_name)) & 0xFFFFFFFF
+        import random as _random
+        _random.seed(derived)
+        np.random.seed(derived)
 
     # ---------------------------------------------------------------------
     # Configuration & Metadata
@@ -1111,6 +1141,7 @@ class DataGenerator:
                 sample_size = sample_size
 
             self.logger.info("🧑‍🤖 Initializing HMA Synthesizer...")
+            self._apply_seed(self.seed)
 
             self.synthesizer = HMASynthesizer(
                 metadata=self.metadata,
@@ -1304,6 +1335,7 @@ class DataGenerator:
                         synthetic_data = self._enforce_all_relationships(synthetic_data)
                         self.generated_data = synthetic_data
                         self._resolve_foreign_keys()  # Final FK resolution
+                        self._build_column_audit(sdv_used=True)
                         total_records = sum(len(df) for df in self.generated_data.values())
                         self.logger.info(f"✅ SDV data generation completed: {total_records} total records")
                         return self.generated_data
@@ -1323,6 +1355,7 @@ class DataGenerator:
                 self.logger.error("❌ Generated data is empty!")
                 raise ValueError("No data was generated")
 
+            self._build_column_audit(sdv_used=False)
             self.logger.info(f"✅ Fallback data generation completed: {total_records} total records")
             return self.generated_data
 
@@ -1636,6 +1669,39 @@ class DataGenerator:
         return out
 
     # ---------------------------------------------------------------------
+    # Column Audit
+    # ---------------------------------------------------------------------
+    def _build_column_audit(self, sdv_used: bool) -> None:
+        self._column_audit = {}
+        for table_name, table_config in self.tables_config.items():
+            table_audit: Dict[str, Any] = {}
+            for column in table_config.columns:
+                if sdv_used and not column.is_pk and not column.is_fk:
+                    path = "sdv"
+                elif column.is_pk:
+                    path = "pk-sequence"
+                elif column.is_fk:
+                    path = "fk-resolved"
+                elif self.helpers.parse_business_values(column.business_values):
+                    path = "enum"
+                elif column.special_rules and not pd.isna(column.special_rules):
+                    col_lower = column.column_name.lower()
+                    if any(kw in col_lower for kw in self._SEMANTIC_KEYWORDS):
+                        path = "semantic"
+                    else:
+                        path = "regex"
+                elif column.special_rules and not pd.isna(column.special_rules):
+                    path = "faker"
+                else:
+                    col_lower = column.column_name.lower()
+                    if any(kw in col_lower for kw in self._SEMANTIC_KEYWORDS):
+                        path = "semantic"
+                    else:
+                        path = "range"
+                table_audit[column.column_name] = path
+            self._column_audit[table_name] = table_audit
+
+    # ---------------------------------------------------------------------
     # Report & Debug
     # ---------------------------------------------------------------------
     def get_generation_report(self) -> Dict[str, Any]:
@@ -1646,11 +1712,19 @@ class DataGenerator:
                 "relationships_configured": len(self.relationships),
                 "table_record_counts": {},
                 "synthesizer_fitted": self.is_fitted,
+                "seed": self.seed,
+                "column_audit": self._column_audit,
+                "generation_path_summary": {},
                 "status": "NO_DATA_GENERATED",
             }
 
         counts: Dict[str, int] = {t: (0 if df.empty else len(df)) for t, df in self.generated_data.items()}
         total = sum(counts.values())
+
+        path_summary: Dict[str, int] = {}
+        for table_audit in self._column_audit.values():
+            for path in table_audit.values():
+                path_summary[path] = path_summary.get(path, 0) + 1
 
         return {
             "tables_generated": list(self.generated_data.keys()),
@@ -1658,5 +1732,8 @@ class DataGenerator:
             "relationships_configured": len(self.relationships),
             "table_record_counts": counts,
             "synthesizer_fitted": self.is_fitted,
+            "seed": self.seed,
+            "column_audit": self._column_audit,
+            "generation_path_summary": path_summary,
             "status": "SUCCESS" if total > 0 else "FAILED",
         }

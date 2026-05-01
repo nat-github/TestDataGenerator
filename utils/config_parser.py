@@ -1,5 +1,6 @@
 import logging
 import re
+from dataclasses import dataclass, field as dc_field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -8,6 +9,33 @@ import pandas as pd
 import yaml
 from models.config_models import ColumnConfig, TableConfig, RelationshipConfig
 from utils.helpers import DataHelpers
+
+
+@dataclass
+class ConfigIssue:
+    level: str  # "error" or "warning"
+    message: str
+    sheet: Optional[str] = None
+    row: Optional[int] = None
+    column: Optional[str] = None
+    table: Optional[str] = None
+    field_name: Optional[str] = None
+
+    def __str__(self) -> str:
+        parts = []
+        if self.sheet:
+            parts.append(f"sheet={self.sheet}")
+        if self.row is not None:
+            parts.append(f"row={self.row}")
+        if self.column:
+            parts.append(f"col={self.column}")
+        if self.table:
+            parts.append(f"table={self.table}")
+        if self.field_name:
+            parts.append(f"field={self.field_name}")
+        location = ", ".join(parts)
+        prefix = "[ERROR]" if self.level == "error" else "[WARN] "
+        return f"{prefix} {('(' + location + ') ') if location else ''}{self.message}"
 
 
 class ConfigParser:
@@ -23,6 +51,18 @@ class ConfigParser:
         self.run_settings: Dict[str, Any] = {}
         self.available_sheets: List[str] = []
         self.logger = logging.getLogger(__name__)
+        self._errors: List[ConfigIssue] = []
+        self._warnings: List[ConfigIssue] = []
+
+    def _add_error(self, message: str, **kwargs) -> None:
+        self._errors.append(ConfigIssue(level="error", message=message, **kwargs))
+
+    def _add_warning(self, message: str, **kwargs) -> None:
+        self._warnings.append(ConfigIssue(level="warning", message=message, **kwargs))
+
+    @staticmethod
+    def _excel_row(pandas_iloc: int) -> int:
+        return pandas_iloc + 2
 
     @staticmethod
     def _split_multi_value(value: Any) -> List[str]:
@@ -560,53 +600,89 @@ class ConfigParser:
     # Validation
     # ---------------------------------------------------------------------
     def validate_config(self) -> bool:
-        """
-        Validate configuration integrity with enhanced checks.
-        """
-        if self.config_df is None:
-            self.logger.error("❌ Config not loaded; call load_config() first.")
+        issues = self.lint_config()
+        errors = [i for i in issues if i.level == "error"]
+        for issue in issues:
+            if issue.level == "error":
+                self.logger.error(str(issue))
+            else:
+                self.logger.warning(str(issue))
+        if errors:
             return False
+        self.logger.info("✅ Configuration validated successfully")
+        return True
 
-        # Required columns exist?
-        required_columns = ['table_name', 'column_name', 'data_type']
+    def lint_config(self) -> List[ConfigIssue]:
+        self._errors = []
+        self._warnings = []
+
+        if self.config_df is None:
+            self._add_error("Config not loaded; call load_config() first.")
+            return self._errors + self._warnings
+
+        required_columns = ["table_name", "column_name", "data_type"]
         missing = [c for c in required_columns if c not in self.config_df.columns]
         if missing:
-            self.logger.error(f"❌ Missing required columns: {missing}")
-            return False
+            self._add_error(f"Missing required columns in Columns sheet: {missing}", sheet="Columns")
+            return self._errors + self._warnings
 
-        # Validate base_data_type values
-        valid_types_prefixes = ['N', 'DC', 'A', 'VA', 'D', 'DT', 'TS', 'NS', 'AN']
-        for _, row in self.config_df.iterrows():
-            base_type = row.get('base_data_type', '')
+        valid_types_prefixes = ["N", "DC", "A", "VA", "D", "DT", "TS", "NS", "AN"]
+        for iloc, row in enumerate(self.config_df.itertuples(index=False), start=0):
+            excel_row = self._excel_row(iloc)
+            table = getattr(row, "table_name", None)
+            col = getattr(row, "column_name", None)
+            base_type = getattr(row, "base_data_type", "")
+            data_type = getattr(row, "data_type", "")
+
             if base_type and not any(base_type.startswith(v) for v in valid_types_prefixes):
-                self.logger.warning(f"⚠️  Warning: Unknown data type format: {row['data_type']}")
+                self._add_warning(
+                    f"Unknown data type '{data_type}'",
+                    sheet="Columns", row=excel_row, table=table, field_name=col,
+                )
 
-            special_rules = row.get('special_rules')
-            if special_rules:
+            special_rules = getattr(row, "special_rules", None)
+            if special_rules and special_rules is not None:
                 try:
-                    raw_length = row.get('length')
+                    raw_length = getattr(row, "length", None)
                     max_length: Optional[int] = None
                     if raw_length is not None and not (isinstance(raw_length, float) and np.isnan(raw_length)):
                         max_length = int(raw_length)
                     self.helpers.validate_special_rule(
                         special_rules,
                         max_length=max_length,
-                        is_pk=bool(row.get('is_pk', False)),
+                        is_pk=bool(getattr(row, "is_pk", False)),
                     )
                 except ValueError as exc:
-                    print(
-                        f"❌ Invalid special rule for {row['table_name']}.{row['column_name']}: {exc}"
+                    self._add_error(
+                        f"Invalid special_rules: {exc}",
+                        sheet="Columns", row=excel_row, table=table, field_name=col,
                     )
-                    return False
 
-        # Validate relationships reference existing tables
         for rel in self.relationships:
             if rel.target_table not in self.tables:
-                self.logger.error(f"❌ Reference table not found: {rel.target_table}")
-                return False
+                self._add_error(
+                    f"Relationship references unknown target table '{rel.target_table}'",
+                    sheet="Relationships", table=rel.source_table,
+                )
             if rel.source_table not in self.tables:
-                self.logger.error(f"❌ Source table not found: {rel.source_table}")
-                return False
+                self._add_error(
+                    f"Relationship references unknown source table '{rel.source_table}'",
+                    sheet="Relationships",
+                )
 
-        self.logger.info("✅ Configuration validated successfully")
-        return True
+        return self._errors + self._warnings
+
+    def format_lint_report(self, issues: List[ConfigIssue]) -> str:
+        if not issues:
+            return "Lint passed: no issues found."
+
+        errors = [i for i in issues if i.level == "error"]
+        warnings = [i for i in issues if i.level == "warning"]
+        lines = [
+            f"Lint report  --  {len(errors)} error(s), {len(warnings)} warning(s)",
+            "-" * 60,
+        ]
+        for issue in errors + warnings:
+            lines.append(str(issue))
+        lines.append("-" * 60)
+        return "\n".join(lines)

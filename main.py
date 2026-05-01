@@ -7,7 +7,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import pandas as pd
 
@@ -18,7 +18,7 @@ from utils.parquet_post_processor import ParquetPostProcessor
 
 
 logger = logging.getLogger(__name__)
-KNOWN_COMMANDS = {"generate", "delta", "scd2"}
+KNOWN_COMMANDS = {"generate", "delta", "scd2", "lint", "enrich"}
 
 
 def _normalize_argv(argv: Sequence[str]) -> List[str]:
@@ -45,6 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
     generate_parser.add_argument("--stream", action="store_true", help="Use streaming/chunked generation and direct export")
     generate_parser.add_argument("--chunk-size", type=int, default=100_000, help="Chunk size for streaming generation")
+    generate_parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible generation")
+    generate_parser.add_argument("--infer-relationships", action="store_true", help="Use LLM to infer missing relationships")
+    generate_parser.add_argument("--llm-confidence", type=float, default=0.7, help="Minimum LLM confidence threshold (0-1)")
 
     delta_parser = subparsers.add_parser("delta", help="Generate parquet deltas from two snapshot folders")
     delta_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
@@ -66,6 +69,16 @@ def build_parser() -> argparse.ArgumentParser:
     scd2_parser.add_argument("--effective-ts", help="Effective timestamp for the current snapshot rows")
     scd2_parser.add_argument("--previous-effective-ts", help="Bootstrap effective timestamp for previous snapshot rows")
     scd2_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    lint_parser = subparsers.add_parser("lint", help="Validate config and report issues with exact sheet/row/column location")
+    lint_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
+    lint_parser.add_argument("--verbose", action="store_true", help="Show all issues including warnings")
+
+    enrich_parser = subparsers.add_parser("enrich", help="Use LLM to enrich schema with semantic suggestions")
+    enrich_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
+    enrich_parser.add_argument("--output", required=True, help="Output path for enriched YAML file")
+    enrich_parser.add_argument("--confidence", type=float, default=0.7, help="Minimum LLM confidence threshold (0-1)")
+    enrich_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
 
     return parser
 
@@ -164,6 +177,20 @@ def load_config_context(config_path: str) -> ConfigParser:
     return parser
 
 
+def _run_relationship_inference(generator: DataGenerator, confidence: float) -> None:
+    try:
+        from llm.relationship_inferrer import RelationshipInferrer
+        inferrer = RelationshipInferrer()
+        new_rels = inferrer.infer(generator.tables_config, generator.relationships, min_confidence=confidence)
+        if new_rels:
+            generator.relationships.extend(new_rels)
+            logger.info(f"LLM inferred {len(new_rels)} additional relationship(s)")
+        else:
+            logger.info("LLM found no additional relationships to add")
+    except Exception as exc:
+        logger.warning(f"LLM relationship inference skipped: {exc}")
+
+
 def run_generate(args) -> int:
     logger.info("SDV Test Data Generator")
     logger.info("=" * 50)
@@ -173,11 +200,17 @@ def run_generate(args) -> int:
     if not create_output_directory(args.output):
         return 1
 
+    seed: Optional[int] = getattr(args, "seed", None)
+
     logger.info("Initializing SDV data generator...")
-    generator = DataGenerator(args.config)
+    generator = DataGenerator(args.config, seed=seed)
     if not generator.load_configuration():
         logger.error("Failed to load configuration")
         return 1
+
+    if getattr(args, "infer_relationships", False):
+        confidence = getattr(args, "llm_confidence", 0.7)
+        _run_relationship_inference(generator, confidence)
 
     logger.info("Creating SDV metadata...")
     generator.create_sdv_metadata()
@@ -196,6 +229,8 @@ def run_generate(args) -> int:
     logger.info(f"  Config file: {args.config}")
     logger.info(f"  Output directory: {args.output}")
     logger.info(f"  Total tables to generate: {len(records_config)}")
+    if seed is not None:
+        logger.info(f"  Seed: {seed}")
 
     logger.info("\nTraining SDV synthesizer...")
     if generator.train_synthesizer():
@@ -239,6 +274,10 @@ def run_generate(args) -> int:
     logger.info(f"  Relationships configured: {report['relationships_configured']}")
     logger.info(f"  Synthesizer fitted: {report['synthesizer_fitted']}")
     logger.info(f"  Empty tables: {empty_tables}")
+    if report.get("seed") is not None:
+        logger.info(f"  Seed: {report['seed']}")
+    if report.get("generation_path_summary"):
+        logger.info(f"  Generation paths: {report['generation_path_summary']}")
 
     if args.validate:
         logger.info("\nRunning relationship validation...")
@@ -307,6 +346,59 @@ def run_scd2(args) -> int:
     return 0
 
 
+def run_lint(args) -> int:
+    if not validate_config_file(args.config):
+        return 1
+
+    parser = ConfigParser(args.config)
+    if not parser.load_config():
+        logger.error("Failed to load configuration")
+        return 1
+    parser.parse_tables()
+    parser.parse_relationships()
+
+    issues = parser.lint_config()
+    errors = [i for i in issues if i.level == "error"]
+    warnings = [i for i in issues if i.level == "warning"]
+
+    print(parser.format_lint_report(issues))
+
+    if errors:
+        logger.error(f"Lint failed: {len(errors)} error(s), {len(warnings)} warning(s)")
+        return 1
+    if warnings:
+        logger.warning(f"Lint passed with {len(warnings)} warning(s)")
+    else:
+        logger.info("Lint passed: no issues found")
+    return 0
+
+
+def run_enrich(args) -> int:
+    if not validate_config_file(args.config):
+        return 1
+
+    parser = ConfigParser(args.config)
+    if not parser.load_config():
+        logger.error("Failed to load configuration")
+        return 1
+    parser.parse_tables()
+    parser.parse_relationships()
+
+    try:
+        from llm.schema_enricher import SchemaEnricher
+        enricher = SchemaEnricher(min_confidence=args.confidence)
+        enricher.enrich(parser.tables, output_yaml_path=args.output)
+        logger.info(f"Enriched schema written to {args.output}")
+        suggestions = enricher.get_suggestions(parser.tables)
+        logger.info(f"Applied {len(suggestions)} LLM suggestion(s)")
+        return 0
+    except Exception as exc:
+        logger.error(f"Schema enrichment failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_arguments(argv)
     configure_logging(getattr(args, "verbose", False))
@@ -318,6 +410,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_delta(args)
         if args.command == "scd2":
             return run_scd2(args)
+        if args.command == "lint":
+            return run_lint(args)
+        if args.command == "enrich":
+            return run_enrich(args)
         logger.error(f"Unknown command: {args.command}")
         return 1
     except FileNotFoundError as exc:
@@ -326,7 +422,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Exception as exc:
         logger.error(f"Unexpected error: {exc}")
         import traceback
-
         traceback.print_exc()
         return 1
 

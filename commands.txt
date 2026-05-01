@@ -1,0 +1,82 @@
+# FDL Synthetic Data Platform — Command Reference
+# ================================================
+
+# SETUP
+poetry install
+
+# ------------------------------------------------------------------
+# 1. SNAPSHOT (plain parquet)
+# ------------------------------------------------------------------
+python main.py generate --config config/Acct_bkng.xlsx --output output/snapshot_v1 --default-records 1000
+
+# 2. SNAPSHOT v2 (simulate next run)
+python main.py generate --config config/Acct_bkng.xlsx --output output/snapshot_v2 --default-records 1000
+
+# ------------------------------------------------------------------
+# 3. DELTA (CDC — inserts / updates / deletes between two snapshots)
+# ------------------------------------------------------------------
+python main.py delta --config config/Acct_bkng.xlsx --previous output/snapshot_v1 --current output/snapshot_v2 --output output/delta_run
+
+# Delta — override partition column
+python main.py delta --config config/Acct_bkng.xlsx --previous output/snapshot_v1 --current output/snapshot_v2 --output output/delta_run --partition-column as_of_date
+
+# ------------------------------------------------------------------
+# 4. SCD2 (versioned history with effective dating)
+# ------------------------------------------------------------------
+python main.py scd2 --config config/Acct_bkng.xlsx --previous output/snapshot_v1 --current output/snapshot_v2 --output output/scd2_run
+
+# SCD2 — with explicit effective timestamps
+python main.py scd2 --config config/Acct_bkng.xlsx --previous output/snapshot_v1 --current output/snapshot_v2 --output output/scd2_run --effective-ts "2025-06-01" --previous-effective-ts "2025-01-01"
+
+# ------------------------------------------------------------------
+# 5. REPRODUCIBLE / SEEDED SNAPSHOT
+# ------------------------------------------------------------------
+python main.py generate --config config/Acct_bkng.xlsx --output output/seeded_run --seed 42
+
+# ------------------------------------------------------------------
+# 6. VALIDATE CONFIG (lint — no data generated)
+#    Shows exact sheet / row / column for every error and warning
+# ------------------------------------------------------------------
+python main.py lint --config config/Acct_bkng.xlsx
+
+# ------------------------------------------------------------------
+# 7. LLM — RELATIONSHIP INFERENCE + GENERATE
+#    Requires: export ANTHROPIC_API_KEY=sk-ant-...
+# ------------------------------------------------------------------
+python main.py generate --config config/Acct_bkng.xlsx --output output/llm_run --infer-relationships --llm-confidence 0.7
+
+# ------------------------------------------------------------------
+# 8. LLM — SCHEMA ENRICHMENT (outputs enriched YAML)
+#    Requires: export ANTHROPIC_API_KEY=sk-ant-...
+# ------------------------------------------------------------------
+python main.py enrich --config config/Acct_bkng.xlsx --output config/enriched.yaml --confidence 0.7
+
+# ------------------------------------------------------------------
+# 9. INSPECT PARQUET OUTPUT
+# ------------------------------------------------------------------
+poetry run python readParquet.py output/snapshot_v1
+poetry run python readParquet.py output/delta_run
+poetry run python readParquet.py output/scd2_run
+
+# ------------------------------------------------------------------
+# 10. GENERATE — TABLE-SPECIFIC RECORD COUNTS
+# ------------------------------------------------------------------
+python main.py generate --config config/Acct_bkng.xlsx --output output/run_01 --records accounts:500 transactions:5000
+
+# ------------------------------------------------------------------
+# 11. GENERATE — WITH RELATIONSHIP VALIDATION + VERBOSE LOGGING
+# ------------------------------------------------------------------
+python main.py generate --config config/Acct_bkng.xlsx --output output/run_01 --validate --verbose
+
+# ------------------------------------------------------------------
+# 12. LEGACY MODE (no subcommand — treated as generate)
+# ------------------------------------------------------------------
+python main.py --config config/Acct_bkng.xlsx --output output/run_01
+
+# ------------------------------------------------------------------
+# TESTS
+# ------------------------------------------------------------------
+poetry run pytest tests/ -v
+poetry run pytest tests/test_config_and_parquet_flows.py -v
+poetry run pytest tests/test_regex_rules.py -v
+poetry run pytest tests/test_config_and_parquet_flows.py::test_name -v
