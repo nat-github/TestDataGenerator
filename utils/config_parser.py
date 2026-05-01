@@ -315,7 +315,8 @@ class ConfigParser:
                 data_type = raw_column.get('data_type') or raw_column.get('type')
                 is_pk = raw_column.get('is_pk', raw_column.get('pk', column_name in pk_set))
                 is_fk = raw_column.get('is_fk', raw_column.get('fk', False))
-                business_values = raw_column.get('business_values') or raw_column.get('values')
+                raw_bv = raw_column.get('business_values') or raw_column.get('values')
+                business_values = ';'.join(str(v) for v in raw_bv) if isinstance(raw_bv, list) else raw_bv
                 min_value = raw_column.get('min_value', raw_column.get('min'))
                 max_value = raw_column.get('max_value', raw_column.get('max'))
 
