@@ -6,11 +6,6 @@ authors = ["Your Name <you@example.com>"]
 readme = "README.md"
 package-mode = false
 
-[[tool.poetry.source]]
-name = "nexus-cloud"
-url = "https://repo.nexuscloud.aws.rabo.cloud/repository/pypi-org/simple"
-priority = "primary"
-
 [tool.poetry.dependencies]
 python = ">=3.11,<3.14"
 
