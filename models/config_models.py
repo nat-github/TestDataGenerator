@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import math
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -39,8 +39,8 @@ class ColumnConfig(BaseModel):
     ref_column: Optional[str] = None
     business_values: Optional[str] = None
     special_rules: Optional[str] = None
-    min_value: Optional[float] = None
-    max_value: Optional[float] = None
+    min_value: Optional[Any] = None
+    max_value: Optional[Any] = None
     length: Optional[int] = None
     precision: Optional[int] = None
     scale: Optional[int] = None
@@ -65,6 +65,25 @@ class ColumnConfig(BaseModel):
         if isinstance(v, str) and not v.strip():
             return None
         return v
+
+    @field_validator("min_value", "max_value", mode="before")
+    @classmethod
+    def coerce_min_max(cls, v: Any) -> Optional[Any]:
+        if v is None or _is_nan(v):
+            return None
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return None
+            try:
+                return float(s)
+            except ValueError:
+                return s  # date/datetime string — pass through for _coerce_safe_timestamp
+        return v  # datetime objects from Excel pass through unchanged
 
 
 class TableConfig(BaseModel):

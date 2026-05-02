@@ -787,6 +787,8 @@ class DataGenerator:
                 "special_rules": column.special_rules,
                 "column_name": column.column_name,
                 "max_length": max_length,
+                "min_value": column.min_value,
+                "max_value": column.max_value,
             })
         else:
             return self.helpers.generate_realistic_dutch_data(column.column_name, base_type)

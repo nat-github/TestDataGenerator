@@ -1165,11 +1165,22 @@ class DataHelpers:
             return round(random.uniform(lo, hi), 2)
 
         elif data_type in ['D', 'DT', 'TS']:
-            # Produce pandas Timestamp for consistency
+            date_only = (data_type == 'D')
+            if min_val is not None or max_val is not None:
+                lo = self._coerce_safe_timestamp(min_val, normalize=date_only) if min_val is not None else None
+                hi = self._coerce_safe_timestamp(max_val, normalize=date_only) if max_val is not None else None
+                lo = lo if lo is not None else pd.Timestamp('2000-01-01')
+                hi = hi if hi is not None else pd.Timestamp('2030-12-31')
+                if lo > hi:
+                    lo, hi = hi, lo
+                span_seconds = max(int((hi - lo).total_seconds()), 1)
+                offset = timedelta(seconds=random.randint(0, span_seconds))
+                generated = lo + offset
+                return generated.normalize() if date_only else generated
             days_offset = random.randint(-365, 0)
             rt = timedelta(hours=random.randint(0, 23), minutes=random.randint(0, 59), seconds=random.randint(0, 59))
             generated = pd.Timestamp(datetime.now() + timedelta(days=days_offset) + rt)
-            return generated.normalize() if data_type == 'D' else generated
+            return generated.normalize() if date_only else generated
 
         elif isinstance(data_type, str) and data_type.upper().startswith('VA'):
             length_str = data_type[2:] if len(data_type) > 2 else ''

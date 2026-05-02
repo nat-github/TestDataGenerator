@@ -126,18 +126,26 @@ tables:
       - name: BOOKG_DT_TM_CET
         type: DT
         event_time: true
+        min: "2023-01-01 00:00:00"
+        max: "2025-12-31 23:59:59"
         nullable: true
 
       - name: BOOKG_DT_TM_UTC
         type: DT
+        min: "2023-01-01 00:00:00"
+        max: "2025-12-31 23:59:59"
         nullable: true
 
       - name: BOOKG_DT
         type: D
+        min: "2023-01-01"
+        max: "2025-12-31"
         nullable: true
 
       - name: VAL_DT
         type: D
+        min: "2023-01-01"
+        max: "2025-12-31"
         nullable: true
 
       # ── Counterparty — names now generate realistic Faker values ─────────────
@@ -353,6 +361,8 @@ tables:
       - name: YEAR_MONTH
         type: N6
         partition_role: partition_key
+        min: 202001
+        max: 202612
         nullable: true
 
       - name: EDL_CHANGE_TYPE
@@ -518,6 +528,8 @@ tables:
         pk: true
         partition_role: partition_key
         event_time: true
+        min: "2023-01-01"
+        max: "2025-12-31"
         nullable: false
 
       - name: CLOSE_2100CET
