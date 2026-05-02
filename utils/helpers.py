@@ -109,9 +109,33 @@ CURRENCY_NAME_TO_CODE: Dict[str, str] = {v.lower(): k for k, v in CURRENCY_CODE_
 
 
 class DataHelpers:
+    # Locales used for GLOBAL_* rules — well-supported by Faker
+    _GLOBAL_LOCALES: List[str] = [
+        'en_US', 'en_GB', 'en_AU', 'en_CA',
+        'de_DE', 'fr_FR', 'es_ES', 'it_IT', 'nl_NL',
+        'pt_BR', 'ja_JP', 'zh_CN', 'ko_KR',
+        'ru_RU', 'pl_PL', 'tr_TR', 'sv_SE', 'da_DK',
+    ]
+    # Locales whose Faker generates valid IBANs for their country
+    _IBAN_LOCALES: List[str] = [
+        'nl_NL', 'de_DE', 'fr_FR', 'es_ES', 'it_IT', 'en_GB',
+        'de_AT', 'de_CH', 'pl_PL', 'sv_SE', 'da_DK', 'fi_FI',
+        'pt_PT', 'hu_HU',
+    ]
+    # Mapping ISO 3166-1 alpha-2 → Faker locale for IBAN generation
+    _CC_TO_IBAN_LOCALE: Dict[str, str] = {
+        'NL': 'nl_NL', 'DE': 'de_DE', 'FR': 'fr_FR', 'BE': 'nl_BE',
+        'ES': 'es_ES', 'IT': 'it_IT', 'GB': 'en_GB', 'AT': 'de_AT',
+        'CH': 'de_CH', 'SE': 'sv_SE', 'DK': 'da_DK', 'FI': 'fi_FI',
+        'NO': 'no_NO', 'PL': 'pl_PL', 'PT': 'pt_PT', 'HU': 'hu_HU',
+        'RO': 'ro_RO', 'IE': 'en_IE', 'LU': 'lb_LU', 'SK': 'sk_SK',
+    }
+
     def __init__(self):
-        # Dutch locale for realistic data
+        # Dutch locale for realistic data (kept as default for backward compat)
         self.faker = Faker('nl_NL')
+        # Per-locale Faker cache — populated lazily by _get_locale_faker()
+        self._locale_fakers: Dict[str, Any] = {'nl_NL': self.faker}
 
         # Common Dutch banks (BIC/IBAN bank codes; 4-letter preferred)
         # 'REVOLT' retained for legacy/back-compat; we normalize to 4 letters.
@@ -922,6 +946,160 @@ class DataHelpers:
         return self._truncate_text(text, max_length)
 
     # ------------------------------------------------------------------
+    # Locale helpers
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _normalize_locale(s: str) -> str:
+        s = s.strip()
+        if '_' in s:
+            lang, country = s.split('_', 1)
+            return f"{lang.lower()}_{country.upper()}"
+        _single = {
+            'en': 'en_US', 'de': 'de_DE', 'fr': 'fr_FR', 'es': 'es_ES',
+            'it': 'it_IT', 'nl': 'nl_NL', 'pt': 'pt_BR', 'ja': 'ja_JP',
+            'zh': 'zh_CN', 'ko': 'ko_KR', 'ru': 'ru_RU', 'pl': 'pl_PL',
+            'ar': 'ar_AA', 'tr': 'tr_TR', 'sv': 'sv_SE', 'da': 'da_DK',
+            'fi': 'fi_FI', 'nb': 'no_NO', 'hi': 'hi_IN',
+        }
+        return _single.get(s.lower(), f"{s.lower()}_{s.upper()}")
+
+    def _get_locale_faker(self, locale: str) -> Faker:
+        if locale not in self._locale_fakers:
+            try:
+                self._locale_fakers[locale] = Faker(locale)
+            except Exception:
+                self._locale_fakers[locale] = Faker('en_US')
+        return self._locale_fakers[locale]
+
+    def _random_global_faker(self) -> Faker:
+        return self._get_locale_faker(random.choice(self._GLOBAL_LOCALES))
+
+    # ------------------------------------------------------------------
+    # International banking generators
+    # ------------------------------------------------------------------
+    def _generate_iban(self, country_code: Optional[str] = None) -> str:
+        if country_code:
+            locale = self._CC_TO_IBAN_LOCALE.get(country_code.upper(),
+                                                   random.choice(self._IBAN_LOCALES))
+        else:
+            locale = random.choice(self._IBAN_LOCALES)
+        try:
+            return self._get_locale_faker(locale).iban()
+        except Exception:
+            return self._generate_dutch_iban()
+
+    def _generate_us_routing(self) -> str:
+        # ABA routing: 9-digit, first two digits are routing symbol prefix (01-12, 21-32, etc.)
+        prefix = random.randint(11, 32)
+        return f"{prefix:02d}{random.randint(1000000, 9999999)}"
+
+    def _generate_us_account(self) -> str:
+        return ''.join(str(random.randint(0, 9)) for _ in range(random.randint(8, 12)))
+
+    def _generate_uk_sortcode(self) -> str:
+        return f"{random.randint(10, 99):02d}-{random.randint(0, 99):02d}-{random.randint(0, 99):02d}"
+
+    def _generate_uk_account(self) -> str:
+        return f"{random.randint(10000000, 99999999)}"
+
+    def _generate_au_bsb(self) -> str:
+        # BSB: state-prefix (0-8) + 2 digits dash 3 digits
+        state = random.randint(0, 8)
+        return f"{state}{random.randint(10, 99)}-{random.randint(100, 999)}"
+
+    def _generate_in_ifsc(self) -> str:
+        # IFSC: 4-letter bank code + 0 + 6 alphanumeric branch
+        banks = ['SBIN', 'HDFC', 'ICIC', 'AXIS', 'KOTK', 'IOBA', 'CNRB', 'PUNB', 'BKID', 'UBIN']
+        branch = ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', k=6))
+        return f"{random.choice(banks)}0{branch}"
+
+    def _generate_clabe(self) -> str:
+        # Mexican CLABE: 18 digits (bank 3 + city 3 + account 11 + check 1)
+        return ''.join(str(random.randint(0, 9)) for _ in range(18))
+
+    def _generate_ca_transit(self) -> str:
+        # Canadian: 5-digit transit + dash + 3-digit institution
+        return f"{random.randint(10000, 99999)}-{random.randint(100, 999)}"
+
+    def _generate_sg_nric(self) -> str:
+        prefix = random.choice(['S', 'T', 'F', 'G'])
+        digits = ''.join(str(random.randint(0, 9)) for _ in range(7))
+        suffix = random.choice('ABCDEFGHIZJ')
+        return f"{prefix}{digits}{suffix}"
+
+    # ------------------------------------------------------------------
+    # National ID / tax number generators
+    # ------------------------------------------------------------------
+    def _generate_ssn(self) -> str:
+        # US SSN: AAA-GG-SSSS
+        area = random.randint(100, 899)
+        group = random.randint(10, 99)
+        serial = random.randint(1000, 9999)
+        return f"{area:03d}-{group:02d}-{serial:04d}"
+
+    def _generate_us_ein(self) -> str:
+        prefix = random.randint(10, 99)
+        return f"{prefix}-{random.randint(1000000, 9999999)}"
+
+    def _generate_uk_ni(self) -> str:
+        # NI: XX 99 99 99 A  (valid prefix pairs, no D,F,I,Q,U,V as first; no D,F,I,O,Q,U,V as second)
+        valid_prefixes = ['AB', 'AE', 'AH', 'AK', 'AL', 'AM', 'AP', 'AR', 'AS', 'AT',
+                          'AW', 'AX', 'AY', 'AZ', 'BA', 'BB', 'BE', 'BH', 'BK', 'BL',
+                          'BM', 'BT', 'CA', 'CB', 'CE', 'CG', 'CH', 'CJ', 'CK', 'CL',
+                          'CR', 'EA', 'EB', 'EC', 'EE', 'EG', 'EH', 'EJ', 'EK', 'EL']
+        prefix = random.choice(valid_prefixes)
+        nums = ''.join(str(random.randint(0, 9)) for _ in range(6))
+        return f"{prefix} {nums[:2]} {nums[2:4]} {nums[4:6]} {random.choice('ABCD')}"
+
+    def _generate_in_pan(self) -> str:
+        # PAN: AAAAA9999A
+        letters = ''.join(random.choices('ABCDEFGHIJKLMNOPQRSTUVWXYZ', k=5))
+        digits = ''.join(str(random.randint(0, 9)) for _ in range(4))
+        return f"{letters}{digits}{random.choice('ABCDEFGHIJKLMNOPQRSTUVWXYZ')}"
+
+    def _generate_in_aadhar(self) -> str:
+        # Aadhaar: 12 digits, first digit 2-9
+        first = random.randint(2, 9)
+        rest = ''.join(str(random.randint(0, 9)) for _ in range(11))
+        d = str(first) + rest
+        return f"{d[:4]} {d[4:8]} {d[8:12]}"
+
+    def _generate_au_tfn(self) -> str:
+        return ''.join(str(random.randint(0, 9)) for _ in range(random.choice([8, 9])))
+
+    def _generate_au_abn(self) -> str:
+        d = ''.join(str(random.randint(0, 9)) for _ in range(11))
+        return f"{d[:2]} {d[2:5]} {d[5:8]} {d[8:11]}"
+
+    def _generate_br_cpf(self) -> str:
+        d = ''.join(str(random.randint(0, 9)) for _ in range(11))
+        return f"{d[:3]}.{d[3:6]}.{d[6:9]}-{d[9:11]}"
+
+    def _generate_br_cnpj(self) -> str:
+        d = ''.join(str(random.randint(0, 9)) for _ in range(14))
+        return f"{d[:2]}.{d[2:5]}.{d[5:8]}/{d[8:12]}-{d[12:14]}"
+
+    def _generate_fr_siren(self) -> str:
+        return ''.join(str(random.randint(0, 9)) for _ in range(9))
+
+    def _generate_fr_siret(self) -> str:
+        siren = self._generate_fr_siren()
+        nic = ''.join(str(random.randint(0, 9)) for _ in range(5))
+        return f"{siren}{nic}"
+
+    def _generate_de_tax(self) -> str:
+        # German Steuernummer: 10-11 digits (state-dependent, simplified)
+        return ''.join(str(random.randint(0, 9)) for _ in range(11))
+
+    def _generate_za_id(self) -> str:
+        # South African ID: 13 digits YYMMDD GGGGG C A Z
+        yy = random.randint(0, 99)
+        mm = random.randint(1, 12)
+        dd = random.randint(1, 28)
+        seq = random.randint(0, 9999)
+        return f"{yy:02d}{mm:02d}{dd:02d}{seq:04d}{random.randint(1000, 9999)}"[:13]
+
+    # ------------------------------------------------------------------
     # Special rules dispatcher
     # ------------------------------------------------------------------
     def generate_special_value(
@@ -932,16 +1110,51 @@ class DataHelpers:
         max_length: Optional[int] = None,
     ) -> Any:
         """
-        Generate values based on special rules (Dutch banking + address + country/currency codes).
-        Supported (key ones):
-          - 'NL_IBAN'     -> Dutch IBAN (18 chars)  (NL + 2 + 4!a + 10!n)
-          - 'EU_IBAN'     -> Random EU IBAN from {NL,DE,BE,FR,ES,IT}
-          - 'EU_IBAN:CC'  -> IBAN for specific country code (e.g., 'EU_IBAN:DE')
-          - 'BBAN'        -> Country-aware BBAN with NL bias
-          - 'BBAN:CC'     -> BBAN for specific country code
-          - 'BIC'         -> Valid-looking BIC (8+3)
-          - 'CITY_NM', 'CTY_CODE', 'PST_CODE'
-          - 'CURRENCY_CODE' | 'CURR_CODE' | 'ISO_CURRENCY' | 'ISO4217' | 'CURR'
+        Generate values based on special rules.
+
+        Dutch/European (original):
+          NL_IBAN, EU_IBAN, EU_IBAN:CC, BBAN, BBAN:CC, BIC/SWIFT, NL_PHONE
+          NAME, FIRST_NAME, LAST_NAME, COMPANY, ADDRESS, EMAIL, PHONE
+          CITY_NM, CTY_CODE, PST_CODE, COUNTRY_CODE, CURRENCY_CODE/ISO4217
+
+        Locale-parameterised (append :<locale> to any personal/address rule):
+          NAME:de_DE, FIRST_NAME:ja_JP, LAST_NAME:zh_CN, COMPANY:fr_FR
+          ADDRESS:en_GB, PHONE:en_US, EMAIL:es_ES, POSTCODE:de_DE, CITY:pt_BR
+
+        Global random (random locale each call):
+          GLOBAL_NAME, GLOBAL_FIRST_NAME, GLOBAL_LAST_NAME, GLOBAL_FULL_NAME
+          GLOBAL_COMPANY, GLOBAL_ADDRESS, GLOBAL_PHONE, GLOBAL_EMAIL
+          GLOBAL_POSTCODE, GLOBAL_CITY, GLOBAL_COUNTRY_CODE
+
+        International banking:
+          IBAN          – random IBAN-country IBAN
+          IBAN:CC       – IBAN for specific country (e.g. IBAN:DE)
+          US_ROUTING    – ABA routing number (9 digits)
+          US_ACCOUNT    – US bank account (8-12 digits)
+          UK_SORTCODE   – UK sort code (XX-XX-XX)
+          UK_ACCOUNT    – UK bank account (8 digits)
+          AU_BSB        – Australian BSB (XXX-XXX)
+          AU_ACCOUNT    – Australian account number
+          IN_IFSC       – Indian IFSC code
+          IN_ACCOUNT    – Indian bank account (9-18 digits)
+          CLABE         – Mexican CLABE (18 digits)
+          CA_TRANSIT    – Canadian transit+institution
+          SG_NRIC       – Singapore NRIC
+
+        National ID / tax numbers:
+          SSN / US_SSN  – US Social Security Number
+          EIN / US_EIN  – US Employer Identification Number
+          NI_NUMBER / UK_NI – UK National Insurance
+          PAN / IN_PAN  – Indian Permanent Account Number
+          AADHAR        – Indian Aadhaar (12 digits)
+          TFN / AU_TFN  – Australian Tax File Number
+          ABN / AU_ABN  – Australian Business Number
+          CPF / BR_CPF  – Brazilian CPF
+          CNPJ / BR_CNPJ – Brazilian CNPJ
+          SIREN / FR_SIREN – French company SIREN (9 digits)
+          SIRET / FR_SIRET – French company SIRET (14 digits)
+          DE_STEUER     – German Steuernummer
+          ZA_ID         – South African ID number
         """
         if not special_rule or pd.isna(special_rule):
             return None
@@ -958,6 +1171,21 @@ class DataHelpers:
             return self.generate_from_regex_rule(raw_rule, max_length=max_length)
 
         rule = raw_rule.upper()
+
+        # Parse optional locale suffix from raw_rule (preserves case: de_DE, ja_JP)
+        # Locale format:  xx_XX (e.g. de_DE)  — distinguished from country codes (e.g. DE)
+        # by presence of underscore or being lowercase
+        _has_colon = ':' in raw_rule
+        if _has_colon:
+            _raw_base, _raw_suffix = raw_rule.split(':', 1)
+            _raw_suffix = _raw_suffix.strip()
+            _is_locale_sfx = bool(re.match(r'^[a-zA-Z]{2,3}_[a-zA-Z]{2,4}$', _raw_suffix))
+            _rule_base = _raw_base.upper()
+            _rule_locale = self._normalize_locale(_raw_suffix) if _is_locale_sfx else None
+        else:
+            _rule_base = rule
+            _rule_locale = None
+        _lf = self._get_locale_faker(_rule_locale) if _rule_locale else self.faker
 
         # IBANs
         if rule == 'NL_IBAN':
@@ -977,39 +1205,52 @@ class DataHelpers:
         if rule == 'BIC':
             return self._generate_valid_bic()
 
-        # Contact / personal
-        if rule == 'EMAIL':
-            return self._truncate_text(self.faker.email(), max_length)
-        if rule == 'PHONE':
+        # Contact / personal  (support optional :locale suffix on all of these)
+        if rule == 'EMAIL' or _rule_base == 'EMAIL':
+            return self._truncate_text(_lf.email(), max_length)
+        if rule == 'PHONE' or _rule_base == 'PHONE':
+            if _rule_locale:
+                return self._truncate_text(_lf.phone_number(), max_length)
             return self._truncate_text(self._generate_dutch_phone(), max_length)
-        if rule in {'COMPANY', 'COMPANY_NM', 'ORGANISATION', 'ORG_NM', 'COUNTERPARTY'}:
-            return self._truncate_text(self.faker.company(), max_length)
-        if rule in {'FIRST_NAME', 'GIVEN_NAME', 'VOORNAAM'}:
-            return self._truncate_text(self.faker.first_name(), max_length)
-        if rule in {'LAST_NAME', 'SURNAME', 'FAMILY_NAME', 'ACHTERNAAM'}:
-            return self._truncate_text(self.faker.last_name(), max_length)
-        if rule in {'NAME', 'PERSON_NAME', 'FULL_NAME'}:
+        if rule in {'NL_PHONE', 'DUTCH_PHONE'}:
+            return self._truncate_text(self._generate_dutch_phone(), max_length)
+        if rule in {'COMPANY', 'COMPANY_NM', 'ORGANISATION', 'ORG_NM', 'COUNTERPARTY'} \
+                or _rule_base in {'COMPANY', 'COMPANY_NM', 'ORGANISATION', 'ORG_NM', 'COUNTERPARTY'}:
+            return self._truncate_text(_lf.company(), max_length)
+        if rule in {'FIRST_NAME', 'GIVEN_NAME', 'VOORNAAM'} \
+                or _rule_base in {'FIRST_NAME', 'GIVEN_NAME'}:
+            return self._truncate_text(_lf.first_name(), max_length)
+        if rule in {'LAST_NAME', 'SURNAME', 'FAMILY_NAME', 'ACHTERNAAM'} \
+                or _rule_base in {'LAST_NAME', 'SURNAME', 'FAMILY_NAME'}:
+            return self._truncate_text(_lf.last_name(), max_length)
+        if rule in {'NAME', 'PERSON_NAME', 'FULL_NAME'} \
+                or _rule_base in {'NAME', 'PERSON_NAME', 'FULL_NAME'}:
             if self._looks_like_company_field(col):
-                return self._truncate_text(self.faker.company(), max_length)
-            return self._truncate_text(self.faker.name(), max_length)
-        if rule == 'ADDRESS':
+                return self._truncate_text(_lf.company(), max_length)
+            return self._truncate_text(_lf.name(), max_length)
+        if rule == 'ADDRESS' or _rule_base == 'ADDRESS':
+            if _rule_locale:
+                return self._truncate_text(_lf.address(), max_length)
             components = self.generate_nl_address_components()
             if 'adr_line1' in col or 'address_line1' in col:
                 return self._single_line_address(components, 1, max_length)
             if 'adr_line2' in col or 'address_line2' in col:
                 return self._single_line_address(components, 2, max_length)
             return self._truncate_text(self.format_nl_address(components), max_length)
+        if rule == 'POSTCODE' or _rule_base == 'POSTCODE':
+            return self._truncate_text(_lf.postcode(), max_length)
+        if rule == 'CITY' or _rule_base == 'CITY':
+            return self._truncate_text(_lf.city(), max_length)
         if rule == 'BANK_ACCOUNT':
             return self._truncate_text(self._generate_dutch_bank_account(), max_length)
         if rule == 'BANK_NAME':
             return self._truncate_text(random.choice(list(self.dutch_banks.values())), max_length)
         if rule == 'BANK_CODE':
-            # Return a normalized 4-letter bank code
             raw = random.choice(list(self.dutch_banks.keys()))
             code4 = "".join(ch for ch in raw if ch.isalpha()).upper()[:4]
             return self._truncate_text((code4 + "X" * 4)[:4] if len(code4) < 4 else code4, max_length)
 
-        # Country/city/postcode
+        # Country/city/postcode (Dutch originals kept for backward compat)
         if rule == 'COUNTRY_CODE':
             return self._truncate_text(self.generate_country_code(prefer=['NL', 'BE', 'DE', 'FR', 'US']), max_length)
         if rule == 'CITY_NM':
@@ -1022,6 +1263,94 @@ class DataHelpers:
         # Currency
         if rule in {'CURRENCY_CODE', 'CURR_CODE', 'ISO_CURRENCY', 'ISO4217', 'CURR'}:
             return self._truncate_text(self.generate_currency_code(), max_length)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # GLOBAL RANDOM-LOCALE RULES
+        # ─────────────────────────────────────────────────────────────────────
+        if rule == 'GLOBAL_NAME':
+            f = self._random_global_faker()
+            return self._truncate_text(f.company() if self._looks_like_company_field(col) else f.name(), max_length)
+        if rule == 'GLOBAL_FIRST_NAME':
+            return self._truncate_text(self._random_global_faker().first_name(), max_length)
+        if rule == 'GLOBAL_LAST_NAME':
+            return self._truncate_text(self._random_global_faker().last_name(), max_length)
+        if rule in {'GLOBAL_FULL_NAME', 'GLOBAL_PERSON_NAME'}:
+            return self._truncate_text(self._random_global_faker().name(), max_length)
+        if rule == 'GLOBAL_COMPANY':
+            return self._truncate_text(self._random_global_faker().company(), max_length)
+        if rule == 'GLOBAL_ADDRESS':
+            return self._truncate_text(self._random_global_faker().address(), max_length)
+        if rule == 'GLOBAL_PHONE':
+            return self._truncate_text(self._random_global_faker().phone_number(), max_length)
+        if rule == 'GLOBAL_EMAIL':
+            return self._truncate_text(self._random_global_faker().email(), max_length)
+        if rule == 'GLOBAL_POSTCODE':
+            return self._truncate_text(self._random_global_faker().postcode(), max_length)
+        if rule == 'GLOBAL_CITY':
+            return self._truncate_text(self._random_global_faker().city(), max_length)
+        if rule == 'GLOBAL_COUNTRY_CODE':
+            return self._truncate_text(self.generate_country_code(), max_length)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # INTERNATIONAL BANKING
+        # ─────────────────────────────────────────────────────────────────────
+        if rule == 'IBAN' or rule.startswith('IBAN:'):
+            cc = rule.split(':', 1)[1].strip() if ':' in rule else None
+            return self._truncate_text(self._generate_iban(cc), max_length)
+        if rule in {'SWIFT', 'BIC_SWIFT', 'SWIFT_CODE'}:
+            return self._truncate_text(self._generate_valid_bic(), max_length)
+        if rule in {'US_ROUTING', 'ABA_ROUTING', 'US_ABA'}:
+            return self._truncate_text(self._generate_us_routing(), max_length)
+        if rule in {'US_ACCOUNT', 'US_BANK_ACCOUNT'}:
+            return self._truncate_text(self._generate_us_account(), max_length)
+        if rule in {'UK_SORTCODE', 'GB_SORTCODE', 'SORT_CODE'}:
+            return self._truncate_text(self._generate_uk_sortcode(), max_length)
+        if rule in {'UK_ACCOUNT', 'GB_ACCOUNT', 'UK_BANK_ACCOUNT'}:
+            return self._truncate_text(self._generate_uk_account(), max_length)
+        if rule in {'AU_BSB', 'BSB'}:
+            return self._truncate_text(self._generate_au_bsb(), max_length)
+        if rule in {'AU_ACCOUNT', 'AU_BANK_ACCOUNT'}:
+            return self._truncate_text(self._generate_us_account(), max_length)  # same pattern: 8-12 digits
+        if rule in {'IN_IFSC', 'IFSC'}:
+            return self._truncate_text(self._generate_in_ifsc(), max_length)
+        if rule in {'IN_ACCOUNT', 'IN_BANK_ACCOUNT'}:
+            return self._truncate_text(''.join(str(random.randint(0, 9)) for _ in range(random.randint(9, 18))), max_length)
+        if rule in {'CLABE', 'MX_CLABE'}:
+            return self._truncate_text(self._generate_clabe(), max_length)
+        if rule in {'CA_TRANSIT', 'CA_BANK'}:
+            return self._truncate_text(self._generate_ca_transit(), max_length)
+        if rule in {'SG_NRIC', 'NRIC'}:
+            return self._truncate_text(self._generate_sg_nric(), max_length)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # NATIONAL ID / TAX NUMBERS
+        # ─────────────────────────────────────────────────────────────────────
+        if rule in {'SSN', 'US_SSN', 'SOCIAL_SECURITY'}:
+            return self._truncate_text(self._generate_ssn(), max_length)
+        if rule in {'EIN', 'US_EIN', 'EMPLOYER_ID'}:
+            return self._truncate_text(self._generate_us_ein(), max_length)
+        if rule in {'NI_NUMBER', 'UK_NI', 'GB_NI', 'NATIONAL_INSURANCE'}:
+            return self._truncate_text(self._generate_uk_ni(), max_length)
+        if rule in {'PAN', 'IN_PAN', 'INDIA_PAN'}:
+            return self._truncate_text(self._generate_in_pan(), max_length)
+        if rule in {'AADHAR', 'AADHAAR', 'IN_AADHAR'}:
+            return self._truncate_text(self._generate_in_aadhar(), max_length)
+        if rule in {'TFN', 'AU_TFN', 'TAX_FILE_NUMBER'}:
+            return self._truncate_text(self._generate_au_tfn(), max_length)
+        if rule in {'ABN', 'AU_ABN', 'AUSTRALIAN_BUSINESS'}:
+            return self._truncate_text(self._generate_au_abn(), max_length)
+        if rule in {'CPF', 'BR_CPF'}:
+            return self._truncate_text(self._generate_br_cpf(), max_length)
+        if rule in {'CNPJ', 'BR_CNPJ'}:
+            return self._truncate_text(self._generate_br_cnpj(), max_length)
+        if rule in {'SIREN', 'FR_SIREN'}:
+            return self._truncate_text(self._generate_fr_siren(), max_length)
+        if rule in {'SIRET', 'FR_SIRET'}:
+            return self._truncate_text(self._generate_fr_siret(), max_length)
+        if rule in {'DE_STEUER', 'DE_STEUERNUMMER'}:
+            return self._truncate_text(self._generate_de_tax(), max_length)
+        if rule in {'ZA_ID', 'SA_ID', 'ZA_ID_NUMBER'}:
+            return self._truncate_text(self._generate_za_id(), max_length)
 
         return None
 
