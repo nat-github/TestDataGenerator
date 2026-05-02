@@ -19,15 +19,16 @@ Each section is split into three tiers. You don't have to read all three — sto
 ## Table of Contents
 
 1. [Why ML in a Data Generator?](#1-why-ml-in-a-data-generator)
-2. [The Three ML Capabilities](#2-the-three-ml-capabilities)
-3. [Feature 1 — Auto-Config: Reading Real Data to Write Your Config](#3-feature-1--auto-config-reading-real-data-to-write-your-config)
-4. [Feature 2 — PII Detector: Finding Sensitive Columns](#4-feature-2--pii-detector-finding-sensitive-columns)
-5. [Feature 3 — Distribution Fitter: Making Numbers Look Real](#5-feature-3--distribution-fitter-making-numbers-look-real)
-6. [Performance Intelligence: Batch, Cache, Parallel](#6-performance-intelligence-batch-cache-parallel)
-7. [How All Three Connect — The Full Pipeline](#7-how-all-three-connect--the-full-pipeline)
-8. [Where Each Feature Lives in the Code](#8-where-each-feature-lives-in-the-code)
-9. [CLI Commands Cheat Sheet](#9-cli-commands-cheat-sheet)
-10. [Confidence Scores Explained](#10-confidence-scores-explained)
+2. [Libraries Used — What and Why](#2-libraries-used--what-and-why)
+3. [The Three ML Capabilities](#3-the-three-ml-capabilities)
+4. [Feature 1 — Auto-Config: Reading Real Data to Write Your Config](#4-feature-1--auto-config-reading-real-data-to-write-your-config)
+5. [Feature 2 — PII Detector: Finding Sensitive Columns](#5-feature-2--pii-detector-finding-sensitive-columns)
+6. [Feature 3 — Distribution Fitter: Making Numbers Look Real](#6-feature-3--distribution-fitter-making-numbers-look-real)
+7. [Performance Intelligence: Batch, Cache, Parallel](#7-performance-intelligence-batch-cache-parallel)
+8. [How All Three Connect — The Full Pipeline](#8-how-all-three-connect--the-full-pipeline)
+9. [Where Each Feature Lives in the Code](#9-where-each-feature-lives-in-the-code)
+10. [CLI Commands Cheat Sheet](#10-cli-commands-cheat-sheet)
+11. [Confidence Scores Explained](#11-confidence-scores-explained)
 
 ---
 
@@ -67,7 +68,64 @@ ml/
 
 ---
 
-## 2. The Three ML Capabilities
+## 2. Libraries Used — What and Why
+
+### The Simple Picture
+
+The ML layer is built on four main tools. Think of them as specialist instruments:
+
+- **pandas** — the data reader and analyst. Loads your file, tells you what type each column is, counts nulls, samples values.
+- **numpy** — the fast calculator. Does math on thousands of numbers at once instead of one by one.
+- **scipy** — the statistician. Knows the mathematical shapes of distributions and can fit them to your data.
+- **Faker** — the impersonator. Knows how to make realistic fake names, emails, phone numbers, IBANs, and 60+ other formats.
+
+### The Mechanics
+
+| Library | Type | Used in | Role |
+|---|---|---|---|
+| `pandas` | Third-party | `auto_config.py`, `pii_detector.py`, `distribution_fitter.py` | Reads CSV/Parquet/Excel; introspects column dtypes; handles null values; samples rows for PII checking |
+| `numpy` | Third-party | `distribution_fitter.py`, `helpers.py` | Vectorised numeric generation (`np.random.randint`, `np.random.uniform`); array clipping (`np.clip`); converts pandas Series to raw arrays for scipy |
+| `scipy.stats` | Third-party *(optional)* | `distribution_fitter.py` | Fits statistical distributions using Maximum Likelihood Estimation; runs Kolmogorov-Smirnov test to select the best-fitting distribution; samples from the fitted distribution |
+| `Faker` | Third-party | `helpers.py` (batch generation path) | Generates realistic fake values for special rules: `NAME`, `EMAIL`, `PHONE`, `IBAN`, `SWIFT`, `ADDRESS`, and 55+ others across 18 locales |
+| `rstr` | Third-party | `helpers.py` (regex generation path) | Generates strings that match arbitrary user-defined regex patterns (e.g. `REGEX:\d{4}-[A-Z]{3}`); builds an internal AST from the pattern |
+| `re` | Python stdlib | `pii_detector.py`, `helpers.py` | Compiles regex patterns for PII column-name matching and PII value-structure matching; cached at module load for performance |
+| `threading` | Python stdlib | `data_generator.py` | `threading.RLock` protects shared PK state during parallel table generation |
+| `concurrent.futures` | Python stdlib | `data_generator.py` | `ThreadPoolExecutor` runs independent table generations in parallel (up to 4 workers) |
+
+### Under the Hood
+
+**Why scipy is optional** — scipy is a large scientific library. Not every project needs it. The distribution fitter wraps the import in a lazy loader:
+
+```python
+def _get_scipy_stats():
+    try:
+        from scipy import stats
+        return stats
+    except ImportError:
+        return None   # caller falls back to uniform random
+```
+
+If `scipy` is not installed, `_get_scipy_stats()` returns `None`. Every call site checks for `None` and degrades to uniform random generation. The platform never crashes — it just loses the statistical shaping capability.
+
+**Why numpy over plain Python loops** — generating 1,000 random integers in Python:
+
+```python
+# Python loop — 1,000 function calls
+[random.randint(min_val, max_val) for _ in range(1000)]
+
+# numpy — one C-level call, result as contiguous memory array
+np.random.randint(min_val, max_val + 1, size=1000)
+```
+
+The numpy version is typically 10–50× faster because it executes in compiled C, avoids Python object overhead, and benefits from CPU vectorisation (SIMD instructions).
+
+**Why Faker and not just random strings** — a column called `CTPTY_NM` (counterparty name) could be filled with `Xk7pQ2mR`. But tests built on that data would fail to catch bugs that only appear with realistic data lengths, character sets, and formats. `Faker.name()` returns `"Marie Dupont"` — believable, the right length, the right character set, locale-aware.
+
+**Why rstr** — when a config has `special_rules: REGEX:\d{3}-\d{2}-\d{4}` (a custom SSN format), rstr parses the regex into an AST and generates strings guaranteed to match. No other general-purpose library does this reliably for arbitrary regex patterns.
+
+---
+
+## 3. The Three ML Capabilities
 
 ### The Simple Picture
 
@@ -101,7 +159,7 @@ All three are triggered from two places:
 
 ---
 
-## 3. Feature 1 — Auto-Config: Reading Real Data to Write Your Config
+## 4. Feature 1 — Auto-Config: Reading Real Data to Write Your Config
 
 ### The Simple Picture
 
@@ -225,7 +283,7 @@ def _infer_column(self, series, col_name, table_name, pk_candidates, pii_map):
 
 ---
 
-## 4. Feature 2 — PII Detector: Finding Sensitive Columns
+## 5. Feature 2 — PII Detector: Finding Sensitive Columns
 
 ### The Simple Picture
 
@@ -345,7 +403,7 @@ detector.scan_config(tables_config_dict)  # runs Pass 1 only
 
 ---
 
-## 5. Feature 3 — Distribution Fitter: Making Numbers Look Real
+## 6. Feature 3 — Distribution Fitter: Making Numbers Look Real
 
 ### The Simple Picture
 
@@ -459,7 +517,7 @@ def sample(self, distribution: Dict, n: int, min_val=None, max_val=None) -> np.n
 
 ---
 
-## 6. Performance Intelligence: Batch, Cache, Parallel
+## 7. Performance Intelligence: Batch, Cache, Parallel
 
 ### The Simple Picture
 
@@ -556,7 +614,7 @@ def _generate_tables_parallel(self, table_names, records_per_table):
 
 ---
 
-## 7. How All Three Connect — The Full Pipeline
+## 8. How All Three Connect — The Full Pipeline
 
 ### The Simple Picture
 
@@ -650,7 +708,7 @@ class ColumnConfig(BaseModel):
 
 ---
 
-## 8. Where Each Feature Lives in the Code
+## 9. Where Each Feature Lives in the Code
 
 ### File Map
 
@@ -707,7 +765,7 @@ TestDataGeneration/
 
 ---
 
-## 9. CLI Commands Cheat Sheet
+## 10. CLI Commands Cheat Sheet
 
 ### Auto-Config (`infer-config`)
 
@@ -774,7 +832,7 @@ Each finding shows:
 
 ---
 
-## 10. Confidence Scores Explained
+## 11. Confidence Scores Explained
 
 Confidence scores appear everywhere in the ML output. Here's exactly what they mean.
 
