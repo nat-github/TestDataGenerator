@@ -43,6 +43,11 @@ networkx = "3.5"
 # --- GenAI / LLM ---
 anthropic = ">=0.40.0"
 
+# --- Optional: cloud upload (install as needed) ---
+# pip install azure-storage-blob   → enables --upload-to azure://...
+# pip install boto3                → enables --upload-to s3://...
+# pip install matplotlib           → enables --er-format png
+
 # --- Utilities ---
 scikit-learn = "1.7.2"
 scipy = ">=1.14.1"

@@ -18,7 +18,7 @@ from utils.parquet_post_processor import ParquetPostProcessor
 
 
 logger = logging.getLogger(__name__)
-KNOWN_COMMANDS = {"generate", "delta", "scd2", "lint", "enrich"}
+KNOWN_COMMANDS = {"generate", "delta", "scd2", "lint", "enrich", "collibra-import"}
 
 
 def _normalize_argv(argv: Sequence[str]) -> List[str]:
@@ -48,6 +48,14 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible generation")
     generate_parser.add_argument("--infer-relationships", action="store_true", help="Use LLM to infer missing relationships")
     generate_parser.add_argument("--llm-confidence", type=float, default=0.7, help="Minimum LLM confidence threshold (0-1)")
+    generate_parser.add_argument("--er-diagram", action="store_true", help="Generate ER diagram after data generation")
+    generate_parser.add_argument("--er-format", nargs="+", default=["mermaid"],
+                                 choices=["mermaid", "dot", "png"],
+                                 help="ER diagram output format(s): mermaid (default), dot, png")
+    generate_parser.add_argument("--er-output", default=None,
+                                 help="Output directory for ER diagram (default: same as --output)")
+    generate_parser.add_argument("--upload-to", default=None,
+                                 help="Upload generated files to cloud: azure://<container>[/prefix] or s3://<bucket>[/prefix]")
 
     delta_parser = subparsers.add_parser("delta", help="Generate parquet deltas from two snapshot folders")
     delta_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
@@ -79,6 +87,22 @@ def build_parser() -> argparse.ArgumentParser:
     enrich_parser.add_argument("--output", required=True, help="Output path for enriched YAML file")
     enrich_parser.add_argument("--confidence", type=float, default=0.7, help="Minimum LLM confidence threshold (0-1)")
     enrich_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    collibra_parser = subparsers.add_parser(
+        "collibra-import",
+        help="Import dataset definition from Collibra and write a YAML config"
+    )
+    collibra_parser.add_argument("--dataset", required=True,
+                                 help="Collibra dataset name or asset ID to import")
+    collibra_parser.add_argument("--output", required=True,
+                                 help="Output path for generated YAML config (e.g. config/from_collibra.yaml)")
+    collibra_parser.add_argument("--asset-type", default="Data Set",
+                                 help="Collibra asset type name (default: 'Data Set')")
+    collibra_parser.add_argument("--domain", default=None,
+                                 help="Collibra domain name to narrow the search")
+    collibra_parser.add_argument("--base-url", default=None,
+                                 help="Collibra base URL (overrides COLLIBRA_BASE_URL env var)")
+    collibra_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
 
     return parser
 
@@ -289,6 +313,14 @@ def run_generate(args) -> int:
         if not is_valid:
             logger.warning("Some relationship issues were found")
 
+    # --- ER diagram ---
+    if getattr(args, "er_diagram", False):
+        _run_er_diagram(generator, args)
+
+    # --- Cloud upload ---
+    if getattr(args, "upload_to", None):
+        _run_upload(args.output, args.upload_to)
+
     logger.info(f"\nAll files saved to: {Path(args.output).absolute()}")
     return 0
 
@@ -399,6 +431,56 @@ def run_enrich(args) -> int:
         return 1
 
 
+def _run_er_diagram(generator, args) -> None:
+    try:
+        from utils.er_diagram import ERDiagramGenerator
+        er_output = getattr(args, "er_output", None) or args.output
+        er_formats = getattr(args, "er_format", ["mermaid"])
+        gen = ERDiagramGenerator(generator.tables_config, generator.relationships)
+        written = gen.save(er_output, formats=er_formats)
+        if written:
+            logger.info(f"\nER diagram(s) saved:")
+            for p in written:
+                logger.info(f"  {p}")
+            if any(str(p).endswith(".mmd") for p in written):
+                logger.info("  Tip: open .mmd in VS Code (Mermaid extension) or paste into https://mermaid.live")
+    except Exception as exc:
+        logger.warning(f"ER diagram generation failed (non-fatal): {exc}")
+
+
+def _run_upload(output_dir: str, uri: str) -> None:
+    try:
+        from utils.cloud_uploader import upload_output
+        logger.info(f"\nUploading output to {uri} ...")
+        paths = upload_output(output_dir, uri)
+        logger.info(f"Upload complete: {len(paths)} file(s)")
+    except ImportError as exc:
+        logger.warning(f"Cloud upload skipped — missing dependency: {exc}")
+    except Exception as exc:
+        logger.error(f"Cloud upload failed: {exc}")
+
+
+def run_collibra_import(args) -> int:
+    configure_logging(getattr(args, "verbose", False))
+    try:
+        from utils.collibra_importer import CollibraImporter
+        importer = CollibraImporter(base_url=getattr(args, "base_url", None))
+        out = importer.import_dataset(
+            dataset_name=args.dataset,
+            output_path=args.output,
+            asset_type=getattr(args, "asset_type", "Data Set"),
+            domain=getattr(args, "domain", None),
+        )
+        logger.info(f"Collibra import complete. Config written to: {out}")
+        logger.info(f"Next step: python main.py generate --config {out} --output output/snapshot_v1")
+        return 0
+    except Exception as exc:
+        logger.error(f"Collibra import failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_arguments(argv)
     configure_logging(getattr(args, "verbose", False))
@@ -414,6 +496,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_lint(args)
         if args.command == "enrich":
             return run_enrich(args)
+        if args.command == "collibra-import":
+            return run_collibra_import(args)
         logger.error(f"Unknown command: {args.command}")
         return 1
     except FileNotFoundError as exc:

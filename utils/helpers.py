@@ -1092,12 +1092,186 @@ class DataHelpers:
         return ''.join(str(random.randint(0, 9)) for _ in range(11))
 
     def _generate_za_id(self) -> str:
-        # South African ID: 13 digits YYMMDD GGGGG C A Z
         yy = random.randint(0, 99)
         mm = random.randint(1, 12)
         dd = random.randint(1, 28)
         seq = random.randint(0, 9999)
         return f"{yy:02d}{mm:02d}{dd:02d}{seq:04d}{random.randint(1000, 9999)}"[:13]
+
+    # ------------------------------------------------------------------
+    # Passport / travel document generators
+    # ------------------------------------------------------------------
+    def _generate_passport(self, country_code: Optional[str] = None) -> str:
+        cc = (country_code or random.choice(['US', 'GB', 'DE', 'FR', 'NL', 'AU', 'CA', 'IN', 'JP', 'CN'])).upper()
+        if cc == 'US':
+            return random.choice(string.ascii_uppercase) + ''.join(str(random.randint(0, 9)) for _ in range(8))
+        if cc == 'GB':
+            return ''.join(random.choices(string.ascii_uppercase, k=2)) + ''.join(str(random.randint(0, 9)) for _ in range(7))
+        if cc in ('DE', 'NL', 'FR', 'AT', 'CH'):
+            return ''.join(random.choices(string.ascii_uppercase + string.digits, k=9))
+        if cc == 'AU':
+            return random.choice(string.ascii_uppercase) + ''.join(str(random.randint(1000000, 9999999)))
+        # Generic: letter(s) + 7 digits
+        return random.choice(string.ascii_uppercase) + ''.join(str(random.randint(0, 9)) for _ in range(7))
+
+    # ------------------------------------------------------------------
+    # Driver's licence generators
+    # ------------------------------------------------------------------
+    def _generate_drivers_licence(self, country_code: Optional[str] = None) -> str:
+        cc = (country_code or random.choice(['US', 'GB', 'DE', 'AU', 'CA', 'IN'])).upper()
+        if cc == 'US':
+            # Simplified generic US format (varies by state)
+            return random.choice(string.ascii_uppercase) + ''.join(str(random.randint(0, 9)) for _ in range(7))
+        if cc == 'GB':
+            # DVLA: SURNAME(5) + YYMM + DD + 2 letters + 1 digit + 2 letters
+            letters = ''.join(random.choices(string.ascii_uppercase, k=5))
+            yy = random.randint(50, 99)
+            mm = random.randint(1, 12)
+            dd = random.randint(1, 28)
+            return f"{letters}{yy:02d}{mm:02d}{dd:02d}{''.join(random.choices(string.ascii_uppercase, k=2))}{random.randint(1,9)}{''.join(random.choices(string.ascii_uppercase, k=2))}"
+        if cc == 'DE':
+            return ''.join(random.choices(string.ascii_uppercase, k=1)) + ''.join(random.choices(string.ascii_uppercase + string.digits, k=10))
+        if cc == 'AU':
+            return ''.join(str(random.randint(0, 9)) for _ in range(random.choice([8, 9])))
+        if cc == 'CA':
+            return random.choice(string.ascii_uppercase) + ''.join(str(random.randint(0, 9)) for _ in range(12))
+        if cc == 'IN':
+            state = random.choice(['DL', 'MH', 'KA', 'TN', 'UP', 'RJ', 'GJ'])
+            return f"{state}{random.randint(10, 99)}{random.randint(10, 99)}{random.randint(1000000000, 9999999999)}"[:16]
+        return ''.join(random.choices(string.ascii_uppercase + string.digits, k=9))
+
+    # ------------------------------------------------------------------
+    # VAT / tax registration generators
+    # ------------------------------------------------------------------
+    def _generate_eu_vat(self, country_code: Optional[str] = None) -> str:
+        cc = (country_code or random.choice(['DE', 'FR', 'NL', 'GB', 'ES', 'IT', 'BE', 'AT', 'PL'])).upper()
+        if cc == 'DE':
+            return f"DE{random.randint(100000000, 999999999)}"
+        if cc == 'FR':
+            key = ''.join(random.choices(string.ascii_uppercase + string.digits, k=2))
+            return f"FR{key}{random.randint(100000000, 999999999)}"
+        if cc == 'NL':
+            return f"NL{random.randint(100000000, 999999999)}B{random.randint(10, 99)}"
+        if cc == 'GB':
+            return f"GB{random.randint(100000000, 999999999)}"
+        if cc == 'ES':
+            return f"ES{''.join(random.choices(string.ascii_uppercase + string.digits, k=9))}"
+        if cc == 'IT':
+            return f"IT{random.randint(10000000000, 99999999999)}"
+        if cc == 'BE':
+            return f"BE{random.randint(1000000000, 9999999999)}"
+        if cc == 'AT':
+            return f"ATU{random.randint(10000000, 99999999)}"
+        if cc == 'PL':
+            return f"PL{random.randint(1000000000, 9999999999)}"
+        return f"{cc}{random.randint(100000000, 999999999)}"
+
+    def _generate_gst_in(self) -> str:
+        # Indian GST: 15 chars = 2-digit state + PAN (10) + 1 + Z + checksum
+        state = f"{random.randint(1, 37):02d}"
+        pan = self._generate_in_pan()
+        return f"{state}{pan}{random.randint(1, 9)}Z{random.choice(string.digits + string.ascii_uppercase)}"
+
+    # ------------------------------------------------------------------
+    # Network / digital identifiers
+    # ------------------------------------------------------------------
+    def _generate_ipv4(self) -> str:
+        return '.'.join(str(random.randint(1, 254)) for _ in range(4))
+
+    def _generate_ipv6(self) -> str:
+        return ':'.join(f"{random.randint(0, 65535):04x}" for _ in range(8))
+
+    def _generate_mac(self) -> str:
+        return ':'.join(f"{random.randint(0, 255):02x}" for _ in range(6))
+
+    def _generate_uuid(self) -> str:
+        import uuid
+        return str(uuid.uuid4())
+
+    def _generate_url(self) -> str:
+        try:
+            return self.faker.url()
+        except Exception:
+            tlds = ['com', 'org', 'net', 'io', 'co']
+            return f"https://www.{self.faker.word()}.{random.choice(tlds)}"
+
+    # ------------------------------------------------------------------
+    # Healthcare identifiers
+    # ------------------------------------------------------------------
+    def _generate_nhs_number(self) -> str:
+        # NHS: 10 digits (simplified — actual check digit omitted for synthetic data)
+        return ''.join(str(random.randint(0, 9)) for _ in range(10))
+
+    def _generate_au_medicare(self) -> str:
+        # Medicare card: 10 digits + 1 reference (IRN)
+        d = ''.join(str(random.randint(0, 9)) for _ in range(10))
+        return f"{d[:4]} {d[4:9]} {d[9]}-{random.randint(1, 9)}"
+
+    def _generate_de_krankenversicherung(self) -> str:
+        # GKV: 1 letter + 9 digits
+        return random.choice(string.ascii_uppercase) + ''.join(str(random.randint(0, 9)) for _ in range(9))
+
+    def _generate_us_npi(self) -> str:
+        # NPI (National Provider Identifier): 10 digits
+        return ''.join(str(random.randint(0, 9)) for _ in range(10))
+
+    # ------------------------------------------------------------------
+    # Cryptocurrency addresses
+    # ------------------------------------------------------------------
+    _BASE58_CHARS = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz'
+
+    def _generate_btc_address(self) -> str:
+        # P2PKH: starts with 1, 26-34 base58 chars
+        length = random.randint(26, 34)
+        return '1' + ''.join(random.choices(self._BASE58_CHARS, k=length - 1))
+
+    def _generate_eth_address(self) -> str:
+        return '0x' + ''.join(random.choices('0123456789abcdef', k=40))
+
+    def _generate_sol_address(self) -> str:
+        # Solana: 32-44 base58 chars
+        return ''.join(random.choices(self._BASE58_CHARS, k=44))
+
+    # ------------------------------------------------------------------
+    # Product / barcode identifiers
+    # ------------------------------------------------------------------
+    def _generate_ean13(self) -> str:
+        d = [random.randint(0, 9) for _ in range(12)]
+        check = (10 - sum(v * (1 if i % 2 == 0 else 3) for i, v in enumerate(d)) % 10) % 10
+        return ''.join(map(str, d)) + str(check)
+
+    def _generate_ean8(self) -> str:
+        d = [random.randint(0, 9) for _ in range(7)]
+        check = (10 - sum(v * (3 if i % 2 == 0 else 1) for i, v in enumerate(d)) % 10) % 10
+        return ''.join(map(str, d)) + str(check)
+
+    def _generate_upc_a(self) -> str:
+        d = [random.randint(0, 9) for _ in range(11)]
+        check = (10 - sum(v * (3 if i % 2 == 0 else 1) for i, v in enumerate(d)) % 10) % 10
+        return ''.join(map(str, d)) + str(check)
+
+    def _generate_isbn13(self) -> str:
+        prefix = random.choice(['978', '979'])
+        group = str(random.randint(0, 9))
+        publisher = ''.join(str(random.randint(0, 9)) for _ in range(4))
+        title = ''.join(str(random.randint(0, 9)) for _ in range(4))
+        raw = prefix + group + publisher + title
+        d = [int(c) for c in raw]
+        check = (10 - sum(v * (1 if i % 2 == 0 else 3) for i, v in enumerate(d)) % 10) % 10
+        return f"{raw}-{check}"
+
+    # ------------------------------------------------------------------
+    # Chinese Unified Social Credit Code (USCC)
+    # ------------------------------------------------------------------
+    _USCC_CHARSET = '0123456789ABCDEFGHJKLMNPQRTUWXY'
+
+    def _generate_cn_uscc(self) -> str:
+        # 18 chars: 1-digit reg type + 6-digit admin code + 9-char org code + 1 check char
+        reg_type = random.choice('1259')
+        admin_code = ''.join(str(random.randint(0, 9)) for _ in range(6))
+        org_code = ''.join(random.choices(self._USCC_CHARSET, k=9))
+        check = random.choice(self._USCC_CHARSET)
+        return f"{reg_type}{admin_code}{org_code}{check}"
 
     # ------------------------------------------------------------------
     # Special rules dispatcher
@@ -1351,6 +1525,84 @@ class DataHelpers:
             return self._truncate_text(self._generate_de_tax(), max_length)
         if rule in {'ZA_ID', 'SA_ID', 'ZA_ID_NUMBER'}:
             return self._truncate_text(self._generate_za_id(), max_length)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # PASSPORT / TRAVEL DOCUMENTS
+        # ─────────────────────────────────────────────────────────────────────
+        if rule == 'PASSPORT' or rule.startswith('PASSPORT:'):
+            cc = rule.split(':', 1)[1].strip() if ':' in rule else None
+            return self._truncate_text(self._generate_passport(cc), max_length)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # DRIVER'S LICENCE
+        # ─────────────────────────────────────────────────────────────────────
+        if rule in {'DRIVERS_LICENCE', 'DRIVERS_LICENSE', 'DL', 'DRIVING_LICENCE'} \
+                or rule.startswith('DL:'):
+            cc = rule.split(':', 1)[1].strip() if ':' in rule else None
+            return self._truncate_text(self._generate_drivers_licence(cc), max_length)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # VAT / GST REGISTRATION NUMBERS
+        # ─────────────────────────────────────────────────────────────────────
+        if rule in {'EU_VAT', 'VAT'} or rule.startswith('EU_VAT:') or rule.startswith('VAT:'):
+            cc = rule.split(':', 1)[1].strip() if ':' in rule else None
+            return self._truncate_text(self._generate_eu_vat(cc), max_length)
+        if rule in {'GST_IN', 'IN_GST', 'GSTIN'}:
+            return self._truncate_text(self._generate_gst_in(), max_length)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # NETWORK / DIGITAL IDENTIFIERS
+        # ─────────────────────────────────────────────────────────────────────
+        if rule in {'IPV4', 'IP_ADDRESS', 'IP'}:
+            return self._truncate_text(self._generate_ipv4(), max_length)
+        if rule in {'IPV6', 'IP6'}:
+            return self._truncate_text(self._generate_ipv6(), max_length)
+        if rule in {'MAC_ADDRESS', 'MAC'}:
+            return self._truncate_text(self._generate_mac(), max_length)
+        if rule in {'UUID', 'GUID'}:
+            return self._truncate_text(self._generate_uuid(), max_length)
+        if rule in {'URL', 'WEBSITE'}:
+            return self._truncate_text(self._generate_url(), max_length)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # HEALTHCARE IDENTIFIERS
+        # ─────────────────────────────────────────────────────────────────────
+        if rule in {'NHS_NUMBER', 'NHS', 'UK_NHS'}:
+            return self._truncate_text(self._generate_nhs_number(), max_length)
+        if rule in {'AU_MEDICARE', 'MEDICARE'}:
+            return self._truncate_text(self._generate_au_medicare(), max_length)
+        if rule in {'DE_GKV', 'DE_KRANKEN', 'GKV'}:
+            return self._truncate_text(self._generate_de_krankenversicherung(), max_length)
+        if rule in {'NPI', 'US_NPI'}:
+            return self._truncate_text(self._generate_us_npi(), max_length)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # CRYPTOCURRENCY ADDRESSES
+        # ─────────────────────────────────────────────────────────────────────
+        if rule in {'BTC_ADDRESS', 'BITCOIN', 'BTC'}:
+            return self._truncate_text(self._generate_btc_address(), max_length)
+        if rule in {'ETH_ADDRESS', 'ETHEREUM', 'ETH'}:
+            return self._truncate_text(self._generate_eth_address(), max_length)
+        if rule in {'SOL_ADDRESS', 'SOLANA', 'SOL'}:
+            return self._truncate_text(self._generate_sol_address(), max_length)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # PRODUCT / BARCODE IDENTIFIERS
+        # ─────────────────────────────────────────────────────────────────────
+        if rule in {'EAN13', 'EAN_13', 'BARCODE'}:
+            return self._truncate_text(self._generate_ean13(), max_length)
+        if rule in {'EAN8', 'EAN_8'}:
+            return self._truncate_text(self._generate_ean8(), max_length)
+        if rule in {'UPC_A', 'UPCA', 'UPC'}:
+            return self._truncate_text(self._generate_upc_a(), max_length)
+        if rule in {'ISBN13', 'ISBN_13', 'ISBN'}:
+            return self._truncate_text(self._generate_isbn13(), max_length)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # CHINESE UNIFIED SOCIAL CREDIT CODE
+        # ─────────────────────────────────────────────────────────────────────
+        if rule in {'CN_USCC', 'USCC', 'CN_CREDIT_CODE'}:
+            return self._truncate_text(self._generate_cn_uscc(), max_length)
 
         return None
 
