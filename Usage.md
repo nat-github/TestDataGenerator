@@ -235,42 +235,183 @@ For each eligible table, delta is written as a Delta Lake table in a folder layo
       00000000000000000000.json
       00000000000000000001.json
       ...
-    edl_partition_date=YYYYMMDD/
+    <partition_column>=<value>/
       part-00001-<uuid>-c000.snappy.parquet
-    edl_partition_date=YYYYMMDD+1/
+    <partition_column>=<value2>/
       part-00002-<uuid>-c000.snappy.parquet
 ```
 
 The `_delta_log` JSON files are Delta Lake transaction logs and contain entries such as `protocol`, `metaData`, `add`, `remove`, and `commitInfo`.
 
-Each active Delta data file contains the changed rows with an operation column:
+Each active Delta data file contains the changed rows with an operation column (`I` = insert, `U` = update, `D` = delete). By default the operation column is named `operation_type`.
 
-- `I` = insert
-- `U` = update
-- `D` = delete
+---
 
-By default the operation column name is:
+### Partition folder naming
 
-- `operation_type`
+The partition folder name has the form `<partition_column>=<value>`. Understanding how the column and value are chosen is essential to getting clean, predictable output.
 
-By default the partition folder name is driven by the partition column:
+#### Resolution order — which column is used
 
-- `edl_partition_date`
+The runtime resolves the partition column for each table in this order:
 
-Partitioning can be controlled in this order:
+| Priority | Source | Where to set it |
+|---|---|---|
+| 1 (highest) | `partition_columns` on the table | `Tables` sheet or `tables[].partition_columns` in YAML |
+| 2 | `delta_partition_columns` in run settings | `Run_Settings` sheet or `run_settings.delta_partition_columns` in YAML |
+| 3 | `delta_partition_column` in run settings | `Run_Settings` sheet or `run_settings.delta_partition_column` in YAML |
+| 4 (default) | `edl_partition_date` | automatic fallback — no config needed |
 
-1. `Tables.partition_columns`
-2. `Run_Settings.delta_partition_columns`
-3. `Run_Settings.delta_partition_column`
-4. default fallback: `edl_partition_date`
+Only one source is used per table. The first source that provides a non-empty value wins.
 
-If the chosen partition column is missing from the delta dataframe, the runtime auto-creates it only when a single partition column is configured. The generated value uses the next available partition date.
+#### Two behaviours depending on whether the column exists in the data
 
-Run-settings overrides include:
+**Case 1 — partition column already exists as a data column**
 
-- `operation_column`
-- `delta_partition_column`
-- `delta_partition_start_date`
+If the resolved partition column is a column that was generated and appears in the snapshot parquet files, the runtime uses the **actual data values** from that column as the partition folder values.
+
+Example: a table configured with `partition_columns: [YEAR_MONTH]` where `YEAR_MONTH` is an `N6` column. The folder names will be `YEAR_MONTH=202301`, `YEAR_MONTH=202405`, etc., taken directly from the generated rows.
+
+What this means for you:
+- The column must contain values that are valid as filesystem folder names.
+- If the column is purely numeric (e.g. `N6`) with no range constraint, the generator will produce random 6-digit integers that may look like garbage (`YEAR_MONTH=100016`). **Always set `min_value`/`max_value` on the column** so the generated values fall in the expected range.
+- Every distinct value in that column becomes a separate partition folder. If 100 rows all have distinct `YEAR_MONTH` values, you get 100 partition folders each containing one file.
+
+**Case 2 — partition column does not exist in the data**
+
+If the resolved partition column is not present in the snapshot parquet files, the runtime **auto-injects** it. A single value is assigned to all rows in that delta run, written as a new column in the output.
+
+The injected value is chosen as follows:
+
+1. If the delta output folder already exists and has previous partition sub-folders for this column, the new value is the **next day** after the latest existing partition date.
+2. If `delta_partition_start_date` is set in run settings, that date is used for the first run.
+3. Otherwise the current UTC date in `YYYYMMDD` format is used.
+
+This is the behaviour you see with the default `edl_partition_date`: every row in the delta output gets `edl_partition_date=20260502` (today), and on the next run it becomes `edl_partition_date=20260503`.
+
+---
+
+#### Configuring partition columns — Excel
+
+In the **`Tables` sheet**, fill the `partition_columns` cell for the table. Use a semicolon-separated list for multiple columns:
+
+```
+partition_columns = YEAR_MONTH
+partition_columns = country_code;load_date
+```
+
+In the **`Columns` sheet**, add `min_value` and `max_value` to any numeric partition column to keep values in a sensible range:
+
+```
+column_name = YEAR_MONTH   data_type = N6   min_value = 202001   max_value = 202612
+```
+
+For date-typed partition columns (`D`, `DT`, `TS`) you can also set date string bounds:
+
+```
+column_name = LOAD_DT   data_type = D   min_value = 2023-01-01   max_value = 2025-12-31
+```
+
+---
+
+#### Configuring partition columns — YAML
+
+At the **table level**:
+
+```yaml
+tables:
+  - name: df_cac_acg_entr
+    partition_enabled: true
+    partition_columns: [YEAR_MONTH]
+    columns:
+      - name: YEAR_MONTH
+        type: N6
+        min: 202001        # generates values like 202304, 202507 — not garbage
+        max: 202612
+        nullable: true
+```
+
+Using a **date column** as the partition key:
+
+```yaml
+  - name: fx_rates_2100cet
+    partition_columns: [RATEDATE]
+    columns:
+      - name: RATEDATE
+        type: D
+        min: "2023-01-01"
+        max: "2025-12-31"
+        pk: true
+```
+
+Setting a **global fallback** partition column in run settings (used for tables that do not specify `partition_columns`):
+
+```yaml
+run_settings:
+  delta_partition_column: load_date
+  delta_partition_start_date: "2026-01-01"
+```
+
+---
+
+#### Resulting folder structure examples
+
+Table with `YEAR_MONTH` in range `202001–202612` (Case 1 — column exists in data):
+
+```text
+delta_run/df_cac_acg_entr/
+  YEAR_MONTH=202104/
+    part-00000-<uuid>-c000.snappy.parquet
+  YEAR_MONTH=202209/
+    part-00000-<uuid>-c000.snappy.parquet
+  YEAR_MONTH=202501/
+    part-00000-<uuid>-c000.snappy.parquet
+  _delta_log/
+    00000000000000000000.json
+```
+
+Table with no `partition_columns` configured — auto-injected `edl_partition_date` (Case 2):
+
+```text
+delta_run/df_cac_acg_entr_adl/
+  edl_partition_date=20260502/
+    part-00000-<uuid>-c000.snappy.parquet
+  _delta_log/
+    00000000000000000000.json
+```
+
+Second run on the same output folder (date advances by one day):
+
+```text
+delta_run/df_cac_acg_entr_adl/
+  edl_partition_date=20260502/        ← previous run (still in Delta log as removed)
+  edl_partition_date=20260503/        ← new active partition
+  _delta_log/
+    00000000000000000000.json
+    00000000000000000001.json
+```
+
+---
+
+#### Common mistakes and fixes
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `YEAR_MONTH=100016` — nonsense partition names | `N6` column with no range constraint; random integers generated | Add `min: 202001` and `max: 202612` to the column |
+| Hundreds of partition folders (one per row) | Data column used as partition key but has unique values per row | Use a column with a small cardinality (year-month, region code, etc.) |
+| `edl_partition_date=20260502` appears unexpectedly | No `partition_columns` configured for the table; runtime used the default fallback | Either accept it, or configure `partition_columns` for the table |
+| All rows land in a single partition folder | Auto-injected partition column — all rows share the same injected date value | Expected for auto-injection; configure a data column as partition key if you want row-level fan-out |
+
+---
+
+Run-settings keys that affect delta partitioning:
+
+| Key | Effect |
+|---|---|
+| `operation_column` | Rename the `I`/`U`/`D` operation column (default: `operation_type`) |
+| `delta_partition_column` | Fallback partition column name when no table-level `partition_columns` is set |
+| `delta_partition_columns` | Semicolon-separated list of fallback partition columns |
+| `delta_partition_start_date` | Starting date for the auto-injected partition value on the first run |
 
 ### What happens if you reuse the same delta output folder
 If you run `delta` again and pass the **same output folder path**:
