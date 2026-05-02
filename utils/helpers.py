@@ -9,6 +9,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 from faker import Faker
 
@@ -109,6 +110,9 @@ CURRENCY_NAME_TO_CODE: Dict[str, str] = {v.lower(): k for k, v in CURRENCY_CODE_
 
 
 class DataHelpers:
+    # Compiled regex + AST cache — shared across all instances (pattern string → (compiled, ast))
+    _regex_ast_cache: Dict[str, tuple] = {}
+
     # Locales used for GLOBAL_* rules — well-supported by Faker
     _GLOBAL_LOCALES: List[str] = [
         'en_US', 'en_GB', 'en_AU', 'en_CA',
@@ -518,8 +522,10 @@ class DataHelpers:
         if not pattern:
             raise ValueError('Regex rule must start with REGEX: or REGEX= followed by a pattern')
 
-        compiled = re.compile(pattern)
-        ast = self._parse_regex_pattern(pattern)
+        cache = self.__class__._regex_ast_cache
+        if pattern not in cache:
+            cache[pattern] = (re.compile(pattern), self._parse_regex_pattern(pattern))
+        compiled, ast = cache[pattern]
         min_length = self._regex_min_length(ast)
         if max_length is not None and min_length > max_length:
             raise ValueError(
@@ -1704,6 +1710,67 @@ class DataHelpers:
             return None
 
         return ts.normalize() if normalize else ts
+
+    def generate_column_batch(self, config: Dict[str, Any], n: int) -> List[Any]:
+        """Generate *n* values for a non-PK column using the fastest available path.
+
+        Priority:
+          1. Business values          → random.choices (O(n) lookup)
+          2. Distribution sampling    → numpy vectorised
+          3. Numeric/decimal ranges   → numpy vectorised
+          4. Special rules            → list comprehension over Faker/generators
+          5. Fallback                 → per-value generate_sample_value calls
+        """
+        data_type    = (config.get("data_type") or "VA256").upper()
+        business_val = config.get("business_values")
+        special_rule = config.get("special_rules")
+        min_val      = config.get("min_value")
+        max_val      = config.get("max_value")
+        distribution = config.get("distribution")
+
+        # 1. Business values — fastest path
+        if business_val:
+            bv_list = self.parse_business_values(business_val)
+            if bv_list:
+                return random.choices(bv_list, k=n)
+
+        # 2. Distribution-based numeric sampling (statistically realistic)
+        if distribution and (data_type.startswith("N") or data_type == "DC"):
+            try:
+                from ml.distribution_fitter import DistributionFitter
+                lo = float(min_val) if min_val is not None else None
+                hi = float(max_val) if max_val is not None else None
+                arr = DistributionFitter().sample(distribution, n, min_val=lo, max_val=hi)
+                if data_type.startswith("N"):
+                    return [int(round(v)) for v in arr]
+                return [round(float(v), 2) for v in arr]
+            except Exception:
+                pass  # fall through to plain range generation
+
+        # 3. Numeric / decimal ranges — numpy vectorised
+        if data_type.startswith("N"):
+            length_str = data_type[1:] if len(data_type) > 1 else ""
+            length = int(length_str) if length_str.isdigit() else 10
+            max_cap = int(min(float(max_val) if max_val is not None else 10 ** length, 10 ** 8))
+            min_bound = int(float(min_val) if min_val is not None else 1)
+            if min_bound >= max_cap:
+                max_cap = min_bound + 1
+            return np.random.randint(min_bound, max_cap + 1, n).tolist()
+
+        if data_type == "DC":
+            lo = float(min_val) if min_val is not None else 1.0
+            hi = float(max_val) if max_val is not None else 1000.0
+            return [round(v, 2) for v in np.random.uniform(lo, hi, n).tolist()]
+
+        # 4. Special rules — list comprehension (avoids per-call dict overhead)
+        if special_rule:
+            return [
+                self.generate_special_value(special_rule, data_type) or ""
+                for _ in range(n)
+            ]
+
+        # 5. Fallback — per-value (date types, text, edge cases)
+        return [self.generate_sample_value(data_type, config) for _ in range(n)]
 
     def generate_sample_value(self, data_type: str, config: Dict[str, Any]) -> Any:
         business_values = config.get('business_values')

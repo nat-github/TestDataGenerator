@@ -49,6 +49,11 @@ class ColumnConfig(BaseModel):
     event_time: bool = False
     partition_role: Optional[str] = None
     scd2_tracked: bool = False
+    # Statistical distribution descriptor from AutoConfigInferrer / manual config.
+    # Format: {name, params, data_min, data_max} — used by generate_column_batch().
+    distribution: Optional[Dict[str, Any]] = None
+    # Canonical example value — used by wire-mock stub serialisers and API doc generators.
+    example_value: Optional[Any] = None
 
     @field_validator("precision", "scale", "length", mode="before")
     @classmethod
@@ -104,6 +109,9 @@ class TableConfig(BaseModel):
     active: bool = True
     notes: Optional[str] = None
     seed: Optional[int] = None  # per-table generation seed
+    # Output format for this table. "parquet" (default) | "json" | "wiremock"
+    # Wire-mock serialiser is a future extension; field is present for forward compat.
+    output_format: Optional[str] = None
 
     @field_validator(
         "business_key_columns",

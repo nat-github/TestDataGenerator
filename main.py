@@ -18,7 +18,8 @@ from utils.parquet_post_processor import ParquetPostProcessor
 
 
 logger = logging.getLogger(__name__)
-KNOWN_COMMANDS = {"generate", "delta", "scd2", "lint", "enrich", "collibra-import"}
+KNOWN_COMMANDS = {"generate", "delta", "scd2", "lint", "enrich", "collibra-import",
+                  "infer-config", "pii-scan"}
 
 
 def _normalize_argv(argv: Sequence[str]) -> List[str]:
@@ -103,6 +104,40 @@ def build_parser() -> argparse.ArgumentParser:
     collibra_parser.add_argument("--base-url", default=None,
                                  help="Collibra base URL (overrides COLLIBRA_BASE_URL env var)")
     collibra_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    # ── infer-config ──────────────────────────────────────────────────────────
+    infer_parser = subparsers.add_parser(
+        "infer-config",
+        help="Infer a FDL YAML config from a sample CSV, Parquet, or Excel data file"
+    )
+    infer_parser.add_argument("--input", required=True,
+                              help="Path to sample data file (.csv, .parquet, .xlsx)")
+    infer_parser.add_argument("--output", required=True,
+                              help="Output path for the generated YAML config")
+    infer_parser.add_argument("--table-name", default=None,
+                              help="Override the inferred table name (default: filename stem)")
+    infer_parser.add_argument("--no-distributions", action="store_true",
+                              help="Skip scipy distribution fitting (faster)")
+    infer_parser.add_argument("--no-pii-scan", action="store_true",
+                              help="Skip PII column detection")
+    infer_parser.add_argument("--pii-confidence", type=float, default=0.70,
+                              help="Minimum PII detection confidence to emit a warning (default: 0.70)")
+    infer_parser.add_argument("--sample-size", type=int, default=5000,
+                              help="Max rows to read for inference (default: 5000)")
+    infer_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    # ── pii-scan ──────────────────────────────────────────────────────────────
+    pii_parser = subparsers.add_parser(
+        "pii-scan",
+        help="Scan a data file or FDL config for PII / sensitive columns"
+    )
+    pii_parser.add_argument("--input", required=True,
+                            help="Data file (.csv, .parquet, .xlsx) or FDL config (.yaml, .yml, .xlsx)")
+    pii_parser.add_argument("--confidence", type=float, default=0.60,
+                            help="Minimum confidence score to report (default: 0.60)")
+    pii_parser.add_argument("--sample-size", type=int, default=5000,
+                            help="Max rows to read when scanning a data file (default: 5000)")
+    pii_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
 
     return parser
 
@@ -481,6 +516,92 @@ def run_collibra_import(args) -> int:
         return 1
 
 
+def run_infer_config(args) -> int:
+    """Infer a FDL YAML config from a sample data file."""
+    configure_logging(getattr(args, "verbose", False))
+    try:
+        import yaml
+        from ml.auto_config import AutoConfigInferrer
+
+        inferrer = AutoConfigInferrer(
+            fit_distributions=not getattr(args, "no_distributions", False),
+            scan_pii=not getattr(args, "no_pii_scan", False),
+            sample_size=getattr(args, "sample_size", 5000),
+            pii_confidence=getattr(args, "pii_confidence", 0.70),
+        )
+        config = inferrer.infer_from_file(
+            args.input,
+            table_name=getattr(args, "table_name", None),
+        )
+        out = Path(args.output)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with open(out, "w", encoding="utf-8") as fh:
+            yaml.dump(config, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+        table_cfg = config["tables"][0]
+        n_cols = len(table_cfg.get("columns", []))
+        pii_cols = [c for c in table_cfg.get("columns", []) if "_pii_note" in c]
+        lines = [
+            f"",
+            f"Config written to: {out}",
+            f"  Table: {table_cfg['name']} | {n_cols} column(s) inferred",
+        ]
+        if pii_cols:
+            lines.append(f"  {len(pii_cols)} column(s) flagged as PII -- review _pii_note fields")
+        lines += ["", "Next step:", f"  python main.py generate --config {out} --output output/snapshot_v1"]
+        sys.stdout.buffer.write(("\n".join(lines) + "\n").encode("utf-8", errors="replace"))
+        return 0
+    except Exception as exc:
+        logger.error(f"infer-config failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def run_pii_scan(args) -> int:
+    """Scan a data file or FDL config for PII / sensitive columns."""
+    configure_logging(getattr(args, "verbose", False))
+    try:
+        from ml.pii_detector import PIIDetector
+        detector = PIIDetector(confidence_threshold=getattr(args, "confidence", 0.60))
+
+        input_path = Path(args.input)
+        suffix = input_path.suffix.lower()
+        findings = []
+
+        if suffix in (".csv", ".parquet", ".xlsx", ".xls"):
+            # Scan actual data values
+            sample_size = getattr(args, "sample_size", 5000)
+            if suffix == ".csv":
+                df = pd.read_csv(input_path, nrows=sample_size)
+            elif suffix == ".parquet":
+                df = pd.read_parquet(input_path)
+                if len(df) > sample_size:
+                    df = df.sample(sample_size, random_state=42)
+            else:
+                df = pd.read_excel(input_path, nrows=sample_size)
+            findings = detector.scan_dataframe(df, table_name=input_path.stem)
+
+        elif suffix in (".yaml", ".yml"):
+            # Scan config column names (no data values)
+            cp = ConfigParser(str(input_path))
+            tables_cfg, _ = cp.parse_config()
+            findings = detector.scan_config(tables_cfg)
+
+        else:
+            logger.error(f"Unsupported file type: {suffix}. Use .csv, .parquet, .xlsx, .yaml")
+            return 1
+
+        report = detector.format_report(findings)
+        sys.stdout.buffer.write((report + "\n").encode("utf-8", errors="replace"))
+        return 0
+    except Exception as exc:
+        logger.error(f"pii-scan failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_arguments(argv)
     configure_logging(getattr(args, "verbose", False))
@@ -498,6 +619,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_enrich(args)
         if args.command == "collibra-import":
             return run_collibra_import(args)
+        if args.command == "infer-config":
+            return run_infer_config(args)
+        if args.command == "pii-scan":
+            return run_pii_scan(args)
         logger.error(f"Unknown command: {args.command}")
         return 1
     except FileNotFoundError as exc:

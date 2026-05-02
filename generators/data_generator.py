@@ -10,8 +10,10 @@ from __future__ import annotations
 import logging
 import random
 import re
+import threading
 import uuid
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from decimal import Decimal, ROUND_HALF_UP , localcontext ,InvalidOperation
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -54,6 +56,7 @@ class DataGenerator:
         self.used_pk_values: Dict[Tuple[str, str], Set[Any]] = defaultdict(set)
         self.pk_sequences: Dict[Tuple[str, str], int] = defaultdict(int)
         self._bv_overflow_warned: Set[Tuple[str, str]] = set()  # suppress repeated BV-overflow warnings
+        self._pk_lock = threading.RLock()  # guards shared PK state during parallel table generation
 
         self._apply_seed(seed)
 
@@ -608,45 +611,61 @@ class DataGenerator:
     # ---------------------------------------------------------------------
     def _generate_table_data(self, table_config: TableConfig, num_records: int,
                              for_training: bool = False) -> pd.DataFrame:
-        """Generate table data with GUARANTEED PK uniqueness"""
-        data: Dict[str, List[Any]] = {}
+        """Generate table data with GUARANTEED PK uniqueness.
 
-        # Calculate actual record count (with business values logic only)
+        Non-PK columns use the vectorised batch path (numpy / Faker list-comp)
+        for a significant speed-up on large record counts.  PK columns keep the
+        per-row uniqueness-checked path.
+        """
+        data: Dict[str, List[Any]] = {}
         actual_num_records = self._calculate_actual_record_count(table_config, num_records)
 
-        # Reset PK tracking for this table if training
         if for_training:
-            for col in table_config.columns:
-                if col.is_pk:
-                    pk_key = (table_config.name, col.column_name)
-                    self.used_pk_values[pk_key] = set()
-                    self.pk_sequences[pk_key] = 1
+            with self._pk_lock:
+                for col in table_config.columns:
+                    if col.is_pk:
+                        pk_key = (table_config.name, col.column_name)
+                        self.used_pk_values[pk_key] = set()
+                        self.pk_sequences[pk_key] = 1
 
         self.logger.info(
-            f"📊 Generating {actual_num_records} records for {table_config.name} (requested: {num_records})")
+            f"📊 Generating {actual_num_records} records for {table_config.name} "
+            f"(requested: {num_records})")
 
-        # Generate each column with uniqueness guarantee
         for column in table_config.columns:
-            values = []
             null_p = self._get_null_probability(column)
 
-            for i in range(actual_num_records):
-                if random.random() < null_p and not column.is_pk:  # Never null PKs
-                    values.append(None)
-                else:
-                    val = self._generate_enhanced_value(column, table_config.name, i, actual_num_records)
+            if column.is_pk:
+                # Per-row path — uniqueness must be checked row-by-row
+                values: List[Any] = []
+                for i in range(actual_num_records):
+                    val = self._generate_enhanced_value(
+                        column, table_config.name, i, actual_num_records)
                     values.append(val)
+            else:
+                # Batch path — numpy-vectorised where possible
+                col_config = {
+                    "business_values": column.business_values,
+                    "special_rules":   column.special_rules,
+                    "data_type":       column.data_type,
+                    "min_value":       column.min_value,
+                    "max_value":       column.max_value,
+                    "column_name":     column.column_name,
+                    "max_length":      column.length,
+                    "distribution":    getattr(column, "distribution", None),
+                }
+                values = self.helpers.generate_column_batch(col_config, actual_num_records)
+
+                # Apply null mask in one pass
+                if null_p > 0:
+                    null_mask = np.random.random(actual_num_records) < null_p
+                    values = [None if null_mask[i] else v for i, v in enumerate(values)]
 
             data[column.column_name] = values
 
         df = pd.DataFrame(data)
-
-        # CRITICAL: Validate PK uniqueness before returning
         df = self._validate_and_fix_pk_uniqueness(df, table_config)
-
-        # Apply constraints (except length constraints for PKs)
         df = self._apply_data_type_constraints(df, table_config)
-
         return df
 
     def _validate_and_fix_pk_uniqueness(self, df: pd.DataFrame, table_config: TableConfig) -> pd.DataFrame:
@@ -1392,31 +1411,56 @@ class DataGenerator:
             raise
 
     def _generate_fallback_data_with_relationships(self, records_per_table: Dict[str, int]) -> Dict[str, pd.DataFrame]:
-        """Enhanced fallback data generation with relationship guarantees"""
-        synthetic_data: Dict[str, pd.DataFrame] = {}
+        """Enhanced fallback data generation with relationship guarantees.
 
-        # Reset all PK sequences
+        Reference (parent) tables that have no FK dependencies are generated in
+        parallel using a thread pool.  Child tables are generated sequentially
+        afterwards so FK resolution can access parent data.
+        """
+        synthetic_data: Dict[str, pd.DataFrame] = {}
         self._initialize_pk_tracking()
 
-        # Generate reference tables first
         reference_tables = self._identify_reference_tables()
-        for table_name in reference_tables:
-            if table_name in records_per_table:
-                table_config = self.tables_config[table_name]
-                df = self._generate_table_data(table_config, records_per_table[table_name], for_training=False)
-                synthetic_data[table_name] = df
+        ref_in_config = [t for t in reference_tables if t in records_per_table]
 
-        # Generate child tables
+        # Parallel generation for independent reference tables
+        if len(ref_in_config) > 1:
+            parallel_results = self._generate_tables_parallel(ref_in_config, records_per_table)
+            synthetic_data.update(parallel_results)
+        elif ref_in_config:
+            t = ref_in_config[0]
+            synthetic_data[t] = self._generate_table_data(
+                self.tables_config[t], records_per_table[t], for_training=False)
+
+        # Sequential generation for child tables (depend on parent data)
         for table_name, num_records in records_per_table.items():
-            if table_name not in reference_tables:  # Skip already generated tables
-                table_config = self.tables_config[table_name]
-                df = self._generate_table_data(table_config, num_records, for_training=False)
-                synthetic_data[table_name] = df
+            if table_name not in reference_tables:
+                synthetic_data[table_name] = self._generate_table_data(
+                    self.tables_config[table_name], num_records, for_training=False)
 
-        # Enforce all relationships
         synthetic_data = self._enforce_all_relationships(synthetic_data)
-
         return synthetic_data
+
+    def _generate_tables_parallel(
+        self,
+        table_names: List[str],
+        records_per_table: Dict[str, int],
+    ) -> Dict[str, pd.DataFrame]:
+        """Generate independent tables concurrently (up to 4 workers)."""
+        results: Dict[str, pd.DataFrame] = {}
+        max_workers = min(len(table_names), 4)
+
+        def _gen(name: str):
+            return name, self._generate_table_data(
+                self.tables_config[name], records_per_table[name], for_training=False)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_gen, t): t for t in table_names}
+            for future in as_completed(futures):
+                name, df = future.result()
+                results[name] = df
+
+        return results
 
     def _identify_reference_tables(self) -> List[str]:
         """Identify parent/reference tables"""
