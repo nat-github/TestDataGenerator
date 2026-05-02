@@ -53,6 +53,7 @@ class DataGenerator:
         # Enhanced PK tracking - track used values to prevent duplicates
         self.used_pk_values: Dict[Tuple[str, str], Set[Any]] = defaultdict(set)
         self.pk_sequences: Dict[Tuple[str, str], int] = defaultdict(int)
+        self._bv_overflow_warned: Set[Tuple[str, str]] = set()  # suppress repeated BV-overflow warnings
 
         self._apply_seed(seed)
 
@@ -414,8 +415,11 @@ class DataGenerator:
                 self.used_pk_values[pk_key].add(pk_value)
                 return pk_value
             else:
-                self.logger.warning(
-                    f"⚠️ More records requested than business values for {table_name}.{column.column_name}, generating sequential")
+                warn_key = (table_name, column.column_name)
+                if warn_key not in self._bv_overflow_warned:
+                    self._bv_overflow_warned.add(warn_key)
+                    self.logger.warning(
+                        f"⚠️ More records requested than business values for {table_name}.{column.column_name}, generating sequential")
                 return self._generate_sequential_pk(column, table_name, index, num_records)
 
         # 2) Default sequential PK (existing)

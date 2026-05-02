@@ -137,7 +137,7 @@ class ERDiagramGenerator:
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
-    # PNG via matplotlib (optional — skipped gracefully if unavailable)
+    # PNG — proper ERD table boxes via matplotlib (no networkx needed)
     # ------------------------------------------------------------------
     def generate_png(self, output_path: Path) -> bool:
         try:
@@ -145,29 +145,128 @@ class ERDiagramGenerator:
             matplotlib.use("Agg")
             import matplotlib.pyplot as plt
             import matplotlib.patches as mpatches
-            import networkx as nx
         except ImportError:
-            logger.warning("matplotlib / networkx not available — PNG ER diagram skipped. "
+            logger.warning("matplotlib not available — PNG ER diagram skipped. "
                            "Install matplotlib to enable: pip install matplotlib")
             return False
 
-        G = nx.DiGraph()
-        for table_name in self.tables:
-            G.add_node(table_name)
-        for rel in self.relationships:
-            col_lbl = getattr(rel, "source_column", None) or (getattr(rel, "source_columns", None) or [""])[0]
-            G.add_edge(rel.target_table, rel.source_table, label=col_lbl)
+        # ── layout constants ──────────────────────────────────────────
+        COL_W      = 3.2    # box width (data units)
+        HDR_H      = 0.45   # header row height
+        ROW_H      = 0.32   # column row height
+        H_GAP      = 1.8    # horizontal gap between boxes
+        V_GAP      = 1.2    # vertical gap between rows of boxes
+        COLS_PER_ROW = 3    # boxes per grid row
 
-        fig, ax = plt.subplots(figsize=(max(12, len(self.tables) * 2), 8))
-        pos = nx.spring_layout(G, seed=42, k=2.5)
-        nx.draw_networkx_nodes(G, pos, ax=ax, node_size=3000, node_color="#4C8BF5", alpha=0.85)
-        nx.draw_networkx_labels(G, pos, ax=ax, font_color="white", font_size=9, font_weight="bold")
-        nx.draw_networkx_edges(G, pos, ax=ax, edge_color="#555", arrows=True,
-                               arrowsize=20, connectionstyle="arc3,rad=0.1")
-        edge_labels = {(u, v): d.get("label", "") for u, v, d in G.edges(data=True)}
-        nx.draw_networkx_edge_labels(G, pos, edge_labels=edge_labels, ax=ax, font_size=8)
-        ax.set_title("Entity Relationship Diagram", fontsize=14, pad=16)
+        table_names = list(self.tables.keys())
+        n = len(table_names)
+
+        # ── compute per-table heights and grid positions ───────────────
+        heights: Dict[str, float] = {}
+        positions: Dict[str, tuple] = {}   # (x_left, y_top) in data coords
+        for i, tname in enumerate(table_names):
+            ncols = len(self.tables[tname].columns)
+            heights[tname] = HDR_H + ncols * ROW_H
+            col_idx = i % COLS_PER_ROW
+            row_idx = i // COLS_PER_ROW
+            x = col_idx * (COL_W + H_GAP)
+            # y_top: stack rows downward; use max height in previous grid rows
+            prev_rows = row_idx
+            y = -prev_rows * (max(heights.values()) + V_GAP) if heights else 0
+            positions[tname] = (x, y)
+
+        # Recalculate y after all heights are known
+        row_max_h: Dict[int, float] = {}
+        for i, tname in enumerate(table_names):
+            row_max_h[i // COLS_PER_ROW] = max(
+                row_max_h.get(i // COLS_PER_ROW, 0), heights[tname])
+        y_tops: Dict[int, float] = {0: 0.0}
+        for r in range(1, (n - 1) // COLS_PER_ROW + 1):
+            y_tops[r] = y_tops[r - 1] - (row_max_h.get(r - 1, 0) + V_GAP)
+        for i, tname in enumerate(table_names):
+            col_idx = i % COLS_PER_ROW
+            row_idx = i // COLS_PER_ROW
+            positions[tname] = (col_idx * (COL_W + H_GAP), y_tops[row_idx])
+
+        # ── canvas size ───────────────────────────────────────────────
+        n_cols_used = min(n, COLS_PER_ROW)
+        n_rows_used = (n + COLS_PER_ROW - 1) // COLS_PER_ROW
+        fig_w = max(10, n_cols_used * (COL_W + H_GAP) + 1)
+        total_h = sum(row_max_h.get(r, 0) + V_GAP for r in range(n_rows_used))
+        fig_h = max(6, total_h + 1)
+
+        fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+        ax.set_aspect("equal")
         ax.axis("off")
+        ax.set_xlim(-0.5, n_cols_used * (COL_W + H_GAP) - H_GAP + 0.5)
+        ax.set_ylim(-total_h - 0.5, 1.0)
+
+        # ── draw each table box ───────────────────────────────────────
+        HEADER_CLR = "#4C8BF5"
+        ALT_CLR    = "#F0F4FF"
+        WHITE      = "#FFFFFF"
+        BORDER_CLR = "#2A5DB0"
+
+        box_centers: Dict[str, tuple] = {}  # (cx, cy) centre of box
+        for tname, table_cfg in self.tables.items():
+            x0, y0 = positions[tname]
+            h = heights[tname]
+            cx = x0 + COL_W / 2
+            box_centers[tname] = (cx, y0 - h / 2)
+
+            # header
+            hdr = mpatches.FancyBboxPatch(
+                (x0, y0 - HDR_H), COL_W, HDR_H,
+                boxstyle="square,pad=0", linewidth=1.2,
+                edgecolor=BORDER_CLR, facecolor=HEADER_CLR, zorder=2)
+            ax.add_patch(hdr)
+            ax.text(cx, y0 - HDR_H / 2, tname,
+                    ha="center", va="center", fontsize=8, fontweight="bold",
+                    color="white", zorder=3, clip_on=True)
+
+            # column rows
+            for j, col in enumerate(table_cfg.columns):
+                ry = y0 - HDR_H - (j + 1) * ROW_H
+                bg = ALT_CLR if j % 2 == 0 else WHITE
+                row_patch = mpatches.FancyBboxPatch(
+                    (x0, ry), COL_W, ROW_H,
+                    boxstyle="square,pad=0", linewidth=0.6,
+                    edgecolor=BORDER_CLR, facecolor=bg, zorder=2)
+                ax.add_patch(row_patch)
+                tags = ("PK " if col.is_pk else "") + ("FK " if col.is_fk else "")
+                mtype = _mermaid_type(col.data_type)
+                label = f"{tags}{col.column_name}  {mtype}"
+                ax.text(x0 + 0.08, ry + ROW_H / 2, label,
+                        ha="left", va="center", fontsize=6.5, color="#1a1a1a",
+                        zorder=3, clip_on=True)
+
+        # ── draw relationship arrows ──────────────────────────────────
+        seen_rels: set = set()
+        for rel in self.relationships:
+            parent = rel.target_table
+            child  = rel.source_table
+            if parent not in box_centers or child not in box_centers:
+                continue
+            key = (parent, child)
+            if key in seen_rels:
+                continue
+            seen_rels.add(key)
+            px, py = box_centers[parent]
+            cx2, cy2 = box_centers[child]
+            col_lbl = getattr(rel, "source_column", None) or \
+                      (getattr(rel, "source_columns", None) or [""])[0]
+            ax.annotate(
+                "", xy=(cx2, cy2), xytext=(px, py),
+                arrowprops=dict(arrowstyle="-|>", color="#555555",
+                                lw=1.2, connectionstyle="arc3,rad=0.08"),
+                zorder=1)
+            mx, my = (px + cx2) / 2, (py + cy2) / 2
+            ax.text(mx, my, col_lbl, fontsize=6, color="#333",
+                    ha="center", va="center",
+                    bbox=dict(facecolor="white", edgecolor="none", pad=1),
+                    zorder=4)
+
+        ax.set_title("Entity Relationship Diagram", fontsize=12, pad=10, fontweight="bold")
         plt.tight_layout()
         plt.savefig(str(output_path), dpi=150, bbox_inches="tight")
         plt.close(fig)
