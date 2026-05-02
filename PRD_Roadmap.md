@@ -1,7 +1,7 @@
 # PRD-Level Roadmap
 
 ## Product Name
-**FDL Synthetic Data Platform**  
+**Synthetic Data Platform**  
 _Excel-configurable, relationship-aware, enterprise-grade synthetic test data generation for snapshot, delta, and SCD2 workflows._
 
 ---

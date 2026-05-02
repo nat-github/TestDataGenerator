@@ -27,7 +27,7 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 # Keeping it stable (same text every call) maximises cache hit rate.
 _SYSTEM_PROMPT = """\
 You are an expert data engineer assistant embedded in a synthetic test-data \
-generation platform called the FDL Synthetic Data Platform. \
+generation platform called the Synthetic Data Platform. \
 You help infer relationships between database tables, enrich column \
 configurations with realistic generation rules, and explain data schemas \
 to business users.

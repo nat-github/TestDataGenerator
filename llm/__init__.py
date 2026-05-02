@@ -1,5 +1,5 @@
 """
-llm — GenAI / LLM integration layer for the FDL Synthetic Data Platform.
+llm — GenAI / LLM integration layer for the Synthetic Data Platform.
 
 Modules
 -------

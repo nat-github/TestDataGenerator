@@ -377,7 +377,7 @@ Rules:
             tables_list.append(tbl_dict)
 
         config: Dict[str, Any] = {
-            "config_format": "fdl-yaml-v1",
+            "config_format": "sdp-yaml-v1",
             "tables": tables_list,
         }
         return yaml.dump(config, sort_keys=False, allow_unicode=True, default_flow_style=False)

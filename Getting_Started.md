@@ -1,4 +1,4 @@
-# FDL Synthetic Data Platform — Complete Beginner's Guide
+# Synthetic Data Platform — Complete Beginner's Guide
 
 > **Who is this for?** Anyone joining the project who has never used this tool before.
 > After reading this you will be able to generate realistic test data, scan for PII,
@@ -133,7 +133,7 @@ pip install matplotlib           # if you want --er-format png
 Create `config/my_first.yaml`:
 
 ```yaml
-config_format: fdl-yaml-v1
+config_format: sdp-yaml-v1
 
 run_settings:
   default_records_per_table: 100
@@ -255,7 +255,7 @@ An Excel workbook with up to 4 sheets:
 Same information, but as a text file — easier for version control and automation.
 
 ```yaml
-config_format: fdl-yaml-v1
+config_format: sdp-yaml-v1
 
 run_settings:
   default_records_per_table: 1000
@@ -339,7 +339,7 @@ special_rules: PHONE
 # Full address: "Hoofdstraat 1, 1234 AB Amsterdam"
 special_rules: ADDRESS
 
-# Company name: "FDL Solutions B.V."
+# Company name: "Acme Solutions B.V."
 special_rules: COMPANY
 ```
 
@@ -506,7 +506,7 @@ special_rules: "PHONE;;NULL_PCT=15"
 ### Full realistic example config
 
 ```yaml
-config_format: fdl-yaml-v1
+config_format: sdp-yaml-v1
 
 tables:
   - name: global_customers
@@ -579,7 +579,7 @@ real account. The generator handles this automatically.
 ### Example: accounts → transactions
 
 ```yaml
-config_format: fdl-yaml-v1
+config_format: sdp-yaml-v1
 
 tables:
   - name: accounts
@@ -804,7 +804,7 @@ Next step:
 
 Generated `config/auto.yaml`:
 ```yaml
-config_format: fdl-yaml-v1
+config_format: sdp-yaml-v1
 run_settings:
   default_records_per_table: 1000
 tables:
@@ -1159,7 +1159,7 @@ python main.py collibra-import \
 | Collibra attribute | Becomes in config |
 |---|---|
 | Display name | column `name` |
-| Physical Data Type | `type` (mapped to FDL codes) |
+| Physical Data Type | `type` (mapped to platform type codes) |
 | Nullable | `nullable: true/false` |
 | Is Primary Key | `pk: true` |
 | Description | `description` |

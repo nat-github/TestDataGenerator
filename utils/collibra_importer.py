@@ -1,7 +1,7 @@
 """Collibra data-catalog importer.
 
 Fetches dataset / column definitions from the Collibra REST API v2 and
-converts them into the FDL YAML config format so they can drive data
+converts them into the YAML config format so they can drive data
 generation directly — no manual Excel/YAML authoring needed.
 
 Credentials (set as environment variables, never hardcoded):
@@ -32,11 +32,11 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Collibra → FDL data-type mapping
+# Collibra → data-type mapping
 # (Extend this map to match your organisation's custom Collibra type vocabulary)
 # ---------------------------------------------------------------------------
 _COLLIBRA_TYPE_MAP: Dict[str, str] = {
-    # Collibra physical/logical type → FDL data_type
+    # Collibra physical/logical type → data_type
     "varchar":          "VA256",
     "varchar2":         "VA256",
     "nvarchar":         "VA256",
@@ -145,7 +145,7 @@ def _attr_value(attrs: List[Dict], label: str) -> Optional[str]:
 class CollibraImporter:
     """
     Imports a dataset definition from Collibra and produces a YAML config
-    compatible with the FDL Synthetic Data Platform.
+    compatible with the Synthetic Data Platform.
     """
 
     def __init__(
@@ -210,9 +210,9 @@ class CollibraImporter:
         return []
 
     # ------------------------------------------------------------------
-    # Convert Collibra response → FDL YAML dict
+    # Convert Collibra response → YAML dict
     # ------------------------------------------------------------------
-    def to_fdl_config(self, fetched: Dict, table_name: Optional[str] = None) -> Dict:
+    def to_config(self, fetched: Dict, table_name: Optional[str] = None) -> Dict:
         asset = fetched["asset"]
         table_name = table_name or asset.get("displayName") or asset.get("name") or "table"
         # Sanitize for use as table identifier
@@ -242,7 +242,7 @@ class CollibraImporter:
             columns.append(col_entry)
 
         return {
-            "config_format": "fdl-yaml-v1",
+            "config_format": "sdp-yaml-v1",
             "run_settings": {
                 "default_records_per_table": 1000,
             },
@@ -269,7 +269,7 @@ class CollibraImporter:
         domain: Optional[str] = None,
     ) -> str:
         """
-        Search Collibra for dataset_name, convert to FDL YAML, write to output_path.
+        Search Collibra for dataset_name, convert to YAML, write to output_path.
         Returns the resolved output path.
         """
         import yaml  # PyYAML is in deps
@@ -287,7 +287,7 @@ class CollibraImporter:
         asset_id = assets[0]["id"]
         logger.info(f"Found asset id={asset_id}. Fetching columns...")
         fetched = self.fetch_dataset(asset_id)
-        config = self.to_fdl_config(fetched, table_name=dataset_name)
+        config = self.to_config(fetched, table_name=dataset_name)
         out = Path(output_path)
         out.parent.mkdir(parents=True, exist_ok=True)
         with open(out, "w", encoding="utf-8") as fh:

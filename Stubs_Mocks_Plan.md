@@ -49,7 +49,7 @@ These three fields were added specifically so stubs and mocks can be bolted on w
 ## Target State — What "One Stop Shop" Looks Like
 
 ```
-FDL YAML Config (same config you write today)
+YAML Config (same config you write today)
               │
               ▼
     ┌─────────────────────┐
@@ -174,13 +174,13 @@ python main.py generate --config config/accounts.yaml --output output/v1 --outpu
 **Steps:**
 1. `serialisers/sql_serializer.py`
 2. Config: specify target dialect — `sql_dialect: postgres | mysql | mssql | oracle | sqlite`
-3. Generate `CREATE TABLE` (from FDL types → SQL types mapping table)
+3. Generate `CREATE TABLE` (from platform types → SQL types mapping table)
 4. Generate `INSERT INTO` statements (batched, e.g. 500 rows per statement)
 5. Honour FK relationships: parent tables first, child tables second (same topological sort as Parquet path)
 6. Add `TRUNCATE` / `DELETE` preamble option for idempotent test runs
 
-**FDL type → SQL type mapping:**
-| FDL type | PostgreSQL | MySQL | SQL Server |
+**Platform type → SQL type mapping:**
+| Platform type | PostgreSQL | MySQL | SQL Server |
 |---|---|---|---|
 | `N` | `INTEGER` | `INT` | `INT` |
 | `N19` | `BIGINT` | `BIGINT` | `BIGINT` |
@@ -293,13 +293,13 @@ INSERT INTO accounts (ACCT_ID, ACCT_CCY, BOOKG_AMT_NMRC) VALUES
 **What:** Extend the three ML features to work with API/stub inputs and outputs.
 
 #### 6a — Auto-Config from OpenAPI Spec
-**Existing:** `infer-config` reads CSV/Parquet/Excel → writes FDL YAML
-**Extension:** `infer-config --input openapi.yaml` reads an OpenAPI spec → writes FDL YAML with API block pre-filled
+**Existing:** `infer-config` reads CSV/Parquet/Excel → writes YAML
+**Extension:** `infer-config --input openapi.yaml` reads an OpenAPI spec → writes YAML with API block pre-filled
 
 Steps:
 1. Detect `.yaml` / `.json` input that contains `openapi:` key
 2. Parse `paths`, `components/schemas`
-3. Map OpenAPI types to FDL types
+3. Map OpenAPI types to platform types
 4. Detect `enum` values → `business_values`
 5. Detect `format: iban`, `format: email` → `special_rules`
 6. Pre-fill `api:` block with the path, method, status codes from the spec
@@ -345,7 +345,7 @@ Claude suggests: `base_path`, `id_column`, `response_wrapper`, query params.
 
 | Component | Status | Notes |
 |---|---|---|
-| FDL YAML config format | **Unchanged** | New optional `api:` block added; existing configs still work |
+| YAML config format | **Unchanged** | New optional `api:` block added; existing configs still work |
 | `DataGenerator` core | **Unchanged** | Generates rows exactly as today |
 | ML features (PII, dist, auto-config) | **Extended** | New input types (OpenAPI spec) added |
 | `ColumnConfig` / `TableConfig` models | **Minor additions** | `api:` block on `TableConfig`; `output_format` already present |
@@ -379,7 +379,7 @@ Do Phase 1 first — it is the prerequisite for everything. Once the abstraction
 This is what the YAML will look like once the `api:` block is added — backwards compatible, all new fields optional:
 
 ```yaml
-config_format: fdl-yaml-v1
+config_format: sdp-yaml-v1
 run_settings:
   default_records_per_table: 100
   output_format: wiremock          # global default (optional)

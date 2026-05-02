@@ -1,4 +1,4 @@
-# ML Deep Dive — FDL Synthetic Data Platform
+# ML Deep Dive — Synthetic Data Platform
 
 *From "what does that even mean?" to "I could explain this at a technical review."*
 
@@ -146,7 +146,7 @@ Your Real Data File
 
 | Capability | Input | Output | When it runs |
 |---|---|---|---|
-| Auto-Config | CSV / Parquet / Excel file | FDL YAML config file | `infer-config` command, or on-demand |
+| Auto-Config | CSV / Parquet / Excel file | YAML config file | `infer-config` command, or on-demand |
 | PII Detector | Data file or existing config | Severity-ranked findings report | `pii-scan` command, or inside `infer-config` |
 | Distribution Fitter | Numeric column values | `{name, params, ks_stat}` block | Inside `infer-config`, or during generation |
 
@@ -186,7 +186,7 @@ The inferrer reads up to 5,000 rows of your file and makes six decisions per col
 ```
 For each column:
 │
-├─ 1. What FDL type is it?        (N, VA18, DT, DC, ...)
+├─ 1. What platform type is it?   (N, VA18, DT, DC, ...)
 ├─ 2. Is it a primary key?        (100% unique AND 0% null)
 ├─ 3. What null rate does it have? (e.g. 26% of values are missing)
 ├─ 4. Low-cardinality values?     (≤30 unique → use as business values)
@@ -198,7 +198,7 @@ For each column:
 
 **Type inference decision table:**
 
-| What pandas sees | FDL type assigned |
+| What pandas sees | Platform type assigned |
 |---|---|
 | Boolean | `A1` |
 | Integer, max < 1,000,000 | `N` |
@@ -240,11 +240,11 @@ config_dict = inferrer.infer_from_file("data/transactions.csv")
 
 ```python
 def _infer_column(self, series, col_name, table_name, pk_candidates, pii_map):
-    fdl_type  = _infer_fdl_type(series)          # step 1
+    col_type  = _infer_col_type(series)          # step 1
     null_rate = _null_rate(series)               # step 3
     is_pk     = col_name in pk_candidates        # step 2
 
-    cfg = {"name": col_name, "type": fdl_type}
+    cfg = {"name": col_name, "type": col_type}
 
     if is_pk:
         cfg["pk"] = True
@@ -256,11 +256,11 @@ def _infer_column(self, series, col_name, table_name, pk_candidates, pii_map):
         if bv:
             cfg["values"] = bv
         else:
-            bounds = self._compute_bounds(series, fdl_type)  # step 5a
+            bounds = self._compute_bounds(series, col_type)  # step 5a
             if bounds:
                 cfg.update(bounds)
             if self.fit_distributions:
-                dist = self._try_fit_distribution(series, fdl_type)  # step 5b
+                dist = self._try_fit_distribution(series, col_type)  # step 5b
                 if dist:
                     cfg["distribution"] = dist
 
@@ -719,9 +719,9 @@ TestDataGeneration/
 │   ├── __init__.py
 │   ├── auto_config.py               ← Feature 1
 │   │   ├── AutoConfigInferrer       class
-│   │   ├── _infer_fdl_type()        function — dtype → FDL type string
+│   │   ├── _infer_col_type()        function — dtype → platform type string
 │   │   ├── _null_rate()             function — fraction of NaN
-│   │   └── _build_fdl_config()      function — wraps tables in FDL envelope
+│   │   └── _build_config()          function — wraps tables in config envelope
 │   │
 │   ├── pii_detector.py              ← Feature 2
 │   │   ├── _NAME_RULES              list — 50+ column-name patterns
@@ -879,7 +879,7 @@ Not a confidence score but an error measure. Lower is better. `ks_stat = 0.0` me
 │ FEATURE        │ WHAT IT DOES                   │ HOW TO USE                │
 ├────────────────┼────────────────────────────────┼───────────────────────────┤
 │ Auto-Config    │ Reads real data file →          │ python main.py            │
-│                │ generates FDL YAML config       │   infer-config            │
+│                │ generates YAML config       │   infer-config            │
 │                │ with types, PKs, values,        │   --input data.csv        │
 │                │ bounds, distributions, PII      │   --output config.yaml    │
 ├────────────────┼────────────────────────────────┼───────────────────────────┤
@@ -907,4 +907,4 @@ Not a confidence score but an error measure. Lower is better. `ks_stat = 0.0` me
 
 ---
 
-*Document written for the FDL Synthetic Data Platform — ml/ package, utils/helpers.py, generators/data_generator.py*
+*Document written for the Synthetic Data Platform — ml/ package, utils/helpers.py, generators/data_generator.py*

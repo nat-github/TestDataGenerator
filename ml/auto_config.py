@@ -1,13 +1,13 @@
-"""Auto-config: infer a FDL YAML config from a sample data file.
+"""Auto-config: infer a YAML config from a sample data file.
 
 Reads a CSV, Parquet, or Excel file containing *real* data and produces a
-ready-to-use FDL YAML config that can be passed directly to:
+ready-to-use YAML config that can be passed directly to:
 
     python main.py generate --config <output.yaml>
 
 What gets inferred per column
 ──────────────────────────────
-  • FDL data type (N, N19, N38, DC, D, DT, TS, VA*, A*, T)
+  • Data type (N, N19, N38, DC, D, DT, TS, VA*, A*, T)
   • Primary key candidates   (100% unique, 0% null)
   • Low-cardinality values   → `values:` (business_values)
   • Numeric/date bounds      → `min:` / `max:`
@@ -40,9 +40,9 @@ _SAMPLE_SIZE     = 5_000  # max rows read from a file for inference
 
 
 # ---------------------------------------------------------------------------
-# FDL type inference
+# Type inference
 # ---------------------------------------------------------------------------
-def _infer_fdl_type(series: pd.Series) -> str:
+def _infer_col_type(series: pd.Series) -> str:
     dtype = series.dtype
 
     if pd.api.types.is_bool_dtype(dtype):
@@ -85,7 +85,7 @@ def _infer_fdl_type(series: pd.Series) -> str:
 
 class AutoConfigInferrer:
     """
-    Infer a FDL YAML config from one or more sample data files.
+    Infer a YAML config from one or more sample data files.
 
     Parameters
     ──────────
@@ -126,7 +126,7 @@ class AutoConfigInferrer:
         path: str,
         table_name: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Read a CSV / Parquet / Excel file and return a FDL YAML config dict."""
+        """Read a CSV / Parquet / Excel file and return a YAML config dict."""
         p = Path(path)
         suffix = p.suffix.lower()
         logger.info(f"Reading {p.name} ...")
@@ -147,7 +147,7 @@ class AutoConfigInferrer:
 
         tname = table_name or p.stem.lower().replace(" ", "_").replace("-", "_")
         table_cfg = self.infer_from_dataframe(df, tname)
-        return _build_fdl_config([table_cfg])
+        return _build_config([table_cfg])
 
     def infer_from_dataframe(
         self,
@@ -196,13 +196,13 @@ class AutoConfigInferrer:
         pk_candidates: List[str],
         pii_map:       Dict,
     ) -> Dict[str, Any]:
-        fdl_type  = _infer_fdl_type(series)
+        col_type  = _infer_col_type(series)
         null_rate = _null_rate(series)
         is_pk     = col_name in pk_candidates
 
         cfg: Dict[str, Any] = {
             "name": col_name.upper(),
-            "type": fdl_type,
+            "type": col_type,
         }
 
         if is_pk:
@@ -218,13 +218,13 @@ class AutoConfigInferrer:
                 cfg["values"] = bv
             else:
                 # Numeric / date bounds
-                bounds = self._compute_bounds(series, fdl_type)
+                bounds = self._compute_bounds(series, col_type)
                 if bounds:
                     cfg.update(bounds)
 
                 # Distribution fitting
                 if self.fit_distributions:
-                    dist = self._try_fit_distribution(series, fdl_type)
+                    dist = self._try_fit_distribution(series, col_type)
                     if dist:
                         cfg["distribution"] = dist
 
@@ -265,27 +265,27 @@ class AutoConfigInferrer:
         return ";".join(str(v) for v in clean.unique())
 
     def _compute_bounds(
-        self, series: pd.Series, fdl_type: str
+        self, series: pd.Series, col_type: str
     ) -> Optional[Dict[str, Any]]:
-        if fdl_type.startswith("N") or fdl_type == "DC":
+        if col_type.startswith("N") or col_type == "DC":
             numeric = pd.to_numeric(series, errors="coerce").dropna()
             if len(numeric) >= 2:
                 mn, mx = float(numeric.min()), float(numeric.max())
                 # Use int for integer types so YAML is clean
-                if fdl_type.startswith("N"):
+                if col_type.startswith("N"):
                     return {"min": int(mn), "max": int(mx)}
                 return {"min": round(mn, 4), "max": round(mx, 4)}
-        if fdl_type in ("D", "DT", "TS"):
+        if col_type in ("D", "DT", "TS"):
             dt = pd.to_datetime(series, errors="coerce").dropna()
             if len(dt) >= 2:
-                fmt = "%Y-%m-%d" if fdl_type == "D" else "%Y-%m-%d %H:%M:%S"
+                fmt = "%Y-%m-%d" if col_type == "D" else "%Y-%m-%d %H:%M:%S"
                 return {"min": dt.min().strftime(fmt), "max": dt.max().strftime(fmt)}
         return None
 
     def _try_fit_distribution(
-        self, series: pd.Series, fdl_type: str
+        self, series: pd.Series, col_type: str
     ) -> Optional[Dict]:
-        if not (fdl_type.startswith("N") or fdl_type == "DC"):
+        if not (col_type.startswith("N") or col_type == "DC"):
             return None
         numeric = pd.to_numeric(series, errors="coerce").dropna()
         if len(numeric) < _MIN_DIST_ROWS:
@@ -307,9 +307,9 @@ def _null_rate(series: pd.Series) -> float:
     return 0.0 if len(series) == 0 else float(series.isna().sum()) / len(series)
 
 
-def _build_fdl_config(table_configs: List[Dict]) -> Dict[str, Any]:
+def _build_config(table_configs: List[Dict]) -> Dict[str, Any]:
     return {
-        "config_format": "fdl-yaml-v1",
+        "config_format": "sdp-yaml-v1",
         "run_settings": {
             "default_records_per_table": 1000,
         },

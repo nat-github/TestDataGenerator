@@ -108,7 +108,7 @@ def build_parser() -> argparse.ArgumentParser:
     # ── infer-config ──────────────────────────────────────────────────────────
     infer_parser = subparsers.add_parser(
         "infer-config",
-        help="Infer a FDL YAML config from a sample CSV, Parquet, or Excel data file"
+        help="Infer a YAML config from a sample CSV, Parquet, or Excel data file"
     )
     infer_parser.add_argument("--input", required=True,
                               help="Path to sample data file (.csv, .parquet, .xlsx)")
@@ -129,10 +129,10 @@ def build_parser() -> argparse.ArgumentParser:
     # ── pii-scan ──────────────────────────────────────────────────────────────
     pii_parser = subparsers.add_parser(
         "pii-scan",
-        help="Scan a data file or FDL config for PII / sensitive columns"
+        help="Scan a data file or config for PII / sensitive columns"
     )
     pii_parser.add_argument("--input", required=True,
-                            help="Data file (.csv, .parquet, .xlsx) or FDL config (.yaml, .yml, .xlsx)")
+                            help="Data file (.csv, .parquet, .xlsx) or config (.yaml, .yml, .xlsx)")
     pii_parser.add_argument("--confidence", type=float, default=0.60,
                             help="Minimum confidence score to report (default: 0.60)")
     pii_parser.add_argument("--sample-size", type=int, default=5000,
@@ -517,7 +517,7 @@ def run_collibra_import(args) -> int:
 
 
 def run_infer_config(args) -> int:
-    """Infer a FDL YAML config from a sample data file."""
+    """Infer a YAML config from a sample data file."""
     configure_logging(getattr(args, "verbose", False))
     try:
         import yaml
@@ -559,7 +559,7 @@ def run_infer_config(args) -> int:
 
 
 def run_pii_scan(args) -> int:
-    """Scan a data file or FDL config for PII / sensitive columns."""
+    """Scan a data file or config for PII / sensitive columns."""
     configure_logging(getattr(args, "verbose", False))
     try:
         from ml.pii_detector import PIIDetector

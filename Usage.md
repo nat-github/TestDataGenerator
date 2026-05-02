@@ -828,14 +828,14 @@ python main.py generate \
 | Collibra attribute | Maps to |
 |---|---|
 | Column display name | `name` |
-| Physical Data Type / Data Type | `type` (mapped to FDL type codes) |
+| Physical Data Type / Data Type | `type` (mapped to platform type codes) |
 | Nullable / Is Nullable | `nullable` |
 | Is Primary Key / Primary Key | `pk: true` |
 | Description / Technical Description | `description` |
 
-### Collibra type → FDL type mapping
+### Collibra type → platform type mapping
 
-| Collibra type | FDL type |
+| Collibra type | Platform type |
 |---|---|
 | varchar, varchar2, text, clob | `VA256` |
 | char, nchar | `A` |
@@ -874,7 +874,7 @@ RULE:GLOBAL     → random locale per row from 18 supported locales
 | `EMAIL` | jan@example.nl | |
 | `PHONE` | +31612345678 | |
 | `ADDRESS` | Hoofdstraat 1, Amsterdam | |
-| `COMPANY` | FDL Solutions B.V. | |
+| `COMPANY` | Acme Solutions B.V. | |
 | `NAME:de_DE` | Hans Müller | German locale |
 | `NAME:fr_FR` | Jean Dupont | French locale |
 | `GLOBAL_NAME` | random locale per row | |

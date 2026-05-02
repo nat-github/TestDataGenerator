@@ -1,7 +1,7 @@
 [tool.poetry]
-name = "fdl-testdatageneration"
+name = "testdatageneration"
 version = "0.2.0"
-description = "FDL Synthetic Data Platform — relationship-aware parquet generation with GenAI support"
+description = "Synthetic Data Platform — relationship-aware parquet generation with GenAI support"
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
 package-mode = false

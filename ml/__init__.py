@@ -1,1 +1,1 @@
-# ml/ — AI/ML capabilities for the FDL Synthetic Data Platform
+# ml/ — AI/ML capabilities for the Synthetic Data Platform

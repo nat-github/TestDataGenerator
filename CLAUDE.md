@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-FDL Synthetic Data Platform — generates realistic, relationship-aware Parquet data from Excel or YAML configs. Supports snapshot generation, delta (CDC) processing, and SCD2 history. Uses SDV (Synthetic Data Vault) with automatic fallback to rule-based generation.
+Synthetic Data Platform — generates realistic, relationship-aware Parquet data from Excel or YAML configs. Supports snapshot generation, delta (CDC) processing, and SCD2 history. Uses SDV (Synthetic Data Vault) with automatic fallback to rule-based generation.
 
 ## Commands
 
@@ -107,7 +107,7 @@ Excel / YAML Config
          Uploads output directory to Azure Blob Storage or AWS S3
       │
  CollibraImporter (utils/collibra_importer.py)          [collibra-import only]
-         Fetches dataset/column definitions from Collibra REST API v2 → FDL YAML
+         Fetches dataset/column definitions from Collibra REST API v2 → YAML
 ```
 
 ### Key Modules
@@ -121,7 +121,7 @@ Excel / YAML Config
 | `utils/data_validator.py` | Post-generation FK relationship validation |
 | `utils/er_diagram.py` | ER diagram generation: Mermaid (zero-dep), Graphviz DOT, PNG (matplotlib optional) |
 | `utils/cloud_uploader.py` | Azure Blob Storage and AWS S3 upload — credentials from env vars only |
-| `utils/collibra_importer.py` | Collibra REST API v2 importer — dataset → FDL YAML config |
+| `utils/collibra_importer.py` | Collibra REST API v2 importer — dataset → YAML config |
 | `models/config_models.py` | Pydantic v2 models: `TableConfig`, `ColumnConfig`, `RelationshipConfig`, `DataType` enum |
 | `llm/client.py` | Shared Anthropic client factory with prompt caching and `lru_cache` |
 | `llm/relationship_inferrer.py` | LLM relationship inference — sends schemas to Claude, returns `RelationshipConfig` objects with confidence |
@@ -138,7 +138,7 @@ FK resolution runs after generation on both paths to ensure referential integrit
 
 **Excel workbook** (primary): four optional/required sheets — `Columns` is required; `Run_Settings`, `Tables`, `Relationships` are optional.
 
-**YAML** (`config_format: fdl-yaml-v1`): code-friendly alternative; same semantics as Excel. See `Yaml_Config_Schema.md` for canonical format.
+**YAML** (`config_format: sdp-yaml-v1`): code-friendly alternative; same semantics as Excel. See `Yaml_Config_Schema.md` for canonical format.
 
 ### Data Types
 

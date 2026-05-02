@@ -31,7 +31,7 @@ The downstream logic should not need to care whether the source was Excel or YAM
 ## Recommended top-level YAML structure
 
 ```yaml
-config_format: fdl-yaml-v1
+config_format: sdp-yaml-v1
 run_settings:
   default_records_per_table: 1000
   operation_column: operation_type
@@ -84,7 +84,7 @@ Optional but recommended.
 Recommended value:
 
 ```yaml
-config_format: fdl-yaml-v1
+config_format: sdp-yaml-v1
 ```
 
 This helps version the schema over time.

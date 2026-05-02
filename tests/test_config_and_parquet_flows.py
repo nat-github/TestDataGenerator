@@ -154,7 +154,7 @@ def _write_workbook(path: Path, with_optional_sheets: bool = True) -> None:
 
 def _write_yaml_config(path: Path, with_optional_sections: bool = True) -> None:
     config: dict[str, Any] = {
-        "config_format": "fdl-yaml-v1",
+        "config_format": "sdp-yaml-v1",
         "tables": [
             {
                 "name": "parent",

@@ -1,4 +1,4 @@
-# FDL Synthetic Data Platform — Command Reference
+# Synthetic Data Platform — Command Reference
 # ================================================
 
 # SETUP
