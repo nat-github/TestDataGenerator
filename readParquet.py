@@ -9,7 +9,7 @@ from deltalake import DeltaTable
 from pyspark.sql import DataFrame, SparkSession
 
 
-DEFAULT_TABLE_ROOT = "output/account_booking_delta/df_cac_acg_entr"
+DEFAULT_TABLE_ROOT = "output/delta_run/df_cac_acg_entr"
 
 
 @dataclass
