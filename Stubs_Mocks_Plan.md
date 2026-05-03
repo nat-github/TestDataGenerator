@@ -1,476 +1,603 @@
-# Stubs & Mocks Extension — Plan
+# Stubs & Mocks — Plan
 
-*One-stop-shop for synthetic data across every layer of the test stack.*
-
----
-
-## The Big Idea
-
-Today the platform generates **Parquet files** — data at rest, used by data pipelines and analytics tests.
-
-The extension makes the same config, the same ML intelligence, and the same generation engine also produce:
-
-- **WireMock stubs** — HTTP API responses your services call
-- **JSON/XML fixtures** — payload files for unit and integration tests
-- **SQL INSERT scripts** — seed data for relational databases
-- **Pact/contract files** — consumer-driven contract test payloads
-- **Postman collections** — ready-to-run API test suites
-
-**One YAML config → every format your test environment needs.**
+*A parallel track for generating API stubs, mocks, contracts, and fixtures —
+sharing the value-generation engine but rooted in HTTP/OpenAPI semantics, not
+the relational table model.*
 
 ---
 
-## Why This Makes Sense
+## 1. The Big Idea
 
-The platform already knows:
-- What data types each column holds
-- What realistic values look like (business values, distributions, special rules)
-- Which columns are PII (needs masking/replacement)
-- How tables relate to each other (FK relationships)
+Today the platform generates **Parquet files** from `TableConfig` +
+`RelationshipConfig` (data at rest, used by data pipelines and analytics tests).
 
-All of that knowledge is equally useful whether you're writing it to a Parquet file or an HTTP JSON response. The **data generation core does not change** — only the **output serialiser** changes.
+The stubs/mocks track is a **sibling capability** that generates:
 
-We already planted the seeds for this in the previous session:
+- **WireMock stub mappings** — HTTP request/response pairs your services hit during tests
+- **Pact contract files** — consumer-driven contract test interactions
+- **Postman collections** — runnable API test suites
+- **OpenAPI examples** — `examples:` blocks injected into existing specs
+- **JSON / XML response fixtures** — payload bodies for unit and integration tests
+- **HAR / cURL recipes** — capture-and-replay artefacts
+
+It does **not** extend `TableConfig`. It has its own config model (`MockConfig`)
+rooted in HTTP semantics: paths, operations, request matchers, response
+templates, status codes, scenarios.
+
+The two tracks share the **engine** (value generation, rule evaluation, LLM
+provider) and nothing else.
+
+---
+
+## 2. Why Parallel, Not Extension
+
+An earlier draft of this plan extended `TableConfig` with an `api:` block.
+That works only when an API resource maps 1:1 to a database table — which is
+rarely true for real APIs. Things that don't fit the table model:
+
+- **Stateful endpoints** — idempotency keys, OAuth dances, paginated cursors
+- **Multiple operations per path** — `GET / POST / PUT / DELETE /accounts/{id}`
+- **Request shapes with no FK** — `POST /payments` body validation
+- **Cross-cutting responses** — 4xx error envelopes, rate-limit headers, CORS preflight
+- **Hypermedia / nested resources** — HAL/HATEOAS links, embedded sub-resources
+- **Streaming, SSE, WebSocket, gRPC, GraphQL** — request/response duality breaks
+
+Forcing all of this through `TableConfig` would be a leaky abstraction. A
+separate model rooted in OpenAPI's vocabulary (paths × operations × schemas ×
+responses) is the right shape.
+
+---
+
+## 3. Architecture — Shared Engine, Separate Models
+
+```
+                        ┌─────────────────────────────────┐
+                        │       Shared engine layer        │
+                        │  • utils/helpers.py (60+ rules) │
+                        │  • utils/mimesis_provider.py    │
+                        │  • utils/rule_evaluator.py      │
+                        │  • llm/multi_provider.py        │
+                        │  • llm/client.py (system prompt)│
+                        └──────┬──────────────────┬───────┘
+                               │                  │
+            ┌──────────────────┘                  └──────────────────┐
+            ▼                                                         ▼
+  ┌─────────────────────┐                           ┌─────────────────────────┐
+  │   Data track         │                           │   Stubs/Mocks track     │
+  │   (today)            │                           │   (this plan)           │
+  ├─────────────────────┤                           ├─────────────────────────┤
+  │  TableConfig +       │                           │  MockConfig +           │
+  │  RelationshipConfig  │                           │  EndpointConfig +       │
+  │                      │                           │  Req/Resp templates     │
+  ├─────────────────────┤                           ├─────────────────────────┤
+  │  Inputs:             │                           │  Inputs:                │
+  │  • Excel             │                           │  • OpenAPI / Swagger    │
+  │  • YAML / JSON       │                           │  • Postman collection   │
+  │  • Collibra          │                           │  • HAR capture          │
+  │  • Sample files      │                           │  • Hand-authored YAML   │
+  ├─────────────────────┤                           ├─────────────────────────┤
+  │  Outputs:            │                           │  Outputs:               │
+  │  • Parquet (default) │                           │  • WireMock mappings    │
+  │  • Delta Lake        │                           │  • Pact contracts       │
+  │  • SCD2              │                           │  • Postman collections  │
+  │  • SQL seeds (1)     │                           │  • OpenAPI examples     │
+  │  • JSON Lines (1)    │                           │  • JSON/XML fixtures    │
+  └─────────────────────┘                           └─────────────────────────┘
+        (1) JSON Lines / SQL serialisers for tabular data live on the
+            data track; they reshape rows, they don't model HTTP.
+```
+
+The shared engine is provider-agnostic and format-blind. Both tracks call it
+when they need a realistic IBAN, a regex-conformant invoice number, or a
+locale-aware name. Neither track knows about the other's config model.
+
+---
+
+## 4. Primary Inputs
+
+The stubs/mocks track accepts API-shaped inputs, not table configs:
+
+| Input | Source | Use |
+|---|---|---|
+| **OpenAPI 3.0 / 3.1 spec** | `openapi.yaml`, `swagger.json` | Discover paths, operations, schemas, examples — convert to internal `MockConfig` |
+| **Hand-authored mock YAML** (`sdp-mock-v1`) | YAML written by the user | Direct `MockConfig` definition for endpoints with no spec yet |
+| **Postman collection** | Postman v2.1 export | Reverse-engineer endpoints + example bodies |
+| **HAR file** | Browser/proxy capture | Replay-style stubs from real traffic |
+| **OpenAPI 2.0 / Swagger** | Older specs | Same as 3.x via converter |
+
+There is **no** ingestion path from `TableConfig` → `MockConfig`. The two
+config models are independent. (A future helper could *suggest* a `MockConfig`
+from a `TableConfig` for the narrow case where an API mirrors a table, but
+that's a convenience tool, not the primary path.)
+
+---
+
+## 5. Internal Model — `MockConfig`
+
+A first sketch of the pydantic model, parallel to `models/config_models.py`:
 
 ```python
-# models/config_models.py — already in the codebase
-class ColumnConfig(BaseModel):
-    distribution:  Optional[Dict[str, Any]] = None  # drives realistic values
-    example_value: Optional[Any] = None             # canonical value for stub headers/examples
+# models/mock_models.py — net new
 
-class TableConfig(BaseModel):
-    output_format: Optional[str] = None             # "parquet" | "json" | "wiremock" | ...
+class MockConfig(BaseModel):
+    """Top-level container for an API mock specification."""
+    config_format: Literal["sdp-mock-v1"]
+    info: MockInfo                          # title, version, description
+    servers: List[ServerConfig]             # base URLs
+    endpoints: List[EndpointConfig]
+    schemas: Dict[str, SchemaConfig]        # reusable response/request shapes
+    scenarios: List[ScenarioConfig] = []    # optional stateful sequences
+    settings: MockSettings = ...            # latency, error rates, dialects
+
+
+class EndpointConfig(BaseModel):
+    """One HTTP operation on one path."""
+    name: str                               # human-readable id
+    path: str                               # e.g. /accounts/{id}
+    method: Literal["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]
+    request: RequestMatcher
+    responses: List[ResponseTemplate]       # 200 + 4xx variants
+    examples: int = 5                       # how many concrete stubs to render
+    priority: int = 5                       # WireMock priority for overlap resolution
+
+
+class RequestMatcher(BaseModel):
+    """How an incoming request is matched."""
+    path_params: Dict[str, ValueSpec] = {}  # /{id} → spec
+    query_params: Dict[str, ValueSpec] = {}
+    headers: Dict[str, ValueSpec] = {}
+    body_schema: Optional[SchemaConfig] = None
+    body_match_mode: Literal["exact", "json-equal", "json-path", "regex"] = "json-equal"
+
+
+class ResponseTemplate(BaseModel):
+    """How a response is generated."""
+    status: int                             # 200, 404, 500, …
+    headers: Dict[str, ValueSpec] = {}
+    body_schema: Optional[SchemaConfig] = None
+    body_template: Optional[str] = None     # Jinja-style template for raw bodies
+    weight: float = 1.0                     # used when an endpoint emits >1 response variant
+    delay_ms: Optional[int] = None          # simulate latency
+
+
+class SchemaConfig(BaseModel):
+    """Re-usable JSON Schema fragment with field-level value specs."""
+    type: Literal["object", "array", "string", "number", "integer", "boolean"]
+    properties: Dict[str, "FieldSpec"] = {}
+    items: Optional["FieldSpec"] = None     # for arrays
+    required: List[str] = []
+
+
+class FieldSpec(BaseModel):
+    """How to generate a single field value at render time."""
+    type: str                               # OpenAPI type or platform type (VA32, N10, …)
+    format: Optional[str] = None            # email, iban, uuid, date-time, …
+    special_rule: Optional[str] = None      # routes through utils/helpers.py
+    business_values: Optional[List[Any]] = None
+    pattern: Optional[str] = None           # regex
+    minimum: Optional[float] = None
+    maximum: Optional[float] = None
+    nullable: bool = False
+    null_rate: float = 0.0
+    example: Optional[Any] = None           # canonical example for OpenAPI examples block
+
+
+class ScenarioConfig(BaseModel):
+    """Stateful sequence: request N changes the response of request N+1."""
+    name: str
+    states: List[StateTransition]
+
+
+class MockSettings(BaseModel):
+    base_path: str = ""
+    default_latency_ms: int = 0
+    error_injection_rate: float = 0.0       # global 5xx injection probability
+    cors_enabled: bool = True
 ```
 
-These three fields were added specifically so stubs and mocks can be bolted on without touching the existing config format.
+**Key design points:**
+
+- `FieldSpec.special_rule` routes to `utils/helpers.py` exactly the same way
+  `ColumnConfig.special_rules` does today — that's how the engine is shared.
+- `ScenarioConfig` makes statefulness a first-class concept (snapshot-only
+  thinking would be wrong for mocks).
+- `body_template` lets users skip schema definition for raw payloads (XML,
+  Protobuf JSON, anything weird) — Jinja-style placeholders that resolve
+  through the same value generators.
+- `priority` and `weight` give us WireMock-compatible request matching and
+  response variant selection out of the box.
 
 ---
 
-## Target State — What "One Stop Shop" Looks Like
+## 6. Configuration — sample `sdp-mock-v1` YAML
 
+```yaml
+config_format: sdp-mock-v1
+
+info:
+  title: Account Service Mocks
+  version: 1.2.0
+
+servers:
+  - url: http://localhost:8080/api/v1
+
+settings:
+  default_latency_ms: 25
+  error_injection_rate: 0.02
+  cors_enabled: true
+
+schemas:
+  Account:
+    type: object
+    required: [iban, currency, balance]
+    properties:
+      iban:      { type: string, special_rule: IBAN, example: DE89370400440532013000 }
+      currency:  { type: string, business_values: [EUR, USD, INR, GBP] }
+      balance:   { type: number, minimum: 0, maximum: 1_000_000 }
+      opened_at: { type: string, format: date-time }
+      holder:    { type: string, special_rule: NAME }
+
+  Error:
+    type: object
+    properties:
+      code:    { type: string, business_values: [NOT_FOUND, FORBIDDEN, RATE_LIMITED] }
+      message: { type: string }
+
+endpoints:
+  - name: list_accounts
+    path: /accounts
+    method: GET
+    request:
+      query_params:
+        page:  { type: integer, minimum: 1, example: 1 }
+        size:  { type: integer, minimum: 1, maximum: 100, example: 25 }
+    responses:
+      - status: 200
+        headers:
+          Content-Type: { type: string, example: application/json }
+        body_schema:
+          type: array
+          items: { $ref: Account }
+
+  - name: get_account_by_id
+    path: /accounts/{iban}
+    method: GET
+    request:
+      path_params:
+        iban: { type: string, special_rule: IBAN }
+    responses:
+      - status: 200
+        weight: 0.9
+        body_schema: { $ref: Account }
+      - status: 404
+        weight: 0.1
+        body_schema: { $ref: Error }
+
+  - name: create_account
+    path: /accounts
+    method: POST
+    request:
+      headers:
+        Idempotency-Key: { type: string, format: uuid }
+      body_schema: { $ref: Account }
+    responses:
+      - status: 201
+        body_schema: { $ref: Account }
+      - status: 422
+        body_schema: { $ref: Error }
+        weight: 0.05
+
+scenarios:
+  - name: rate_limit_after_3_calls
+    states:
+      - on_match: { endpoint: list_accounts }
+        after: 3
+        next_response: { status: 429, body: { code: RATE_LIMITED } }
 ```
-YAML Config (same config you write today)
-              │
-              ▼
-    ┌─────────────────────┐
-    │   Data Generator     │   ← unchanged core, same ML features
-    │   (generates rows)   │
-    └──────────┬──────────┘
-               │
-    ┌──────────▼──────────────────────────────────────────────────┐
-    │                  Output Serialiser (new)                     │
-    ├──────────────────────────────────────────────────────────────┤
-    │  parquet  │  json  │  xml  │  sql  │  wiremock  │  pact     │
-    └──────────────────────────────────────────────────────────────┘
-               │
-    ┌──────────▼──────────────────────────────────────┐
-    │            Output folder                         │
-    │  output/run_01/                                  │
-    │  ├── parquet/  df_cac_acg_entr.parquet           │  ← today
-    │  ├── json/     df_cac_acg_entr.json              │  ← new
-    │  ├── sql/      df_cac_acg_entr_seed.sql          │  ← new
-    │  ├── wiremock/ GET_accounts_200.json             │  ← new
-    │  └── pact/     consumer-provider.json            │  ← new
-    └─────────────────────────────────────────────────┘
-```
+
+This is **its own file format** (`sdp-mock-v1`), not a section grafted onto
+`sdp-yaml-v1`. The two are independently versionable.
 
 ---
 
-## Feature Mapping — What Carries Over
+## 7. What Carries Over — explicit module-by-module
 
-| Existing Feature | How It Extends to Stubs/Mocks |
+### Shared verbatim (zero changes)
+
+| Module | Why it works for the mocks track |
 |---|---|
-| Business values (`values: EUR;USD;INR`) | Enum constraints in JSON Schema / OpenAPI examples |
-| Special rules (`IBAN`, `EMAIL`, `NAME`) | Generates realistic values in API response bodies |
-| PII Detector | Flags which response fields must never contain real data |
-| Distribution Fitter | Realistic numeric values in response payloads (amounts, counts, scores) |
-| Auto-Config (`infer-config`) | Can now also read an OpenAPI spec and infer stub config |
-| FK Relationships | Parent-child IDs stay consistent across JSON responses (same as Parquet) |
-| Null rates | `nullable: true` in JSON Schema; random null injection in responses |
-| Delta / SCD2 | Webhook payloads — "what changed" events (INSERT/UPDATE/DELETE) |
-| Cloud upload | Upload WireMock stubs to Azure/S3 alongside Parquet output |
-| LLM enrichment | Claude can suggest API response structure from endpoint descriptions |
+| `utils/helpers.py` | A realistic IBAN / email / NAME is the same value whether it lands in a Parquet cell or a JSON response body |
+| `utils/mimesis_provider.py` | Same — locale-aware value generators are format-agnostic |
+| `utils/rule_evaluator.py` | when/then maps cleanly to "if request header X, then response field Y"; derived expressions resolve placeholders in body templates |
+| `llm/multi_provider.py` | Provider abstraction — useful for "synthesise a 429 error envelope", "draft a missing example for this schema", "expand a one-line endpoint description into a full ResponseTemplate" |
+| `llm/client.py` (system prompt + cache_control) | Same |
+
+### Shared with adapter (small wrapper)
+
+| Module | What's needed |
+|---|---|
+| `utils/config_parser.py` | Add a sibling `MockConfigParser` that loads `sdp-mock-v1` YAML / OpenAPI / Postman. Existing `ConfigParser` untouched |
+| Validation (`models/`) | New `MockConfig` pydantic models in `models/mock_models.py`; existing `config_models.py` untouched |
+
+### Does **not** carry over (relational-only, intentionally)
+
+| Module | Why not |
+|---|---|
+| `ml/relationship_signals.py`, `ml/relationship_classifier.py`, `ml/relationship_feedback_store.py`, `ml/relationship_inferrer.py` | All exist to answer "which child column references which parent column?" — a question that has no analogue in the API world |
+| `llm/relationship_inferrer.py` | Same — specific to FK inference between tables |
+| `models/config_models.py:RelationshipConfig` | Endpoints don't have FK-style references between them |
+| `generators/data_generator.py` (FK resolution pass, SDV synthesizer) | A `GET /accounts/{id}` mock has no FK semantics; SDV's relational synthesis doesn't apply to HTTP |
+| `utils/parquet_post_processor.py` (delta/SCD2) | Versioning concerns belong to the data track. Webhook-style "what changed" events are a separate idea (see §11) |
+| `utils/data_validator.py` | FK-aware validator — replaced by JSON Schema validation in the mocks track |
+
+### Net new modules
+
+| New module | Purpose |
+|---|---|
+| `models/mock_models.py` | `MockConfig`, `EndpointConfig`, `RequestMatcher`, `ResponseTemplate`, `SchemaConfig`, `FieldSpec`, `ScenarioConfig` |
+| `mocks/config_parser.py` | Parse `sdp-mock-v1` YAML/JSON; validate against schema |
+| `mocks/openapi_importer.py` | OpenAPI 3.x → `MockConfig` |
+| `mocks/postman_importer.py` | Postman v2.1 collection → `MockConfig` |
+| `mocks/har_importer.py` | HAR capture → `MockConfig` |
+| `mocks/template_engine.py` | Jinja-style placeholder resolver that calls into `utils/helpers.py` |
+| `mocks/scenario_engine.py` | Stateful scenario evaluation (request log + state transitions) |
+| `mocks/renderers/wiremock.py` | `MockConfig` → WireMock `mappings/` + `__files/` directory tree |
+| `mocks/renderers/pact.py` | `MockConfig` → Pact v3 JSON files |
+| `mocks/renderers/postman.py` | `MockConfig` → Postman collection v2.1 |
+| `mocks/renderers/openapi_examples.py` | Inject `examples:` blocks into an existing OpenAPI spec |
+| `mocks/renderers/json_fixture.py` | Standalone JSON / JSON Lines / XML response bodies |
 
 ---
 
-## The Plan — Six Phases
+## 8. Phases — re-anchored to ingest-first
+
+The original plan had output abstraction as Phase 1. Rebooted: ingest the
+spec first, validate the model, then build renderers.
+
+### Phase A — Internal model & validation
+*The foundation: define the data structures and parser.*
+
+- Create `models/mock_models.py`
+- Hand-author a `sdp-mock-v1` YAML loader in `mocks/config_parser.py`
+- Round-trip tests (YAML → MockConfig → YAML)
+- JSON Schema for IDE validation: `schemas/sdp_mock.schema.json`
+
+**Effort:** Medium. Models + parser + tests, no behaviour beyond round-trip.
+
+### Phase B — OpenAPI ingest
+*Make the most-used input format work end to end.*
+
+- `mocks/openapi_importer.py` — walk `paths`, `components.schemas`, `examples`
+- Map OpenAPI types → `FieldSpec` (string/integer/number/array/object)
+- Detect `format: email|date-time|uuid|iban` → `special_rule`
+- Detect `enum` → `business_values`
+- Pull `example:` and `examples:` blocks straight through
+- CLI: `python main.py mock-init --from openapi.yaml --output mocks.yaml`
+
+**Effort:** Medium. OpenAPI parsing has gotchas ($refs, allOf/oneOf,
+discriminators), but a 90% solution lands quickly.
+
+### Phase C — Template engine + value generation
+*Bridge `FieldSpec` to actual bytes.*
+
+- `mocks/template_engine.py` — render a `SchemaConfig` to a JSON document by
+  calling `utils/helpers.py` for each leaf
+- Honour `special_rule`, `business_values`, `pattern`, `minimum/maximum`,
+  `nullable`, `null_rate`
+- Jinja-style `{{ placeholder }}` resolution in `body_template` strings
+- Deterministic mode via `--seed`
+
+**Effort:** Low-medium. Engine already exists; this is the wiring layer.
+
+### Phase D — WireMock renderer
+*The headline output format.*
+
+- `mocks/renderers/wiremock.py`
+- For each `EndpointConfig`, emit one WireMock mapping JSON per response
+  variant, weighted by `weight`
+- Generate N concrete examples per endpoint (configurable via `examples:`)
+- Honour `priority`, `delay_ms`, header matchers, query param matchers
+- Output: WireMock-standard `mappings/*.json` + `__files/` directory
+- CLI: `python main.py mock-render --config mocks.yaml --output stubs/ --format wiremock`
+
+**Effort:** Medium-high. WireMock has a rich matcher language — getting the
+mapping JSON right is more careful translation than novel logic.
+
+### Phase E — Pact, Postman, OpenAPI-examples renderers
+*Cover the contract-test and exploratory-test workflows.*
+
+- `mocks/renderers/pact.py` — Pact v3 interaction files
+- `mocks/renderers/postman.py` — Collection v2.1
+- `mocks/renderers/openapi_examples.py` — round-trip a spec, populating empty
+  `example:` slots from generated values
+
+**Effort:** Medium each. Format-spec work; deterministic translations.
+
+### Phase F — JSON / XML fixture renderer
+*Standalone payload files, no HTTP wrapper.*
+
+- `mocks/renderers/json_fixture.py` — write `<endpoint>_<status>.json` per
+  endpoint+status, plus `<schema>.json` for reusable schemas
+
+**Effort:** Low. Subset of the WireMock renderer's body work.
+
+### Phase G — Scenarios & stateful stubs
+*Make sequencing a first-class feature.*
+
+- `mocks/scenario_engine.py` — request-log + state transitions
+- WireMock has a `scenarioName` + `requiredScenarioState` mechanism we can
+  target; Pact expresses provider state in interactions
+- CLI: `python main.py mock-test --config mocks.yaml --port 8080` (run a
+  local WireMock-style server, optional)
+
+**Effort:** Medium-high. The state model is small; the integrations to each
+tool's scenario primitives are the work.
+
+### Phase H — LLM-assisted authoring
+*Bring the AI features over for the new track.*
+
+- `python main.py mock-enrich --spec partial.yaml --output enriched.yaml` —
+  fills missing examples, error responses, and schema descriptions via the
+  multi-provider abstraction
+- New prompt template targeted at `MockConfig` shape
+- Optional: suggest a full `MockConfig` from a one-paragraph endpoint
+  description (`mock-init --description "Returns paginated transactions for an IBAN"`)
+
+**Effort:** Low (prompt engineering on existing infra).
+
+### Phase I — Postman / HAR ingest
+*Reverse-engineer existing artefacts into `MockConfig`.*
+
+- `mocks/postman_importer.py`
+- `mocks/har_importer.py`
+- Useful for legacy systems where the only available source of truth is a
+  shared Postman collection or a captured browser session
+
+**Effort:** Medium each. Format parsing + heuristics for inferring schemas
+from concrete examples.
 
 ---
 
-### Phase 1 — Output Abstraction Layer
-*Foundation: decouple "generate data" from "write data"*
+## 9. CLI shape
 
-**What:** Introduce a clean `OutputSerializer` interface so the generator does not need to know what format it's writing. Today it hardcodes Parquet. After this phase, it hands rows to a serialiser and doesn't care what happens next.
+Separate command namespace (`mock-*`) so it doesn't muddy the data track:
 
-**Steps:**
-1. Create `serialisers/` package
-2. Define `BaseSerializer` abstract class with one method: `write(table_name, dataframe, config, output_dir)`
-3. Move existing Parquet logic into `serialisers/parquet_serializer.py`
-4. Wire `DataGenerator.export_to_parquet()` to call the serialiser instead
-5. Make serialiser selection driven by `output_format` on `TableConfig` or a new CLI flag `--output-format`
-
-**Config change (backward compatible):**
-```yaml
-# Per-table (existing field, now active)
-tables:
-  - name: accounts
-    output_format: json   # parquet | json | xml | sql | wiremock | pact
-
-# Or global (new run_settings field)
-run_settings:
-  output_format: wiremock
-```
-
-**CLI change:**
 ```bash
-python main.py generate --config config/accounts.yaml --output output/v1 --output-format json
+# Ingest an OpenAPI spec → sdp-mock-v1 YAML
+python main.py mock-init --from api/openapi.yaml --output mocks/accounts.yaml
+
+# Render WireMock stubs from a mock config
+python main.py mock-render --config mocks/accounts.yaml \
+    --output stubs/accounts/ --format wiremock --examples 20 --seed 42
+
+# Render multiple formats in one go
+python main.py mock-render --config mocks/accounts.yaml \
+    --output stubs/accounts/ --format wiremock,pact,postman
+
+# Validate a mock config against the schema
+python main.py mock-lint --config mocks/accounts.yaml
+
+# LLM-enrich a partial spec (fill missing examples / error responses)
+python main.py mock-enrich --config mocks/accounts.yaml \
+    --output mocks/accounts_enriched.yaml
+
+# Reverse: ingest a Postman collection or HAR file
+python main.py mock-init --from postman_collection.json --output mocks/x.yaml
+python main.py mock-init --from session.har --output mocks/y.yaml
+
+# Run a local mock server (optional, Phase G)
+python main.py mock-serve --config mocks/accounts.yaml --port 8080
 ```
 
-**Effort:** Medium. Core refactor but no new features — existing tests must still pass.
+The existing `generate`, `delta`, `scd2`, `lint`, `enrich`, `infer-config`,
+`pii-scan`, `infer-relationships`, `record-feedback`, `collibra-import` data
+commands are **untouched**.
 
 ---
 
-### Phase 2 — JSON & XML Fixture Serialisers
-*Most common need: flat test fixture files*
+## 10. What carries vs. doesn't — at a glance
 
-**What:** Take the generated DataFrame and write it as JSON (array of objects) or XML.
-
-**Steps:**
-1. `serialisers/json_serializer.py` — writes `[{col: val, ...}, ...]` per table
-2. `serialisers/xml_serializer.py` — wraps each row in a configurable root/record element
-3. Add config options for JSON structure: flat array vs. nested (for API-shaped payloads)
-4. Handle PII-flagged columns: replace with `special_rules`-generated synthetic values (already done by the generator — no extra work needed)
-5. Add `--output-format json` and `--output-format xml` to CLI
-
-**Output examples:**
-
-```json
-// output/json/accounts.json
-[
-  { "ACCT_ID": "DE89370400440532013000", "ACCT_CCY": "EUR", "BOOKG_AMT_NMRC": 1420 },
-  { "ACCT_ID": "GB29NWBK60161331926819", "ACCT_CCY": "USD", "BOOKG_AMT_NMRC": 890 }
-]
-```
-
-```xml
-<!-- output/xml/accounts.xml -->
-<accounts>
-  <account>
-    <ACCT_ID>DE89370400440532013000</ACCT_ID>
-    <ACCT_CCY>EUR</ACCT_CCY>
-  </account>
-</accounts>
-```
-
-**Effort:** Low. pandas has `df.to_json()` and `df.to_xml()` — thin wrappers only.
+| Component | Stays as-is | Adapter | Net new | Not used |
+|---|:---:|:---:|:---:|:---:|
+| `utils/helpers.py` | ✓ | | | |
+| `utils/mimesis_provider.py` | ✓ | | | |
+| `utils/rule_evaluator.py` | ✓ | | | |
+| `llm/multi_provider.py` | ✓ | | | |
+| `llm/client.py` | ✓ | | | |
+| `models/config_models.py` (TableConfig etc.) | ✓ | | | |
+| `models/mock_models.py` | | | ✓ | |
+| `utils/config_parser.py` (`ConfigParser`) | ✓ | | | |
+| `mocks/config_parser.py` (`MockConfigParser`) | | | ✓ | |
+| `mocks/openapi_importer.py` | | | ✓ | |
+| `mocks/template_engine.py` | | | ✓ | |
+| `mocks/scenario_engine.py` | | | ✓ | |
+| `mocks/renderers/*` | | | ✓ | |
+| `ml/relationship_*.py` | | | | ✓ |
+| `llm/relationship_inferrer.py` | | | | ✓ |
+| `llm/schema_enricher.py` | | ✓ (sibling `mock_enricher.py`) | | |
+| `generators/data_generator.py` | | | | ✓ |
+| `utils/parquet_post_processor.py` | | | | ✓ |
+| `utils/data_validator.py` | | | | ✓ (replaced by JSON Schema validation) |
 
 ---
 
-### Phase 3 — SQL Seed Script Serialiser
-*For teams whose tests load data into a real database*
+## 11. Adjacent question — webhook events from delta
 
-**What:** Generate `INSERT INTO` statements that can be run against any relational database to seed test data.
+The data track produces delta/SCD2 outputs that *could* be re-shaped as
+webhook event payloads (`{ "event": "ACCOUNT_UPDATED", "payload": {...} }`).
+This is a small standalone feature that genuinely belongs to the data track,
+not the mocks track — the input is a Parquet snapshot, the output is JSON
+events derived from row-level changes. It's listed here only because the old
+plan rolled it in. Recommended placement: a separate `--event-format` flag on
+`delta`, kept distinct from `MockConfig`.
 
-**Steps:**
-1. `serialisers/sql_serializer.py`
-2. Config: specify target dialect — `sql_dialect: postgres | mysql | mssql | oracle | sqlite`
-3. Generate `CREATE TABLE` (from platform types → SQL types mapping table)
-4. Generate `INSERT INTO` statements (batched, e.g. 500 rows per statement)
-5. Honour FK relationships: parent tables first, child tables second (same topological sort as Parquet path)
-6. Add `TRUNCATE` / `DELETE` preamble option for idempotent test runs
+---
 
-**Platform type → SQL type mapping:**
-| Platform type | PostgreSQL | MySQL | SQL Server |
+## 12. Implementation order & priorities
+
+| Priority | Phase | Effort | Why |
 |---|---|---|---|
-| `N` | `INTEGER` | `INT` | `INT` |
-| `N19` | `BIGINT` | `BIGINT` | `BIGINT` |
-| `DC` | `DECIMAL(18,2)` | `DECIMAL(18,2)` | `DECIMAL(18,2)` |
-| `VA50` | `VARCHAR(50)` | `VARCHAR(50)` | `NVARCHAR(50)` |
-| `DT` | `TIMESTAMP` | `DATETIME` | `DATETIME2` |
-| `D` | `DATE` | `DATE` | `DATE` |
+| 1 | A — Internal model & validation | Medium | Prerequisite for everything |
+| 2 | B — OpenAPI ingest | Medium | The main input most users will have |
+| 3 | C — Template engine + value generation | Low-medium | The bridge from spec to bytes |
+| 4 | D — WireMock renderer | Medium-high | Highest-demand output format |
+| 5 | F — JSON / XML fixture renderer | Low | Falls out for free once C+D exist |
+| 6 | E — Pact / Postman / OpenAPI-examples | Medium each | Niche but high-value |
+| 7 | H — LLM-assisted authoring | Low | Polish on top of working foundation |
+| 8 | G — Scenarios & stateful stubs | Medium-high | Needed for realism, not for first release |
+| 9 | I — Postman / HAR ingest | Medium each | Reverse-engineering aids; useful but not blocking |
 
-**Output example:**
-```sql
--- output/sql/accounts_seed.sql
-TRUNCATE TABLE accounts;
-INSERT INTO accounts (ACCT_ID, ACCT_CCY, BOOKG_AMT_NMRC) VALUES
-  ('DE89370400440532013000', 'EUR', 1420),
-  ('GB29NWBK60161331926819', 'USD', 890);
-```
-
-**Effort:** Medium. SQL escaping and type mapping need care; dialect differences need a thin adapter per database.
+**Suggested first cut:** A → B → C → D → F. That's enough to take an
+OpenAPI spec, generate WireMock stubs and JSON fixtures, and run a real
+integration test. Everything past D is additive.
 
 ---
 
-### Phase 4 — WireMock Stub Serialiser
-*The main stub format: HTTP API responses your services call during tests*
+## 13. Testing strategy
 
-**What:** Generate WireMock-compatible JSON stub files. Each table in the config becomes a set of stub mappings — one per row (detail endpoint) and one collection response (list endpoint).
+Same patterns as the data track:
 
-**Steps:**
-1. `serialisers/wiremock_serializer.py`
-2. Add new config section to YAML to describe the API shape:
-   ```yaml
-   tables:
-     - name: accounts
-       output_format: wiremock
-       api:
-         base_path: /api/v1/accounts
-         id_column: ACCT_ID          # used to build /accounts/{id} URL
-         method: GET
-         status_code: 200
-         response_wrapper: null      # or "data" to wrap in { "data": [...] }
-   ```
-3. Generate:
-   - `GET /accounts` → array response (all rows)
-   - `GET /accounts/{id}` → single-row response per unique `id_column` value
-   - `POST /accounts` → request-body schema + 201 response
-4. Use `example_value` field (already in `ColumnConfig`) to populate WireMock body patterns
-5. Add request matching: path template, query params, headers
-6. Output: standard WireMock `__files/` and `mappings/` directory structure
-
-**Output example:**
-```json
-// output/wiremock/mappings/GET_accounts_DE89370400440532013000.json
-{
-  "request": {
-    "method": "GET",
-    "urlPathPattern": "/api/v1/accounts/DE89370400440532013000"
-  },
-  "response": {
-    "status": 200,
-    "headers": { "Content-Type": "application/json" },
-    "jsonBody": {
-      "ACCT_ID": "DE89370400440532013000",
-      "ACCT_CCY": "EUR",
-      "BOOKG_AMT_NMRC": 1420
-    }
-  }
-}
-```
-
-**Effort:** Medium-high. The data generation is trivial (already done); the WireMock mapping structure needs careful templating. Also need to decide how many individual stubs to generate (10 rows? 100? configurable).
+- **Unit tests per module**: pure functions on `MockConfig` (parsing,
+  validation, type mapping)
+- **Round-trip tests**: OpenAPI → `MockConfig` → WireMock → re-import via
+  WireMock's own client → confirm the request matchers fire
+- **Renderer fidelity tests**: render to WireMock JSON, hand-check a small
+  golden fixture per response variant
+- **Determinism tests**: same `--seed` produces byte-identical output
+- **Reuse the `multi_provider` test pattern**: mock the LLM call, assert on
+  the prompt + the parsed response structure
 
 ---
 
-### Phase 5 — Contract & Postman Serialisers
-*For teams doing consumer-driven contract testing or API-level test suites*
-
-**What:**
-- **Pact files** — JSON files describing the expected interactions between a consumer and provider. Used with Pact framework in Java, JS, .NET, Python.
-- **Postman collections** — importable into Postman for manual or Newman-automated API testing.
-- **OpenAPI examples** — inject `examples:` blocks into an existing OpenAPI spec file.
-
-**Steps:**
-1. `serialisers/pact_serializer.py` — generates Pact v2/v3 JSON interaction files
-2. `serialisers/postman_serializer.py` — generates Postman Collection v2.1 JSON
-3. `serialisers/openapi_enricher.py` — reads an existing `openapi.yaml`, injects `example:` values from generated rows
-4. Add config: `consumer_name`, `provider_name` (for Pact), `collection_name` (for Postman)
-
-**Output example (Pact):**
-```json
-{
-  "consumer": { "name": "transaction-service" },
-  "provider": { "name": "account-service" },
-  "interactions": [{
-    "description": "get account by ID",
-    "request": { "method": "GET", "path": "/api/v1/accounts/DE89370400440532013000" },
-    "response": {
-      "status": 200,
-      "body": { "ACCT_ID": "DE89370400440532013000", "ACCT_CCY": "EUR" }
-    }
-  }]
-}
-```
-
-**Effort:** Medium. JSON structure is well-defined by Pact/Postman specs — mainly template work.
-
----
-
-### Phase 6 — ML Extension for Stubs/Mocks
-*Bring the intelligence layer into the stub generation world*
-
-**What:** Extend the three ML features to work with API/stub inputs and outputs.
-
-#### 6a — Auto-Config from OpenAPI Spec
-**Existing:** `infer-config` reads CSV/Parquet/Excel → writes YAML
-**Extension:** `infer-config --input openapi.yaml` reads an OpenAPI spec → writes YAML with API block pre-filled
-
-Steps:
-1. Detect `.yaml` / `.json` input that contains `openapi:` key
-2. Parse `paths`, `components/schemas`
-3. Map OpenAPI types to platform types
-4. Detect `enum` values → `business_values`
-5. Detect `format: iban`, `format: email` → `special_rules`
-6. Pre-fill `api:` block with the path, method, status codes from the spec
-
-#### 6b — PII Detection in API Responses
-**Existing:** PII detector scans column names and values in data files
-**Extension:** Also scan OpenAPI schema property names and example values for PII
-
-Steps:
-1. Extend `PIIDetector.scan_dataframe()` to accept a dict (API schema) as well as a DataFrame
-2. Add `scan_openapi_schema(schema_dict)` method
-3. Wire into the `infer-config` OpenAPI path
-
-#### 6c — Delta as Webhook Events
-**Existing:** Delta computes I/U/D rows between two Parquet snapshots
-**Extension:** Emit those changes as webhook event payloads (JSON POST bodies)
-
-Steps:
-1. Add `--output-format webhook` to `delta` command
-2. `serialisers/webhook_serializer.py` wraps each I/U/D row in an event envelope:
-   ```json
-   { "event_type": "ACCOUNT_UPDATED", "timestamp": "...", "payload": { ... } }
-   ```
-3. Configurable event type naming (from YAML) and envelope schema
-
-#### 6d — LLM: Suggest API Shape from Endpoint Description
-**Existing:** LLM enrichment (`enrich` command) suggests `business_values` and `special_rules`
-**Extension:** New LLM prompt asks Claude to suggest the `api:` block given a plain-English endpoint description
-
-```bash
-python main.py enrich --config config/accounts.yaml \
-  --api-description "Returns account transaction history for a given IBAN" \
-  --output config/accounts_enriched.yaml
-```
-
-Claude suggests: `base_path`, `id_column`, `response_wrapper`, query params.
-
-**Effort:** Medium. New prompt, new output fields, same LLM infrastructure.
-
----
-
-## What Changes vs. What Stays the Same
-
-| Component | Status | Notes |
-|---|---|---|
-| YAML config format | **Unchanged** | New optional `api:` block added; existing configs still work |
-| `DataGenerator` core | **Unchanged** | Generates rows exactly as today |
-| ML features (PII, dist, auto-config) | **Extended** | New input types (OpenAPI spec) added |
-| `ColumnConfig` / `TableConfig` models | **Minor additions** | `api:` block on `TableConfig`; `output_format` already present |
-| Parquet output | **Unchanged** | Still the default, still works as before |
-| Delta / SCD2 | **Extended** | Optional webhook serialiser added |
-| Cloud upload | **Extended** | Uploads all formats, not just Parquet |
-| CLI | **Extended** | New `--output-format` flag; `generate` dispatches to serialiser |
-| Tests | **Extended** | New serialiser tests; existing tests unchanged |
-
----
-
-## Implementation Order & Priorities
-
-| Priority | Phase | Effort | Value |
-|---|---|---|---|
-| 1 | Phase 1 — Output Abstraction | Medium | Enables everything else |
-| 2 | Phase 2 — JSON / XML | Low | Immediate value for most teams |
-| 3 | Phase 4 — WireMock | Medium-high | Highest demand for API testing |
-| 4 | Phase 3 — SQL Seeds | Medium | Common need for DB-backed tests |
-| 5 | Phase 6a — OpenAPI infer | Medium | Closes the auto-config loop |
-| 6 | Phase 6c — Webhook events | Medium | Natural extension of delta |
-| 7 | Phase 5 — Pact / Postman | Medium | Niche but high-value for contract testing |
-| 8 | Phase 6b,d — LLM extensions | Medium | Polish on top of a working platform |
-
-Do Phase 1 first — it is the prerequisite for everything. Once the abstraction layer exists, each serialiser is an independent parallel workstream.
-
----
-
-## New Config Block (Draft)
-
-This is what the YAML will look like once the `api:` block is added — backwards compatible, all new fields optional:
-
-```yaml
-config_format: sdp-yaml-v1
-run_settings:
-  default_records_per_table: 100
-  output_format: wiremock          # global default (optional)
-
-tables:
-  - name: accounts
-    rows: 50
-    output_format: wiremock        # per-table override (optional)
-    api:
-      base_path: /api/v1/accounts
-      id_column: ACCT_ID
-      method: GET
-      status_code: 200
-      response_wrapper: null       # or "data", "result", etc.
-      consumer_name: payment-service
-      provider_name: account-service
-    columns:
-      - name: ACCT_ID
-        type: VA18
-        pk: true
-        special_rules: IBAN
-        example_value: DE89370400440532013000   # already in ColumnConfig
-      - name: ACCT_CCY
-        type: VA3
-        values: EUR;USD;INR
-      - name: BOOKG_AMT_NMRC
-        type: N19
-        distribution:
-          name: norm
-          params: [1200.0, 450.0]
-          data_min: 1.0
-          data_max: 50000.0
-```
-
----
-
-## New CLI Commands (Draft)
-
-```bash
-# Generate WireMock stubs (same config, different output format)
-python main.py generate --config config/accounts.yaml --output output/stubs --output-format wiremock
-
-# Generate JSON fixtures
-python main.py generate --config config/accounts.yaml --output output/fixtures --output-format json
-
-# Generate SQL seed scripts (postgres dialect)
-python main.py generate --config config/accounts.yaml --output output/sql --output-format sql --sql-dialect postgres
-
-# Generate all formats at once
-python main.py generate --config config/accounts.yaml --output output/all --output-format all
-
-# Delta as webhook events
-python main.py delta --config config/accounts.yaml \
-  --previous output/snap_v1 --current output/snap_v2 \
-  --output output/events --output-format webhook
-
-# Infer config from OpenAPI spec (Phase 6a)
-python main.py infer-config --input api/openapi.yaml --output config/accounts.yaml
-
-# Enrich config with LLM-suggested API shape (Phase 6d)
-python main.py enrich --config config/accounts.yaml \
-  --api-description "Returns paginated transaction history for an IBAN" \
-  --output config/accounts_enriched.yaml
-```
-
----
-
-## Summary
+## 14. Summary
 
 ```
-TODAY                              AFTER EXTENSION
-─────────────────────────────      ─────────────────────────────────────────
-One config → Parquet files         One config → Parquet + JSON + XML +
-                                                SQL + WireMock + Pact +
-                                                Postman + Webhook events
+DATA TRACK (today, 8/10)              MOCKS TRACK (this plan, 0/10 → 8/10)
+─────────────────────────────────     ──────────────────────────────────────
+TableConfig + RelationshipConfig      MockConfig + EndpointConfig
+sdp-yaml-v1 / sdp-json-v1             sdp-mock-v1 (new)
 
-Test data layer only               Every layer of the test stack:
-                                   • Data layer     (Parquet, SQL)
-                                   • API layer      (WireMock, Pact)
-                                   • Unit test      (JSON/XML fixtures)
-                                   • Contract test  (Pact, Postman)
-                                   • Event layer    (Webhook payloads)
+Inputs:                               Inputs:
+  Excel / YAML / JSON / Collibra        OpenAPI / Postman / HAR / hand-YAML
+  / sample data files
 
-Infer config from data files       Infer config from data files OR
-                                   OpenAPI specs
+Outputs:                              Outputs:
+  Parquet / Delta Lake / SCD2           WireMock mappings, Pact, Postman,
+  (+ adjacent: JSON Lines, SQL          OpenAPI examples, JSON/XML fixtures
+   seeds — small extension)
 
-PII detection on data              PII detection on data AND API schemas
+ML / LLM features:                    ML / LLM features:
+  FK relationship inference,            Schema enrichment, example
+  schema enrichment, multi-provider     synthesis, multi-provider
+  (shared)                              (shared)
 ```
 
-The core platform stays exactly as it is. Every feature you built for Parquet generation comes along for free — the serialiser layer is purely additive.
+> The two tracks share the **engine** (value generation, rules, LLM provider).
+> They have **independent config models, independent ingest paths, independent
+> renderers**. Nothing on the mocks track changes anything on the data track.
 
 ---
 
-*Plan written: 2026-05-03 | Next step: start Phase 1 (Output Abstraction Layer)*
+*Plan rewritten: 2026-05-04 | Replaces the earlier `api:`-block-on-TableConfig
+draft. Next step: Phase A — design and land `models/mock_models.py` plus a
+hand-authored `sdp-mock-v1` round-trip parser.*
