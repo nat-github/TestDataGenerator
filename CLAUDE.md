@@ -35,6 +35,16 @@ python main.py infer-relationships --config config/bare.xlsx --config-output con
 # Feed the SME's edits (kept / removed / added entries) back into the adaptive feedback store
 python main.py record-feedback --inferred config/inferred.yaml --reviewed config/inferred.yaml.reviewed
 
+# Stubs / Mocks track — convert an OpenAPI spec into editable sdp-mock-v1 YAML
+python main.py mock-init --from examples/openapi/medium_tasks.yaml --output mocks/tasks.yaml
+
+# Render WireMock stubs + JSON fixtures from the mock config
+python main.py mock-render --config mocks/tasks.yaml --output stubs/tasks \
+  --format wiremock,json --examples 5 --seed 42 --match-mode any
+
+# Validate a mock config without raising
+python main.py mock-lint --config mocks/tasks.yaml
+
 # Validate config with full sheet/row/column error context (no data generated)
 python main.py lint --config config/Acct_bkng.xlsx
 
@@ -153,6 +163,12 @@ Excel / YAML Config
 | `ml/relationship_feedback_store.py` | JSONL-backed pattern memory + classifier training corpus, with `SDP_FEEDBACK_PATH` env override |
 | `ml/relationship_classifier.py` | Cold-start-safe logistic-regression classifier; refuses below `MIN_TRAINING_EXAMPLES`/`MIN_PER_CLASS` |
 | `ml/relationship_inferrer.py` | ML/heuristic relationship inferrer — same `infer(...)` surface as the LLM path, no API key needed |
+| `models/mock_models.py` | Pydantic models for the stubs/mocks track: `MockConfig`, `EndpointConfig`, `RequestMatcher`, `ResponseTemplate`, `SchemaConfig`, `FieldSpec`, `ScenarioConfig` |
+| `mocks/config_parser.py` | `sdp-mock-v1` YAML/JSON loader, dumper, and linter |
+| `mocks/openapi_importer.py` | OpenAPI 3.x spec → `MockConfig` (handles $refs, allOf, format hints, multi-status responses) |
+| `mocks/template_engine.py` | Walks `MockConfig` schemas/fields, generates JSON values via `utils/helpers.py` |
+| `mocks/renderers/wiremock.py` | `MockConfig` → WireMock-compatible mapping JSON files |
+| `mocks/renderers/json_fixture.py` | `MockConfig` → standalone JSON response/request bodies and per-schema canonical examples |
 
 ### Generation Strategy (Hybrid)
 
@@ -223,6 +239,11 @@ Tests live in `tests/`:
 - `test_relationship_inferrer.py` — end-to-end ML inferrer (two/three-table chains, dedup, threshold, learning loop).
 - `test_cli_relationship_inference.py` — `infer-relationships` + `record-feedback` CLI dispatch and round-trip.
 - `test_multi_provider.py` — unified LLM provider abstraction (config resolution, OpenAI-compat HTTP shape, Anthropic SDK dispatch, auth headers, error handling).
+- `test_mock_models.py` — `MockConfig` pydantic shape, validation, $ref resolution, lint reports.
+- `test_openapi_importer.py` — OpenAPI 3.x → `MockConfig` (format hints, $refs, allOf, parameters, response headers) plus end-to-end import of all three example specs.
+- `test_template_engine.py` — value generation precedence (example > enum > special_rule > format > pattern > type), determinism, $refs, end-to-end renders.
+- `test_renderers.py` — WireMock + JSON fixture renderers (concrete vs any-mode paths, deterministic seeds, header injection, request matchers).
+- `test_cli_mocks.py` — `mock-init` / `mock-render` / `mock-lint` argparse + dispatch.
 
 No linting is configured (pending item in `Pending_Items.md`).
 
@@ -263,5 +284,7 @@ Both modules use a stable system prompt with `cache_control: ephemeral` for Anth
 - `Regex_Rules.md` — regex pattern syntax supported in `special_rules`
 - `ML_Relationship_Inference.md` — ML relationship inferrer: signals, feedback loop, classifier activation, CLI
 - `LLM_Ecosystem.md` — reference map of providers, open-weight model families, local runtimes (Ollama, LM Studio, vLLM, llama.cpp), provider abstractions (LiteLLM, OpenRouter), and orchestration frameworks (LangChain, LlamaIndex, DSPy, Haystack, …)
+- `Stubs_Mocks_Plan.md` — parallel-track plan for API stubs/mocks generation (`MockConfig` model, OpenAPI ingest, WireMock/Pact/Postman renderers)
+- `Bruno_Workflow.md` — end-to-end recipe: OpenAPI spec → `mock-init` → `mock-render` → WireMock standalone → Bruno API client
 - `PRD_Roadmap.md` — product vision and future roadmap
 - `Pending_Items.md` — active engineering backlog
