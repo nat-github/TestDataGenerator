@@ -19,7 +19,8 @@ from utils.parquet_post_processor import ParquetPostProcessor
 
 logger = logging.getLogger(__name__)
 KNOWN_COMMANDS = {"generate", "delta", "scd2", "lint", "enrich", "collibra-import",
-                  "infer-config", "pii-scan", "infer-relationships", "record-feedback"}
+                  "infer-config", "pii-scan", "infer-relationships", "record-feedback",
+                  "mock-init", "mock-render", "mock-lint"}
 
 
 def _normalize_argv(argv: Sequence[str]) -> List[str]:
@@ -182,6 +183,43 @@ def build_parser() -> argparse.ArgumentParser:
     fb_parser.add_argument("--feedback-store", default=None,
                            help="Path to ML feedback JSONL (default: ml_feedback/relationship_feedback.jsonl)")
     fb_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    # ── mock-init ──────────────────────────────────────────────────────────
+    mi_parser = subparsers.add_parser(
+        "mock-init",
+        help="Convert an OpenAPI spec (or other API artefact) into a sdp-mock-v1 YAML",
+    )
+    mi_parser.add_argument("--from", dest="source", required=True,
+                           help="Path to OpenAPI 3.x YAML/JSON spec")
+    mi_parser.add_argument("--output", required=True,
+                           help="Destination path for the generated sdp-mock-v1 YAML")
+    mi_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    # ── mock-render ────────────────────────────────────────────────────────
+    mr_parser = subparsers.add_parser(
+        "mock-render",
+        help="Render mocks (WireMock stubs, JSON fixtures, …) from a sdp-mock-v1 config",
+    )
+    mr_parser.add_argument("--config", required=True,
+                           help="Path to sdp-mock-v1 YAML/JSON config")
+    mr_parser.add_argument("--output", required=True,
+                           help="Output directory for generated artefacts")
+    mr_parser.add_argument("--format", default="wiremock",
+                           help="Comma-separated list of formats: wiremock,json (default: wiremock)")
+    mr_parser.add_argument("--examples", type=int, default=None,
+                           help="How many concrete example stubs per endpoint (overrides MockConfig)")
+    mr_parser.add_argument("--match-mode", choices=["concrete", "any"], default="concrete",
+                           help="WireMock path matching: 'concrete' (literal per example) or 'any' (regex)")
+    mr_parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible output")
+    mr_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    # ── mock-lint ──────────────────────────────────────────────────────────
+    ml_parser = subparsers.add_parser(
+        "mock-lint",
+        help="Validate a sdp-mock-v1 config and surface issues without raising",
+    )
+    ml_parser.add_argument("--config", required=True, help="Path to sdp-mock-v1 YAML/JSON")
+    ml_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
 
     return parser
 
@@ -877,6 +915,113 @@ def run_record_feedback(args) -> int:
         return 1
 
 
+# ===========================================================================
+# Stubs / Mocks track — `mock-init`, `mock-render`, `mock-lint`
+# ===========================================================================
+
+
+def run_mock_init(args) -> int:
+    """Convert an OpenAPI spec into a sdp-mock-v1 YAML config."""
+    configure_logging(getattr(args, "verbose", False))
+    try:
+        from mocks.openapi_importer import import_openapi, OpenAPIImportError
+        from mocks.config_parser import dump_mock_config
+
+        cfg = import_openapi(args.source)
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        dump_mock_config(cfg, out_path)
+
+        print(f"=== mock-init ===")
+        print(f"  Source:    {args.source}")
+        print(f"  Output:    {out_path}")
+        print(f"  Endpoints: {len(cfg.endpoints)}")
+        print(f"  Schemas:   {len(cfg.schemas)}")
+        for ep in cfg.endpoints[:10]:
+            statuses = ",".join(str(r.status) for r in ep.responses)
+            print(f"    {ep.method:6s} {ep.path}  -> [{statuses}]  ({ep.name})")
+        if len(cfg.endpoints) > 10:
+            print(f"    ... and {len(cfg.endpoints) - 10} more")
+        return 0
+    except OpenAPIImportError as exc:
+        logger.error(f"mock-init failed: {exc}")
+        return 1
+    except Exception as exc:
+        logger.error(f"mock-init failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def run_mock_render(args) -> int:
+    """Render mocks (WireMock stubs / JSON fixtures / …) from a sdp-mock-v1 config."""
+    configure_logging(getattr(args, "verbose", False))
+    try:
+        from mocks.config_parser import load_mock_config
+
+        cfg = load_mock_config(args.config)
+        formats = [f.strip().lower() for f in args.format.split(",") if f.strip()]
+        out_dir = Path(args.output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        total_files = 0
+        for fmt in formats:
+            target = out_dir / fmt
+            if fmt == "wiremock":
+                from mocks.renderers.wiremock import render_wiremock
+                files = render_wiremock(
+                    cfg, target,
+                    seed=args.seed,
+                    examples_per_endpoint=args.examples,
+                    match_mode=args.match_mode,
+                )
+                print(f"  wiremock:  {len(files)} mapping(s) -> {target}")
+                total_files += len(files)
+            elif fmt in ("json", "json-fixture", "fixture"):
+                from mocks.renderers.json_fixture import render_json_fixtures
+                files = render_json_fixtures(cfg, target, seed=args.seed)
+                print(f"  json:      {len(files)} fixture(s) -> {target}")
+                total_files += len(files)
+            else:
+                logger.warning(f"Unknown format: {fmt} — skipping")
+
+        print(f"\n=== mock-render ===")
+        print(f"  Config:    {args.config}")
+        print(f"  Output:    {out_dir}")
+        print(f"  Formats:   {formats}")
+        print(f"  Examples:  {args.examples or 'config-default'}")
+        print(f"  Seed:      {args.seed if args.seed is not None else 'random'}")
+        print(f"  Total:     {total_files} file(s)")
+        return 0 if total_files > 0 else 1
+    except Exception as exc:
+        logger.error(f"mock-render failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def run_mock_lint(args) -> int:
+    """Validate a sdp-mock-v1 config and pretty-print the report."""
+    configure_logging(getattr(args, "verbose", False))
+    try:
+        from mocks.config_parser import lint_mock_config
+
+        report = lint_mock_config(args.config)
+        print(f"=== mock-lint: {report['path']} ===")
+        if report["ok"]:
+            print(f"  OK  ({report.get('endpoints', 0)} endpoints, {report.get('schemas', 0)} schemas)")
+        else:
+            print("  FAIL")
+        for err in report.get("errors", []):
+            print(f"  ERROR:   {err}")
+        for warn in report.get("warnings", []):
+            print(f"  WARN:    {warn}")
+        return 0 if report["ok"] else 1
+    except Exception as exc:
+        logger.error(f"mock-lint failed: {exc}")
+        return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_arguments(argv)
     configure_logging(getattr(args, "verbose", False))
@@ -902,6 +1047,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_infer_relationships(args)
         if args.command == "record-feedback":
             return run_record_feedback(args)
+        if args.command == "mock-init":
+            return run_mock_init(args)
+        if args.command == "mock-render":
+            return run_mock_render(args)
+        if args.command == "mock-lint":
+            return run_mock_lint(args)
         logger.error(f"Unknown command: {args.command}")
         return 1
     except FileNotFoundError as exc:
