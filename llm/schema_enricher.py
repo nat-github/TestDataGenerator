@@ -31,7 +31,8 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from models.config_models import ColumnConfig, TableConfig
-from llm.client import get_client, DEFAULT_MODEL, system_prompt
+from llm.client import DEFAULT_MODEL, system_prompt
+from llm.multi_provider import chat as llm_chat
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class EnrichmentResult:
     suggestions: List[EnrichmentSuggestion] = field(default_factory=list)
     enriched_tables: Dict[str, TableConfig] = field(default_factory=dict)
     raw_response: Optional[str] = None
-    model: str = DEFAULT_MODEL
+    model: Optional[str] = None
     columns_enriched: int = 0
 
 
@@ -76,13 +77,17 @@ class SchemaEnricher:
 
     def __init__(
         self,
-        model: str = DEFAULT_MODEL,
+        model: Optional[str] = None,
         confidence_threshold: float = 0.6,
         api_key: Optional[str] = None,
+        provider: Optional[str] = None,
+        base_url: Optional[str] = None,
     ):
         self.model = model
         self.confidence_threshold = confidence_threshold
-        self._client = get_client(api_key)
+        self._api_key = api_key
+        self._provider = provider
+        self._base_url = base_url
 
     # ------------------------------------------------------------------
     # Public API
@@ -257,19 +262,16 @@ Rules:
 - Return suggestion_type = "none" with confidence = 0 if you have no useful suggestion.
 - Do NOT include any text outside the JSON array.
 """
-        response = self._client.messages.create(
-            model=self.model,
-            max_tokens=8192,
-            system=[
-                {
-                    "type": "text",
-                    "text": system_prompt(),
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
+        content = llm_chat(
             messages=[{"role": "user", "content": user_prompt}],
+            provider=self._provider,
+            model=self.model,
+            base_url=self._base_url,
+            api_key=self._api_key,
+            system=system_prompt(),
+            max_tokens=8192,
         )
-        return (response.content[0].text if response.content else "[]").strip()
+        return (content or "[]").strip()
 
     def _parse_suggestions(
         self, raw: str, tables: Dict[str, TableConfig]

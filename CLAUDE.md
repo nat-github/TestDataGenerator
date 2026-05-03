@@ -24,8 +24,16 @@ python main.py generate --config config/sample_workflow.yaml --output output/sam
 # Reproducible run (--seed makes output deterministic)
 python main.py generate --config config/Acct_bkng.xlsx --output output/run_01 --seed 42
 
-# LLM-assisted: infer missing FK relationships using Claude (requires ANTHROPIC_API_KEY)
-python main.py generate --config config/bare.xlsx --output output/run_01 --infer-relationships --llm-confidence 0.7
+# Infer missing FK relationships before generation (default --method ml — free, no API key needed)
+python main.py generate --config config/bare.xlsx --output output/run_01 --infer-relationships
+# Use Claude instead, or both engines (LLM picks up what ML missed). LLM path needs ANTHROPIC_API_KEY.
+python main.py generate --config config/bare.xlsx --output output/run_01 --infer-relationships --method llm --llm-confidence 0.7
+
+# Standalone: infer relationships and emit a reviewable YAML + ER diagram for SME review
+python main.py infer-relationships --config config/bare.xlsx --config-output config/inferred.yaml --er-output diagrams/inferred.mmd
+
+# Feed the SME's edits (kept / removed / added entries) back into the adaptive feedback store
+python main.py record-feedback --inferred config/inferred.yaml --reviewed config/inferred.yaml.reviewed
 
 # Validate config with full sheet/row/column error context (no data generated)
 python main.py lint --config config/Acct_bkng.xlsx
@@ -67,7 +75,12 @@ poetry run pytest tests/test_config_and_parquet_flows.py::test_name -v
 
 | Variable | Purpose |
 |---|---|
-| `ANTHROPIC_API_KEY` | Required for `--infer-relationships` and `enrich` commands |
+| `ANTHROPIC_API_KEY` | Required when the LLM provider is `anthropic` (the default) |
+| `SDP_LLM_PROVIDER` | Pick LLM backend: `anthropic` (default), `openai`, `lm-studio`, `ollama`, `azure-openai`, `groq`, `together`, `openrouter` |
+| `SDP_LLM_MODEL` | Model identifier — defaults to provider-specific (e.g. `claude-sonnet-4-6`, `gpt-4o-mini`, `llama3.2`) |
+| `SDP_LLM_BASE_URL` | Override base URL for OpenAI-compatible providers (LM Studio, Ollama, vLLM, custom hosts) |
+| `SDP_LLM_API_KEY` | Generic LLM API key fallback; or set provider-specific (`OPENAI_API_KEY`, `GROQ_API_KEY`, `TOGETHER_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY` + `AZURE_OPENAI_ENDPOINT`) |
+| `SDP_FEEDBACK_PATH` | Override default location of the ML relationship feedback store (default: `ml_feedback/relationship_feedback.jsonl`) |
 | `AZURE_STORAGE_CONNECTION_STRING` | Azure upload (preferred) |
 | `AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY` | Azure upload (alternative) |
 | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` | AWS S3 upload |
@@ -77,9 +90,10 @@ poetry run pytest tests/test_config_and_parquet_flows.py::test_name -v
 ### Optional dependencies (install as needed)
 
 ```bash
-pip install azure-storage-blob   # --upload-to azure://...
-pip install boto3                # --upload-to s3://...
-pip install matplotlib           # --er-format png
+pip install azure-storage-blob       # --upload-to azure://...
+pip install boto3                    # --upload-to s3://...
+pip install matplotlib               # --er-format png
+poetry install --extras mimesis      # MIMESIS_* special rules
 ```
 
 ## Architecture
@@ -125,14 +139,20 @@ Excel / YAML Config
 | `utils/helpers.py` | Regex generation, Faker integration (18 locales), type coercion, NULL rate logic, 60+ special rules |
 | `utils/parquet_post_processor.py` | Delta (I/U/D) and SCD2 effective-dating logic with delta-log rollback safety |
 | `utils/rule_evaluator.py` | Layer A (when/then) and Layer B (derived expressions) post-generation pass — operates on plain dicts so it can be reused by stub/mock renderers later |
+| `utils/mimesis_provider.py` | Optional Mimesis adapter — handles `MIMESIS_*` special rules. Lazy import; the library is an optional poetry extra |
 | `utils/data_validator.py` | Post-generation FK relationship validation |
 | `utils/er_diagram.py` | ER diagram generation: Mermaid (zero-dep), Graphviz DOT, PNG (matplotlib optional) |
 | `utils/cloud_uploader.py` | Azure Blob Storage and AWS S3 upload — credentials from env vars only |
 | `utils/collibra_importer.py` | Collibra REST API v2 importer — dataset → YAML config |
 | `models/config_models.py` | Pydantic v2 models: `TableConfig`, `ColumnConfig`, `RelationshipConfig`, `DataType` enum |
-| `llm/client.py` | Shared Anthropic client factory with prompt caching and `lru_cache` |
-| `llm/relationship_inferrer.py` | LLM relationship inference — sends schemas to Claude, returns `RelationshipConfig` objects with confidence |
-| `llm/schema_enricher.py` | LLM schema enrichment — suggests `business_values`, `special_rules`, `data_type` corrections |
+| `llm/client.py` | Shared Anthropic client factory + cache-friendly system prompt (used by the Anthropic-specific path) |
+| `llm/multi_provider.py` | Unified `chat()` abstraction — routes to Anthropic, OpenAI, LM Studio, Ollama, Azure, Groq, Together, OpenRouter via `SDP_LLM_PROVIDER` |
+| `llm/relationship_inferrer.py` | LLM relationship inference — calls `multi_provider.chat`; provider-agnostic |
+| `llm/schema_enricher.py` | LLM schema enrichment — calls `multi_provider.chat`; suggests `business_values`, `special_rules`, `data_type` corrections |
+| `ml/relationship_signals.py` | Pure-function signal computers (type, name, value-subset, pk-likeness) + weighted `combine` |
+| `ml/relationship_feedback_store.py` | JSONL-backed pattern memory + classifier training corpus, with `SDP_FEEDBACK_PATH` env override |
+| `ml/relationship_classifier.py` | Cold-start-safe logistic-regression classifier; refuses below `MIN_TRAINING_EXAMPLES`/`MIN_PER_CLASS` |
+| `ml/relationship_inferrer.py` | ML/heuristic relationship inferrer — same `infer(...)` surface as the LLM path, no API key needed |
 
 ### Generation Strategy (Hybrid)
 
@@ -193,21 +213,37 @@ Full reference in `Usage.md` section 8 and `Regex_Rules.md`.
 
 ## Testing
 
-Tests live in `tests/`. Two test files:
+Tests live in `tests/`:
 - `test_config_and_parquet_flows.py` — integration tests for Excel/YAML parsing, generate → delta → scd2 workflows, relationship validation.
 - `test_regex_rules.py` — unit tests for regex pattern generation and special rule parsing.
+- `test_rules_and_cdc.py` — CDC block, when/then rules, derived columns, JSON loader, rule evaluator.
+- `test_mimesis_provider.py` — Mimesis adapter dispatch + locale handling.
+- `test_relationship_signals.py` — pure signal computers for ML inferrer.
+- `test_relationship_feedback_and_classifier.py` — JSONL persistence, pattern memory, classifier cold-start/activation.
+- `test_relationship_inferrer.py` — end-to-end ML inferrer (two/three-table chains, dedup, threshold, learning loop).
+- `test_cli_relationship_inference.py` — `infer-relationships` + `record-feedback` CLI dispatch and round-trip.
+- `test_multi_provider.py` — unified LLM provider abstraction (config resolution, OpenAI-compat HTTP shape, Anthropic SDK dispatch, auth headers, error handling).
 
 No linting is configured (pending item in `Pending_Items.md`).
 
-## GenAI / LLM Features
+## Relationship Inference
 
-The `llm/` package integrates Claude (Anthropic) for two capabilities:
+Two interchangeable engines behind the same interface (`infer(tables, ...) -> InferenceResult`):
 
-### Relationship Inference (`llm/relationship_inferrer.py`)
-- `RelationshipInferrer.infer(tables)` sends table schemas to Claude and returns `RelationshipConfig` objects with `inferred_by_llm=True` and `llm_confidence` (0–1).
-- Triggered via `--infer-relationships` on `generate`, or directly from Python.
+### ML / heuristic path (`ml/relationship_inferrer.py`) — default
+- Free, deterministic, no network call. Computes four signals (type, name, value-subset, pk-likeness), gates on type compatibility, blends with pattern memory, and optionally overrides with a learned logistic-regression classifier once feedback accumulates.
+- Triggered via `--method ml` on `generate --infer-relationships`, or via the standalone `python main.py infer-relationships` subcommand.
+- Adaptive: SME edits to the reviewable YAML are folded back via `python main.py record-feedback`. After ~30 labelled examples (with both classes), the classifier activates.
+- Full design notes in `ML_Relationship_Inference.md`.
+
+### GenAI / LLM path (`llm/relationship_inferrer.py`)
+- `RelationshipInferrer.infer(tables)` sends table schemas to an LLM and returns `RelationshipConfig` objects with `inferred_by_llm=True` and `llm_confidence` (0–1).
+- Triggered via `--method llm` (or `both` to run ML first and only ask the LLM about candidates ML missed).
+- Provider-agnostic via `llm/multi_provider.py`: works with hosted Anthropic / OpenAI / Groq / Together / OpenRouter / Azure OpenAI, **and** local LLMs through LM Studio or Ollama (no API key needed). Switch with `SDP_LLM_PROVIDER`.
 - Results are merged into `generator.relationships` before SDV metadata is built, so inferred FKs affect both SDV and fallback generation.
-- Requires `ANTHROPIC_API_KEY`.  Failures are non-fatal — generation continues without inferred relationships.
+- Failures are non-fatal — generation continues without inferred relationships.
+
+See `LLM_Ecosystem.md` for the full picture of providers, local runtimes, model families, and orchestration frameworks. See `examples/llm_quickstart.py` for a runnable demo.
 
 ### Schema Enrichment (`llm/schema_enricher.py`)
 - `SchemaEnricher.enrich(tables)` sends column contexts to Claude and gets back suggestions for `business_values`, `special_rules`, `data_type`, or `null_rate`.
@@ -225,5 +261,7 @@ Both modules use a stable system prompt with `cache_control: ephemeral` for Anth
 - `Rules_and_Workflows.md` — Layer A (when/then rules), Layer B (derived columns), Layer C (planned workflows)
 - `Stubs_Mocks_Plan.md` — planned WireMock / stubs / mocks track (uses same rule engine)
 - `Regex_Rules.md` — regex pattern syntax supported in `special_rules`
+- `ML_Relationship_Inference.md` — ML relationship inferrer: signals, feedback loop, classifier activation, CLI
+- `LLM_Ecosystem.md` — reference map of providers, open-weight model families, local runtimes (Ollama, LM Studio, vLLM, llama.cpp), provider abstractions (LiteLLM, OpenRouter), and orchestration frameworks (LangChain, LlamaIndex, DSPy, Haystack, …)
 - `PRD_Roadmap.md` — product vision and future roadmap
 - `Pending_Items.md` — active engineering backlog

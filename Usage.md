@@ -856,12 +856,16 @@ python main.py generate \
 
 The `special_rules` column (Excel) or `special_rules:` field (YAML) accepts a keyword that controls how values are generated. Many rules accept a locale suffix (e.g. `NAME:de_DE`) and there are `GLOBAL_*` variants that pick a random locale on every row.
 
+> **Two value generators are available.** Plain rules (`NAME`, `EMAIL`, `IBAN`, ...) route to **Faker**. Rules prefixed with `MIMESIS_` route to **Mimesis** (optional dependency, install via `poetry install --extras mimesis`). Both can be mixed freely in the same config — see `Regex_Rules.md` for the full Mimesis catalogue.
+
 ### Locale suffix syntax
 
 ```
 RULE            → uses default locale (nl_NL)
 RULE:de_DE      → always German locale
 RULE:GLOBAL     → random locale per row from 18 supported locales
+MIMESIS_RULE    → routed to Mimesis instead of Faker
+MIMESIS_RULE:de_DE → Mimesis with explicit locale
 ```
 
 ### Faker-backed personal data

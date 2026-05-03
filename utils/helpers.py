@@ -1367,6 +1367,15 @@ class DataHelpers:
             _rule_locale = None
         _lf = self._get_locale_faker(_rule_locale) if _rule_locale else self.faker
 
+        # Mimesis-namespaced rules — opt-in via the MIMESIS_ prefix.
+        # Existing rules (NAME, EMAIL, ...) keep routing to Faker; only rules
+        # explicitly starting with MIMESIS_ delegate here. The library is an
+        # optional dependency, so users who don't author MIMESIS_* rules pay
+        # nothing — the import only happens on first dispatch.
+        if _rule_base.startswith('MIMESIS_'):
+            from utils import mimesis_provider
+            return mimesis_provider.generate(_rule_base[len('MIMESIS_'):], _rule_locale)
+
         # IBANs
         if rule == 'NL_IBAN':
             return self._generate_dutch_iban()

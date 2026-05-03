@@ -313,3 +313,47 @@ REGEX:AD\d{3}
 
 Use `special_rules = REGEX:<pattern>` whenever you want synthetic data to follow a reusable format such as prefixes, codes, numbers, and structured identifiers.
 
+---
+
+## Mimesis-backed rules (optional)
+
+[Mimesis](https://mimesis.name/) is an alternative atomic-value generator that complements Faker — broader locale coverage, faster for some workloads. Install with:
+
+```bash
+poetry install --extras mimesis
+```
+
+Once installed, prefix any rule with `MIMESIS_` to route it through Mimesis instead of Faker. Plain `NAME`, `EMAIL`, etc. continue to use Faker — there is no behaviour change for existing configs.
+
+### Supported `MIMESIS_*` rules
+
+| Category | Rules |
+|---|---|
+| **People** | `MIMESIS_NAME`, `MIMESIS_FULL_NAME`, `MIMESIS_FIRST_NAME`, `MIMESIS_LAST_NAME`, `MIMESIS_USERNAME`, `MIMESIS_EMAIL`, `MIMESIS_PHONE`, `MIMESIS_GENDER`, `MIMESIS_TITLE`, `MIMESIS_OCCUPATION`, `MIMESIS_NATIONALITY` |
+| **Address** | `MIMESIS_ADDRESS`, `MIMESIS_CITY`, `MIMESIS_STATE`, `MIMESIS_COUNTRY`, `MIMESIS_COUNTRY_CODE`, `MIMESIS_POSTCODE`, `MIMESIS_ZIP`, `MIMESIS_STREET`, `MIMESIS_STREET_NUMBER`, `MIMESIS_LATITUDE`, `MIMESIS_LONGITUDE` |
+| **Finance / payment** | `MIMESIS_COMPANY`, `MIMESIS_CURRENCY`, `MIMESIS_PRICE`, `MIMESIS_STOCK_TICKER`, `MIMESIS_CREDIT_CARD`, `MIMESIS_CC_EXP`, `MIMESIS_CVV` |
+| **Internet** | `MIMESIS_URL`, `MIMESIS_IPV4`, `MIMESIS_IPV6`, `MIMESIS_MAC`, `MIMESIS_USER_AGENT` |
+| **Identifiers** | `MIMESIS_UUID`, `MIMESIS_TOKEN`, `MIMESIS_HASH` |
+| **Text** | `MIMESIS_WORD`, `MIMESIS_SENTENCE`, `MIMESIS_TEXT`, `MIMESIS_QUOTE`, `MIMESIS_COLOR` |
+| **Datetime** | `MIMESIS_DATE`, `MIMESIS_TIME`, `MIMESIS_DATETIME`, `MIMESIS_TIMEZONE` |
+
+> IBAN, BIC, and SWIFT are **not** in Mimesis — keep using the existing Faker-backed `IBAN`, `BIC`, `SWIFT` rules for those.
+
+### Locale suffix
+
+The same `:<locale>` syntax used elsewhere works here:
+
+```text
+MIMESIS_FIRST_NAME:de_DE     # German first name
+MIMESIS_CITY:fr_FR           # French city
+MIMESIS_LAST_NAME:ja_JP      # Japanese surname
+```
+
+Faker-style locale codes (`de_DE`, `en_US`, `pt_BR`, `zh_CN`, `ru_RU`, `nl_NL`, etc.) are mapped automatically. Unknown locales fall back to English silently.
+
+### Choosing between Faker and Mimesis
+
+- **Stick with Faker** when you need IBAN / BIC / SWIFT, banking codes, or any of the 60+ existing locale-aware rules already in `helpers.py`.
+- **Use Mimesis** when you need very broad locale coverage (e.g., Estonian names, Persian addresses), large-volume generation where speed matters, or rules Faker doesn't carry (`MIMESIS_STOCK_TICKER`, `MIMESIS_USER_AGENT`).
+- **Mix both freely.** Different columns in the same table can use different generators.
+

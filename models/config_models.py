@@ -224,6 +224,9 @@ class RelationshipConfig(BaseModel):
     notes: Optional[str] = None
     inferred_by_llm: bool = False      # True when Claude inferred this relationship
     llm_confidence: Optional[float] = None  # 0-1 confidence from LLM inference
+    inferred_by_ml: bool = False       # True when the heuristic ML inferrer produced this
+    ml_confidence: Optional[float] = None   # 0-1 confidence from the ML inferrer
+    inference_signals: Optional[Dict[str, float]] = None  # raw signal scores for audit / training
 
 
 class GenerationConfig(BaseModel):

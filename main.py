@@ -19,7 +19,7 @@ from utils.parquet_post_processor import ParquetPostProcessor
 
 logger = logging.getLogger(__name__)
 KNOWN_COMMANDS = {"generate", "delta", "scd2", "lint", "enrich", "collibra-import",
-                  "infer-config", "pii-scan"}
+                  "infer-config", "pii-scan", "infer-relationships", "record-feedback"}
 
 
 def _normalize_argv(argv: Sequence[str]) -> List[str]:
@@ -47,8 +47,16 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--stream", action="store_true", help="Use streaming/chunked generation and direct export")
     generate_parser.add_argument("--chunk-size", type=int, default=100_000, help="Chunk size for streaming generation")
     generate_parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible generation")
-    generate_parser.add_argument("--infer-relationships", action="store_true", help="Use LLM to infer missing relationships")
-    generate_parser.add_argument("--llm-confidence", type=float, default=0.7, help="Minimum LLM confidence threshold (0-1)")
+    generate_parser.add_argument("--infer-relationships", action="store_true",
+                                 help="Infer missing FK relationships before generation")
+    generate_parser.add_argument("--method", choices=["ml", "llm", "both"], default="ml",
+                                 help="Inference engine: ml (heuristic, free), llm (Claude, costs), or both (ML first, LLM only on low-confidence edges)")
+    generate_parser.add_argument("--llm-confidence", type=float, default=0.7,
+                                 help="Minimum LLM confidence threshold (0-1)")
+    generate_parser.add_argument("--ml-confidence", type=float, default=0.55,
+                                 help="Minimum ML confidence threshold (0-1)")
+    generate_parser.add_argument("--feedback-store", default=None,
+                                 help="Path to ML feedback JSONL (default: ml_feedback/relationship_feedback.jsonl)")
     generate_parser.add_argument("--er-diagram", action="store_true", help="Generate ER diagram after data generation")
     generate_parser.add_argument("--er-format", nargs="+", default=["mermaid"],
                                  choices=["mermaid", "dot", "png"],
@@ -138,6 +146,42 @@ def build_parser() -> argparse.ArgumentParser:
     pii_parser.add_argument("--sample-size", type=int, default=5000,
                             help="Max rows to read when scanning a data file (default: 5000)")
     pii_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    # ── infer-relationships ────────────────────────────────────────────────
+    rel_parser = subparsers.add_parser(
+        "infer-relationships",
+        help="Deduce FK relationships from a config and emit ER diagram + YAML for SME review",
+    )
+    rel_parser.add_argument("--config", required=True,
+                            help="Path to Excel / YAML / JSON configuration file")
+    rel_parser.add_argument("--method", choices=["ml", "llm", "both"], default="ml",
+                            help="Inference engine (default: ml)")
+    rel_parser.add_argument("--ml-confidence", type=float, default=0.55,
+                            help="Minimum ML confidence threshold (0-1)")
+    rel_parser.add_argument("--llm-confidence", type=float, default=0.7,
+                            help="Minimum LLM confidence threshold (0-1)")
+    rel_parser.add_argument("--config-output", required=True,
+                            help="Output YAML path with inferred relationships annotated for SME review")
+    rel_parser.add_argument("--er-output", default=None,
+                            help="Output path for the ER diagram. Extension determines format (.mmd|.dot|.png)")
+    rel_parser.add_argument("--feedback-store", default=None,
+                            help="Path to ML feedback JSONL (default: ml_feedback/relationship_feedback.jsonl)")
+    rel_parser.add_argument("--sample-data", default=None,
+                            help="Optional directory of sample parquet/CSV files for value-subset signal")
+    rel_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    # ── record-feedback ────────────────────────────────────────────────────
+    fb_parser = subparsers.add_parser(
+        "record-feedback",
+        help="Compare an inferred config against an SME-reviewed config and persist accept/reject deltas for adaptive learning",
+    )
+    fb_parser.add_argument("--inferred", required=True,
+                           help="Path to the YAML emitted by infer-relationships")
+    fb_parser.add_argument("--reviewed", required=True,
+                           help="Path to the YAML after the SME has accepted / removed / added relationships")
+    fb_parser.add_argument("--feedback-store", default=None,
+                           help="Path to ML feedback JSONL (default: ml_feedback/relationship_feedback.jsonl)")
+    fb_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
 
     return parser
 
@@ -602,6 +646,237 @@ def run_pii_scan(args) -> int:
         return 1
 
 
+def run_infer_relationships(args) -> int:
+    """Infer FK relationships from a config and emit ER diagram + reviewable YAML."""
+    configure_logging(getattr(args, "verbose", False))
+    try:
+        from utils.config_parser import ConfigParser
+        from ml.relationship_inferrer import MLRelationshipInferrer
+        from ml.relationship_feedback_store import FeedbackStore
+
+        if not validate_config_file(args.config):
+            return 1
+
+        parser = ConfigParser(args.config)
+        if not parser.load_config():
+            logger.error("Failed to load config")
+            return 1
+        tables = parser.parse_tables()
+        existing = parser.parse_relationships()
+
+        inferred: list = []
+        method = args.method
+
+        if method in ("ml", "both"):
+            store = FeedbackStore(args.feedback_store) if args.feedback_store else FeedbackStore()
+            ml_inferrer = MLRelationshipInferrer(
+                confidence_threshold=args.ml_confidence,
+                feedback_store=store,
+            )
+            ml_result = ml_inferrer.infer(tables, existing_relationships=existing)
+            inferred.extend(ml_result.relationships)
+            logger.info(
+                f"ML inferred {len(ml_result.relationships)} relationship(s); "
+                f"classifier_fitted={ml_result.classifier_fitted} "
+                f"(n={ml_result.classifier_examples} feedback examples)"
+            )
+
+        if method in ("llm", "both"):
+            try:
+                from llm.relationship_inferrer import RelationshipInferrer as LLMInferrer
+                llm = LLMInferrer(confidence_threshold=args.llm_confidence)
+                # When method=both, only ask LLM about relationships ML missed
+                seen_pairs = {(r.source_table, r.source_column, r.target_table, r.target_column)
+                              for r in inferred} if method == "both" else set()
+                llm_result = llm.infer(tables, existing_relationships=existing)
+                for rel in llm_result.relationships:
+                    pair = (rel.source_table, rel.source_column, rel.target_table, rel.target_column)
+                    if pair not in seen_pairs:
+                        inferred.append(rel)
+                logger.info(f"LLM contributed {len(llm_result.relationships)} relationship(s)")
+            except Exception as exc:
+                logger.warning(f"LLM inference unavailable, continuing with ML only: {exc}")
+
+        # Write reviewable YAML
+        output_path = Path(args.config_output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_reviewable_yaml(output_path, tables, existing, inferred)
+        logger.info(f"✅ Wrote reviewable YAML: {output_path}")
+
+        # Optional ER diagram
+        if args.er_output:
+            _write_er_diagram(Path(args.er_output), tables, existing + inferred)
+
+        # Print summary
+        print(f"\n=== Inference summary ===")
+        print(f"Method:                 {method}")
+        print(f"Existing relationships: {len(existing)}")
+        print(f"Inferred relationships: {len(inferred)}")
+        for rel in inferred:
+            conf = rel.ml_confidence if rel.inferred_by_ml else rel.llm_confidence
+            tag = "ML" if rel.inferred_by_ml else "LLM"
+            print(f"  [{tag} {conf:.2f}] {rel.source_table}.{rel.source_column} -> {rel.target_table}.{rel.target_column}")
+        return 0
+    except Exception as exc:
+        logger.error(f"infer-relationships failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def _write_reviewable_yaml(path: Path, tables, existing_rels, inferred_rels) -> None:
+    """Emit a YAML containing both the original relationships (kept) and the
+    inferred ones (annotated with confidence + signals) so the SME can edit
+    in place — delete what's wrong, keep what's right.
+    """
+    import yaml as _yaml
+    rel_dicts = []
+    for r in existing_rels:
+        rel_dicts.append({
+            "name": r.name,
+            "source_table": r.source_table,
+            "source_columns": [r.source_column],
+            "target_table": r.target_table,
+            "target_columns": [r.target_column],
+            "relationship_type": r.relationship_type,
+            "active": r.active,
+        })
+    for r in inferred_rels:
+        d = {
+            "name": r.name,
+            "source_table": r.source_table,
+            "source_columns": [r.source_column],
+            "target_table": r.target_table,
+            "target_columns": [r.target_column],
+            "relationship_type": r.relationship_type,
+            "active": r.active,
+        }
+        if r.inferred_by_ml:
+            d["inferred_by_ml"] = True
+            d["ml_confidence"] = r.ml_confidence
+            if r.inference_signals:
+                d["inference_signals"] = r.inference_signals
+        if r.inferred_by_llm:
+            d["inferred_by_llm"] = True
+            d["llm_confidence"] = r.llm_confidence
+        d["notes"] = "REVIEW: inferred — delete this entry to reject, edit columns to correct, leave to accept."
+        rel_dicts.append(d)
+
+    payload = {
+        "config_format": "sdp-yaml-v1",
+        "_review_metadata": {
+            "instructions": "Review each entry under 'relationships'. Keep accurate ones, delete inaccurate ones, "
+                            "fix any column-name mistakes, then run `python main.py record-feedback "
+                            "--inferred <this-file> --reviewed <your-edited-file>` to teach the system.",
+            "existing_count": len(existing_rels),
+            "inferred_count": len(inferred_rels),
+        },
+        "relationships": rel_dicts,
+    }
+    path.write_text(_yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def _write_er_diagram(out_path: Path, tables, relationships) -> None:
+    """Emit an ER diagram in the format implied by the file extension."""
+    try:
+        from utils.er_diagram import ERDiagramGenerator
+    except Exception as exc:
+        logger.warning(f"ER diagram generator unavailable: {exc}")
+        return
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    suffix = out_path.suffix.lower().lstrip(".")
+    fmt = {"mmd": "mermaid", "dot": "dot", "png": "png"}.get(suffix, "mermaid")
+    gen = ERDiagramGenerator(tables, relationships)
+    if fmt == "png":
+        if gen.generate_png(out_path):
+            logger.info(f"✅ Wrote ER diagram: {out_path}")
+        return
+    text = gen.generate_dot() if fmt == "dot" else gen.generate_mermaid()
+    out_path.write_text(text, encoding="utf-8")
+    logger.info(f"✅ Wrote ER diagram: {out_path}")
+
+
+def run_record_feedback(args) -> int:
+    """Diff inferred-vs-reviewed YAML and persist accept/reject deltas."""
+    configure_logging(getattr(args, "verbose", False))
+    try:
+        import yaml as _yaml
+        from ml.relationship_feedback_store import FeedbackStore, FeedbackEntry
+
+        inferred_doc = _yaml.safe_load(Path(args.inferred).read_text(encoding="utf-8")) or {}
+        reviewed_doc = _yaml.safe_load(Path(args.reviewed).read_text(encoding="utf-8")) or {}
+
+        def _index(doc) -> dict:
+            out = {}
+            for r in (doc.get("relationships") or []):
+                src_cols = r.get("source_columns") or [r.get("source_column")]
+                tgt_cols = r.get("target_columns") or [r.get("target_column")]
+                for s_col, t_col in zip(src_cols or [], tgt_cols or []):
+                    if not s_col or not t_col:
+                        continue
+                    key = (str(r.get("source_table", "")).lower(), s_col,
+                           str(r.get("target_table", "")).lower(), t_col)
+                    out[key] = r
+            return out
+
+        inferred = _index(inferred_doc)
+        reviewed = _index(reviewed_doc)
+
+        # Only score entries the inferrer originally proposed (others are user-authored).
+        inferred_only = {k: v for k, v in inferred.items()
+                         if v.get("inferred_by_ml") or v.get("inferred_by_llm")}
+
+        store = FeedbackStore(args.feedback_store) if args.feedback_store else FeedbackStore()
+        accept_count = reject_count = 0
+        for key, original in inferred_only.items():
+            kept = key in reviewed
+            entry = FeedbackEntry(
+                source_table=key[0],
+                source_column=key[1],
+                target_table=key[2],
+                target_column=key[3],
+                accepted=kept,
+                signals=dict(original.get("inference_signals") or {}),
+                predicted_confidence=original.get("ml_confidence") or original.get("llm_confidence"),
+                note="recorded via record-feedback",
+            )
+            store.append(entry)
+            if kept:
+                accept_count += 1
+            else:
+                reject_count += 1
+
+        # Detect SME-added relationships (in reviewed but not in inferred) — these
+        # are positive examples the inferrer missed. Recorded with empty signals
+        # so they only contribute to pattern-memory, not classifier training.
+        added = 0
+        for key, r in reviewed.items():
+            if key in inferred:
+                continue
+            entry = FeedbackEntry(
+                source_table=key[0], source_column=key[1],
+                target_table=key[2], target_column=key[3],
+                accepted=True, signals={},
+                note="SME-added (inferrer missed)",
+            )
+            store.append(entry)
+            added += 1
+
+        print(f"=== Feedback recorded ===")
+        print(f"  Accepted (kept):  {accept_count}")
+        print(f"  Rejected (gone):  {reject_count}")
+        print(f"  SME-added:        {added}")
+        print(f"  Store path:       {store.path}")
+        stats = store.stats()
+        print(f"  Total in store:   {stats['total']} ({stats['accepted']} accepted, {stats['rejected']} rejected)")
+        return 0
+    except Exception as exc:
+        logger.error(f"record-feedback failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_arguments(argv)
     configure_logging(getattr(args, "verbose", False))
@@ -623,6 +898,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_infer_config(args)
         if args.command == "pii-scan":
             return run_pii_scan(args)
+        if args.command == "infer-relationships":
+            return run_infer_relationships(args)
+        if args.command == "record-feedback":
+            return run_record_feedback(args)
         logger.error(f"Unknown command: {args.command}")
         return 1
     except FileNotFoundError as exc:
