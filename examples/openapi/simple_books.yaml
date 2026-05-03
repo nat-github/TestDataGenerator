@@ -1,0 +1,100 @@
+openapi: 3.0.3
+info:
+  title: Simple Books API
+  version: 1.0.0
+  description: |
+    Minimal demo: list and fetch books. No auth, no pagination, no errors
+    beyond 404. Use this to verify the import → render → mock-server loop
+    end to end.
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local mock server
+
+paths:
+  /books:
+    get:
+      summary: List all books
+      operationId: listBooks
+      tags: [books]
+      responses:
+        "200":
+          description: Array of books
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Book"
+              example:
+                - id: 1
+                  title: The Pragmatic Programmer
+                  author: Andy Hunt
+                  isbn: "9780201616224"
+                  published: 1999-10-30
+                - id: 2
+                  title: Designing Data-Intensive Applications
+                  author: Martin Kleppmann
+                  isbn: "9781449373320"
+                  published: 2017-03-16
+
+  /books/{id}:
+    get:
+      summary: Get a book by id
+      operationId: getBookById
+      tags: [books]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+          example: 1
+      responses:
+        "200":
+          description: One book
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Book"
+        "404":
+          description: Book not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NotFoundError"
+
+components:
+  schemas:
+    Book:
+      type: object
+      required: [id, title, author]
+      properties:
+        id:
+          type: integer
+          minimum: 1
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+        author:
+          type: string
+          example: Donald Knuth
+        isbn:
+          type: string
+          pattern: "^[0-9]{13}$"
+        published:
+          type: string
+          format: date
+
+    NotFoundError:
+      type: object
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          enum: [NOT_FOUND]
+        message:
+          type: string
+          example: Book not found
