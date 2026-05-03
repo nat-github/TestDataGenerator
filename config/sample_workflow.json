@@ -1,0 +1,110 @@
+{
+  "$schema": "../schemas/sdp_config.schema.json",
+  "config_format": "sdp-json-v1",
+  "config_version": "1.0",
+  "run_settings": {
+    "default_records_per_table": 100,
+    "seed": 42
+  },
+  "tables": [
+    {
+      "name": "customers",
+      "description": "Customer master",
+      "rows": 50,
+      "primary_key_columns": ["customer_id"],
+      "cdc": { "mode": "snapshot" },
+      "columns": [
+        { "name": "customer_id", "data_type": "N10", "is_pk": true, "nullable": false },
+        { "name": "first_name", "data_type": "VA32", "special_rules": "FIRST_NAME" },
+        { "name": "last_name", "data_type": "VA32", "special_rules": "LAST_NAME" },
+        { "name": "full_name", "data_type": "VA64", "derived": "{first_name} {last_name}" },
+        { "name": "tier", "data_type": "VA10", "business_values": ["BRONZE", "SILVER", "GOLD", "PLATINUM"] },
+        { "name": "country", "data_type": "VA2", "business_values": ["US", "GB", "DE", "FR", "IN"] },
+        { "name": "display_name", "data_type": "VA64", "derived": "=upper({full_name})" }
+      ]
+    },
+    {
+      "name": "accounts",
+      "description": "Customer accounts with SCD2 history",
+      "rows": 200,
+      "primary_key_columns": ["account_id"],
+      "cdc": {
+        "mode": "scd2",
+        "track": ["status", "balance"],
+        "event_time": "last_modified"
+      },
+      "columns": [
+        { "name": "account_id", "data_type": "N12", "is_pk": true, "nullable": false },
+        {
+          "name": "customer_id", "data_type": "N10",
+          "is_fk": true, "ref_table": "customers", "ref_column": "customer_id",
+          "nullable": false
+        },
+        { "name": "status", "data_type": "VA10", "business_values": ["ACTIVE", "SUSPENDED", "CLOSED"], "nullable": false },
+        { "name": "account_type", "data_type": "VA10", "business_values": ["SAVINGS", "CHECKING", "PREMIUM"] },
+        {
+          "name": "balance",
+          "data_type": "DC(18,2)",
+          "min_value": 0,
+          "max_value": 50000,
+          "rules": [
+            { "when": { "account_type": { "eq": "SAVINGS" } }, "then": { "min": 100, "max": 50000 } },
+            { "when": { "account_type": { "eq": "CHECKING" } }, "then": { "min": 0, "max": 10000 } },
+            { "when": { "account_type": { "eq": "PREMIUM" } }, "then": { "min": 10000, "max": 1000000 } },
+            { "when": { "status": { "eq": "CLOSED" } }, "then": { "value": 0 } }
+          ]
+        },
+        {
+          "name": "closure_date",
+          "data_type": "D",
+          "nullable": true,
+          "rules": [
+            { "when": { "status": { "eq": "ACTIVE" } }, "then": { "set_null": true } },
+            { "when": { "status": { "in": ["SUSPENDED", "CLOSED"] } },
+              "then": { "min": "2020-01-01", "max": "2025-12-31" } }
+          ]
+        },
+        { "name": "last_modified", "data_type": "TS" }
+      ]
+    },
+    {
+      "name": "order_items",
+      "rows": 500,
+      "primary_key_columns": ["item_id"],
+      "cdc": { "mode": "delta" },
+      "columns": [
+        { "name": "item_id", "data_type": "N12", "is_pk": true, "nullable": false },
+        {
+          "name": "account_id", "data_type": "N12",
+          "is_fk": true, "ref_table": "accounts", "ref_column": "account_id",
+          "nullable": false
+        },
+        { "name": "quantity", "data_type": "N4", "min_value": 1, "max_value": 50, "nullable": false },
+        { "name": "unit_price", "data_type": "N8", "min_value": 100, "max_value": 9999, "nullable": false },
+        { "name": "subtotal", "data_type": "N12", "derived": "={quantity} * {unit_price}" },
+        { "name": "tax_pct", "data_type": "N4", "business_values": [5, 10, 15, 20] },
+        { "name": "tax_amount", "data_type": "N12", "derived": "=int({subtotal} * {tax_pct} / 100)" },
+        { "name": "total_amount", "data_type": "N12", "derived": "={subtotal} + {tax_amount}" }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "accounts_customers",
+      "source_table": "accounts",
+      "source_columns": ["customer_id"],
+      "target_table": "customers",
+      "target_columns": ["customer_id"],
+      "relationship_type": "many_to_one",
+      "preserve_on_delta": true
+    },
+    {
+      "name": "items_accounts",
+      "source_table": "order_items",
+      "source_columns": ["account_id"],
+      "target_table": "accounts",
+      "target_columns": ["account_id"],
+      "relationship_type": "many_to_one"
+    }
+  ]
+}

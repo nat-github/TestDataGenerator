@@ -6,14 +6,19 @@ This document defines the **canonical runtime YAML format** for this project.
 
 The goal is simple:
 
-- allow YAML as an alternative input to Excel
+- allow YAML as an alternative input to Excel and JSON
 - keep the **same generation core logic**
-- normalize YAML into the same internal configuration model already used by the Excel parser
+- normalize all three formats into the same internal configuration model
 
 In other words:
 
-- **Excel** and **YAML** are two authoring formats
+- **Excel**, **YAML**, and **JSON** are three authoring formats
 - the generator, validator, delta flow, and SCD2 flow remain the same
+
+> **See also:**
+> - `Json_Config_Schema.md` — JSON authoring (same fields, JSON syntax)
+> - `Rules_and_Workflows.md` — column-level conditional rules and derived columns
+> - `schemas/sdp_config.schema.json` — JSON Schema for IDE autocompletion / validation
 
 ---
 
@@ -39,16 +44,17 @@ run_settings:
 tables:
   - name: parent
     table_kind: dimension
-    row_count: 100
-    generation_mode: snapshot
+    rows: 100
     business_key_columns: [id]
     primary_key_columns: [id]
-    partition_enabled: false
-    partition_columns: []
-    event_time_column: null
-    scd2_enabled: false
-    scd2_tracked_columns: []
-    delta_eligible: true
+
+    # Unified CDC block (preferred over scattered legacy fields)
+    cdc:
+      mode: snapshot           # snapshot | delta | scd2
+      track: []                # SCD2-tracked columns; empty for non-scd2
+      event_time: null         # column name used as monotonic ordering key
+      partition_by: []         # partition key columns
+
     active: true
     notes: Example table
     columns:
@@ -61,6 +67,19 @@ tables:
         data_type: VA10
         business_values: A;B
         nullable: true
+      # Layer A — same-row when/then rules (see Rules_and_Workflows.md)
+      - name: closed_at
+        data_type: D
+        nullable: true
+        rules:
+          - when: { status: { eq: A } }
+            then: { set_null: true }
+          - when: { status: { eq: B } }
+            then: { min: 2020-01-01, max: today }
+      # Layer B — derived column (see Rules_and_Workflows.md)
+      - name: status_label
+        data_type: VA32
+        derived: "=upper({status})"
 
 relationships:
   - name: child_parent
@@ -129,19 +148,43 @@ Each item under `tables` may contain:
 | `name` | yes | Equivalent to Excel `table_name` |
 | `table_kind` | no | e.g. `transactional`, `dimension`, `reference` |
 | `description` | no | Optional description |
-| `row_count` | no | Equivalent to Excel `row_count` |
-| `generation_mode` | no | e.g. `snapshot`, `delta_ready`, `scd2_ready` |
+| `rows` (alias `row_count`) | no | Equivalent to Excel `row_count` |
 | `business_key_columns` | no | List or semicolon-separated string |
 | `primary_key_columns` | no | List or semicolon-separated string |
-| `partition_enabled` | no | Boolean |
-| `partition_columns` | no | List or semicolon-separated string |
-| `event_time_column` | no | Column name |
-| `scd2_enabled` | no | Boolean |
-| `scd2_tracked_columns` | no | List or semicolon-separated string |
-| `delta_eligible` | no | Boolean |
+| `cdc` | no | Unified change-data-capture block — see below |
 | `active` | no | Boolean, defaults to `true` |
 | `notes` | no | Optional notes |
 | `columns` | yes | Column definitions |
+
+### `cdc:` block (recommended — replaces six legacy fields)
+
+```yaml
+cdc:
+  mode: scd2                     # snapshot | delta | scd2
+  track: [status, balance]       # SCD2 tracked columns
+  event_time: last_modified_ts   # monotonic ordering key
+  partition_by: [region]         # partition columns
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `mode` | `snapshot` \| `delta` \| `scd2` | Generation behaviour. `scd2` implies `delta`. |
+| `track` | list / `;`-string | SCD2 tracked columns. |
+| `event_time` | string | Column used as the event-time / ordering key. |
+| `partition_by` | list / `;`-string | Partition key columns. |
+
+### Legacy fields (still accepted)
+
+The parser keeps these working for backward compatibility. New configs should prefer `cdc:`.
+
+| Legacy | Replaced by |
+|---|---|
+| `generation_mode: snapshot/delta_ready/scd2_ready` | `cdc.mode` |
+| `delta` / `delta_eligible` | `cdc.mode == delta` (or `scd2`) |
+| `scd2` / `scd2_enabled` | `cdc.mode == scd2` |
+| `track_changes` / `scd2_tracked_columns` | `cdc.track` |
+| `partition_enabled`, `partition_columns` | `cdc.partition_by` |
+| `event_time_column` | `cdc.event_time` |
 
 ---
 
@@ -166,6 +209,8 @@ Each column under `tables[].columns[]` may contain:
 | `event_time` | no | Boolean |
 | `partition_role` | no | e.g. `partition_key`, `event_time` |
 | `scd2_tracked` | no | Boolean |
+| `rules` | no | List of `{when, then}` rules — Layer A. See `Rules_and_Workflows.md`. |
+| `derived` | no | Expression string — Layer B. Template `"{first} {last}"` or `=`-prefixed expression `"={qty} * {price}"`. |
 
 ---
 

@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from dataclasses import dataclass, field as dc_field
@@ -7,7 +8,14 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import yaml
-from models.config_models import ColumnConfig, TableConfig, RelationshipConfig
+from models.config_models import (
+    CDCConfig,
+    ColumnConfig,
+    RelationshipConfig,
+    RuleAction,
+    RuleConfig,
+    TableConfig,
+)
 from utils.helpers import DataHelpers
 
 
@@ -134,6 +142,35 @@ class ConfigParser:
         text = str(value).strip()
         return text or None
 
+    @staticmethod
+    def _parse_rules_field(value: Any) -> Optional[List[RuleConfig]]:
+        """Accept rules from YAML (list[dict]), JSON (list[dict]), or Excel
+        (JSON-encoded string in a single cell). Return List[RuleConfig] or None.
+        """
+        if value is None:
+            return None
+        if isinstance(value, float) and np.isnan(value):
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            try:
+                value = json.loads(stripped)
+            except (ValueError, json.JSONDecodeError):
+                return None
+        if not isinstance(value, list):
+            return None
+        rules: List[RuleConfig] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            try:
+                rules.append(RuleConfig(**item))
+            except Exception:
+                continue
+        return rules or None
+
     def _get_optional_sheet(self, excel_file: pd.ExcelFile, *sheet_names: str) -> Optional[pd.DataFrame]:
         for sheet_name in sheet_names:
             if sheet_name in self.available_sheets:
@@ -244,9 +281,49 @@ class ConfigParser:
     def _load_yaml_config(self) -> bool:
         with open(self.config_file, 'r', encoding='utf-8') as handle:
             raw_config = yaml.safe_load(handle) or {}
+        return self._load_dict_config(raw_config, source_label='YAML')
 
+    def _load_json_config(self) -> bool:
+        with open(self.config_file, 'r', encoding='utf-8') as handle:
+            raw_config = json.load(handle)
+        return self._load_dict_config(raw_config, source_label='JSON')
+
+    @staticmethod
+    def _expand_cdc_block(cdc_raw: Any) -> Dict[str, Any]:
+        """Translate a `cdc:` block into legacy flat fields.
+
+        Returns a dict containing any of:
+          generation_mode, scd2_enabled, scd2_tracked_columns,
+          delta_eligible, partition_enabled, partition_columns,
+          event_time_column, _cdc_object (the parsed CDCConfig).
+
+        Tolerates None/empty input and unknown keys (ignored).
+        """
+        if not isinstance(cdc_raw, dict) or not cdc_raw:
+            return {}
+
+        try:
+            cdc_obj = CDCConfig(**{k: v for k, v in cdc_raw.items()
+                                   if k in {'mode', 'track', 'event_time', 'partition_by'}})
+        except Exception:
+            cdc_obj = CDCConfig()
+
+        result: Dict[str, Any] = {'_cdc_object': cdc_obj}
+        mode = (cdc_obj.mode or 'snapshot').lower()
+        result['generation_mode'] = mode
+        result['scd2_enabled'] = (mode == 'scd2')
+        result['delta_eligible'] = (mode in {'delta', 'scd2'})  # scd2 implies delta
+        result['scd2_tracked_columns'] = list(cdc_obj.track)
+        result['partition_columns'] = list(cdc_obj.partition_by)
+        result['partition_enabled'] = bool(cdc_obj.partition_by)
+        if cdc_obj.event_time:
+            result['event_time_column'] = cdc_obj.event_time
+        return result
+
+    def _load_dict_config(self, raw_config: Any, source_label: str = 'config') -> bool:
+        """Shared loader for YAML and JSON inputs — both deserialize to dicts."""
         if not isinstance(raw_config, dict):
-            self.logger.error('❌ YAML configuration must contain a top-level mapping')
+            self.logger.error(f'❌ {source_label} configuration must contain a top-level mapping')
             return False
 
         columns_rows: List[Dict[str, Any]] = []
@@ -262,27 +339,47 @@ class ConfigParser:
 
             primary_key_columns = self._split_multi_value(raw_table.get('primary_key_columns'))
             business_key_columns = self._split_multi_value(raw_table.get('business_key_columns'))
+
+            # New unified `cdc:` block expands into legacy flat fields. Legacy
+            # fields take precedence if both are present (predictable migration).
+            cdc_expanded = self._expand_cdc_block(raw_table.get('cdc'))
+            cdc_object = cdc_expanded.pop('_cdc_object', None)
+
             # Support shorthand alias: track_changes → scd2_tracked_columns
             scd2_tracked_columns = self._split_multi_value(
-                raw_table.get('scd2_tracked_columns') or raw_table.get('track_changes')
+                raw_table.get('scd2_tracked_columns')
+                or raw_table.get('track_changes')
+                or cdc_expanded.get('scd2_tracked_columns')
             )
-            partition_columns = self._split_multi_value(raw_table.get('partition_columns'))
-            event_time_column = self._optional_string(raw_table.get('event_time_column'))
+            partition_columns = self._split_multi_value(
+                raw_table.get('partition_columns')
+                or cdc_expanded.get('partition_columns')
+            )
+            event_time_column = (
+                self._optional_string(raw_table.get('event_time_column'))
+                or cdc_expanded.get('event_time_column')
+            )
 
             # Support shorthand aliases: rows → row_count, delta → delta_eligible, scd2 → scd2_enabled
             row_count = raw_table.get('row_count') or raw_table.get('num_rows') or raw_table.get('rows')
-            delta_eligible = raw_table.get('delta_eligible', raw_table.get('delta'))
-            scd2_enabled = raw_table.get('scd2_enabled', raw_table.get('scd2'))
+            delta_eligible = raw_table.get('delta_eligible',
+                raw_table.get('delta', cdc_expanded.get('delta_eligible')))
+            scd2_enabled = raw_table.get('scd2_enabled',
+                raw_table.get('scd2', cdc_expanded.get('scd2_enabled')))
+            generation_mode = (raw_table.get('generation_mode')
+                               or cdc_expanded.get('generation_mode'))
+            partition_enabled = raw_table.get('partition_enabled',
+                cdc_expanded.get('partition_enabled'))
 
             tables_rows.append({
                 'table_name': table_name,
                 'table_kind': raw_table.get('table_kind'),
                 'description': raw_table.get('description'),
                 'row_count': row_count,
-                'generation_mode': raw_table.get('generation_mode'),
+                'generation_mode': generation_mode,
                 'business_key_columns': business_key_columns,
                 'primary_key_columns': primary_key_columns,
-                'partition_enabled': raw_table.get('partition_enabled'),
+                'partition_enabled': partition_enabled,
                 'partition_columns': partition_columns,
                 'event_time_column': event_time_column,
                 'scd2_enabled': scd2_enabled,
@@ -290,6 +387,7 @@ class ConfigParser:
                 'delta_eligible': delta_eligible,
                 'active': raw_table.get('active', True),
                 'notes': raw_table.get('notes'),
+                '_cdc_object': cdc_object,
             })
 
             pk_set = set(primary_key_columns)
@@ -337,6 +435,8 @@ class ConfigParser:
                     'event_time': raw_column.get('event_time', bool(event_time_column and column_name == event_time_column)),
                     'partition_role': partition_role,
                     'scd2_tracked': raw_column.get('scd2_tracked', column_name in scd2_set),
+                    'rules': raw_column.get('rules'),       # list[dict] | JSON string | None
+                    'derived': raw_column.get('derived'),   # template/expression string | None
                 })
 
         relationship_rows: List[Dict[str, Any]] = []
@@ -453,6 +553,8 @@ class ConfigParser:
             suffix = Path(self.config_file).suffix.lower()
             if suffix in {'.yaml', '.yml'}:
                 return self._load_yaml_config()
+            if suffix == '.json':
+                return self._load_json_config()
             return self._load_excel_config()
 
         except Exception as e:
@@ -513,6 +615,8 @@ class ConfigParser:
                         else row.get('partition_role')
                     ),
                     scd2_tracked=self._to_bool(row.get('scd2_tracked'), False),
+                    rules=self._parse_rules_field(row.get('rules')),
+                    derived=self._optional_string(row.get('derived')),
                 )
                 columns.append(column_config)
 
@@ -520,6 +624,23 @@ class ConfigParser:
             derived_business_keys = [col.column_name for col in columns if col.is_business_key_component]
             derived_event_time_column = next((col.column_name for col in columns if col.event_time), None)
             derived_scd2_columns = [col.column_name for col in columns if col.scd2_tracked]
+
+            # Excel CDC alias columns: cdc_mode + cdc_track on the Tables sheet.
+            # Mirror the YAML/JSON `cdc:` block: a single column carries the
+            # generation_mode + scd2/delta intent, and another the tracked columns.
+            excel_cdc_mode = self._optional_string(table_meta.get('cdc_mode'))
+            excel_cdc_track = self._split_multi_value(table_meta.get('cdc_track'))
+            if excel_cdc_mode:
+                excel_cdc_mode = excel_cdc_mode.lower()
+                if not table_meta.get('generation_mode'):
+                    table_meta['generation_mode'] = excel_cdc_mode
+                if excel_cdc_mode == 'scd2' and table_meta.get('scd2_enabled') in (None, False):
+                    table_meta['scd2_enabled'] = True
+                if excel_cdc_mode in {'delta', 'scd2'} and table_meta.get('delta_eligible') in (None, False):
+                    table_meta['delta_eligible'] = True
+            if excel_cdc_track and not table_meta.get('scd2_tracked_columns'):
+                table_meta['scd2_tracked_columns'] = excel_cdc_track
+
             generation_mode = str(table_meta.get('generation_mode') or 'snapshot').strip().lower()
             row_count = table_meta.get('row_count', table_meta.get('initial_row_count', None))
             if row_count is None:
@@ -541,11 +662,32 @@ class ConfigParser:
                 scd2_tracked_columns=self._split_multi_value(table_meta.get('scd2_tracked_columns')) or derived_scd2_columns,
                 delta_eligible=self._to_bool(
                     table_meta.get('delta_eligible', table_meta.get('delta_enabled')),
-                    generation_mode in {'delta', 'delta_ready'},
+                    generation_mode in {'delta', 'delta_ready', 'scd2', 'scd2_ready'},
                 ),
                 active=True,
                 notes=self._optional_string(table_meta.get('notes')),
             )
+
+            # Build the CDCConfig object so downstream consumers (and stub/mock
+            # serialisers in the future) have a single point of truth for change
+            # tracking, regardless of which authoring format the user chose.
+            tc = self.tables[table_name]
+            cdc_existing = table_meta.get('_cdc_object')
+            if isinstance(cdc_existing, CDCConfig):
+                tc.cdc = cdc_existing
+            else:
+                if tc.scd2_enabled:
+                    cdc_mode = 'scd2'
+                elif tc.delta_eligible:
+                    cdc_mode = 'delta'
+                else:
+                    cdc_mode = 'snapshot'
+                tc.cdc = CDCConfig(
+                    mode=cdc_mode,
+                    track=list(tc.scd2_tracked_columns),
+                    event_time=tc.event_time_column,
+                    partition_by=list(tc.partition_columns),
+                )
 
         return self.tables
 

@@ -1,10 +1,77 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 import math
 
 from pydantic import BaseModel, Field, field_validator, model_validator
+
+
+# Operators allowed inside a rule's `when:` condition.
+# `and`/`or` are composite operators that nest further conditions.
+RULE_OPERATORS = {
+    "eq", "ne", "in", "not_in",
+    "gt", "gte", "lt", "lte", "between",
+    "is_null", "not_null", "matches",
+    "and", "or",
+}
+
+
+class RuleAction(BaseModel):
+    """What happens when a rule's `when:` condition matches.
+
+    Any subset of these fields may be set; they override the column's
+    base configuration for the matching row.
+    """
+    value: Optional[Any] = None              # constant value (use sentinel handling for null)
+    min: Optional[Any] = None                # numeric / date min override
+    max: Optional[Any] = None                # numeric / date max override
+    distribution: Optional[Dict[str, Any]] = None
+    null_rate: Optional[float] = None
+    business_values: Optional[Any] = None    # list or "A;B;C"
+    special_rules: Optional[str] = None
+    set_null: bool = False                   # explicit null (preferred over value: null)
+
+
+class RuleConfig(BaseModel):
+    """A when/then rule applied to a column at row evaluation time.
+
+    `when` is a nested dict where keys are either column names (mapped to
+    operator dicts) or composite operators (`and`/`or` -> list of sub-conditions).
+    Examples:
+        when: { status: { eq: CLOSED } }
+        when: { and: [ { status: { eq: ACTIVE } }, { tier: { in: [GOLD, PLATINUM] } } ] }
+    """
+    when: Dict[str, Any] = Field(default_factory=dict)
+    then: RuleAction = Field(default_factory=RuleAction)
+    note: Optional[str] = None
+
+
+class CDCConfig(BaseModel):
+    """Unified change-data-capture config, replacing the spread of
+    delta_eligible / scd2_enabled / scd2_tracked_columns / partition_*
+    fields on TableConfig.
+
+    The legacy fields remain on TableConfig for backward compatibility;
+    the parser fills both so downstream code keeps working unchanged.
+    """
+    mode: Literal["snapshot", "delta", "scd2"] = "snapshot"
+    track: List[str] = Field(default_factory=list)         # tracked columns when mode=scd2
+    event_time: Optional[str] = None                       # column used for monotonic ordering
+    partition_by: List[str] = Field(default_factory=list)  # partition key columns
+
+    @field_validator("track", "partition_by", mode="before")
+    @classmethod
+    def _normalize_lists(cls, v: Any) -> List[str]:
+        if v is None:
+            return []
+        if isinstance(v, list):
+            return [str(item).strip() for item in v if str(item).strip()]
+        if isinstance(v, str):
+            if not v.strip():
+                return []
+            return [part.strip() for part in v.replace(",", ";").split(";") if part.strip()]
+        return [str(v).strip()]
 
 
 class DataType(str, Enum):
@@ -54,6 +121,13 @@ class ColumnConfig(BaseModel):
     distribution: Optional[Dict[str, Any]] = None
     # Canonical example value — used by wire-mock stub serialisers and API doc generators.
     example_value: Optional[Any] = None
+    # Layer A: same-row when/then rules. Each rule rewrites this column's value
+    # for rows whose `when:` condition matches. Evaluated post-generation.
+    rules: Optional[List[RuleConfig]] = None
+    # Layer B: same-row derived expression. When set, this column is computed
+    # from other columns instead of randomly generated. Supports template
+    # strings ("{first} {last}") and =-prefixed expressions ("={qty} * {price}").
+    derived: Optional[str] = None
 
     @field_validator("precision", "scale", "length", mode="before")
     @classmethod
@@ -112,6 +186,10 @@ class TableConfig(BaseModel):
     # Output format for this table. "parquet" (default) | "json" | "wiremock"
     # Wire-mock serialiser is a future extension; field is present for forward compat.
     output_format: Optional[str] = None
+    # Unified CDC config. When provided, the parser also back-fills the legacy
+    # flat fields (delta_eligible, scd2_enabled, scd2_tracked_columns, etc.)
+    # so downstream code keeps working unchanged.
+    cdc: Optional[CDCConfig] = None
 
     @field_validator(
         "business_key_columns",

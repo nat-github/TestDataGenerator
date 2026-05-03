@@ -29,6 +29,7 @@ from sdv.multi_table import HMASynthesizer
 from models.config_models import TableConfig, RelationshipConfig
 from utils.config_parser import ConfigParser
 from utils.helpers import DataHelpers
+from utils.rule_evaluator import apply_to_dataframe as apply_rules_to_dataframe
 
 
 class DataGenerator:
@@ -1382,6 +1383,7 @@ class DataGenerator:
                         synthetic_data = self._enforce_all_relationships(synthetic_data)
                         self.generated_data = synthetic_data
                         self._resolve_foreign_keys()  # Final FK resolution
+                        self._apply_rules_and_derived()  # Layer A + Layer B
                         self._build_column_audit(sdv_used=True)
                         total_records = sum(len(df) for df in self.generated_data.values())
                         self.logger.info(f"✅ SDV data generation completed: {total_records} total records")
@@ -1402,6 +1404,7 @@ class DataGenerator:
                 self.logger.error("❌ Generated data is empty!")
                 raise ValueError("No data was generated")
 
+            self._apply_rules_and_derived()  # Layer A + Layer B
             self._build_column_audit(sdv_used=False)
             self.logger.info(f"✅ Fallback data generation completed: {total_records} total records")
             return self.generated_data
@@ -1496,6 +1499,33 @@ class DataGenerator:
                 return False
 
         return True
+
+    # ---------------------------------------------------------------------
+    # Layer A (rules) + Layer B (derived) post-generation pass
+    # ---------------------------------------------------------------------
+    def _apply_rules_and_derived(self) -> None:
+        """Apply when/then rules and resolve derived columns for every table.
+
+        No-op for tables with no rules and no derived columns. Runs after FK
+        resolution so cross-row references are stable.
+        """
+        if not self.generated_data:
+            return
+        any_applied = False
+        for table_name, df in self.generated_data.items():
+            tc = self.tables_config.get(table_name)
+            if tc is None:
+                continue
+            has_rules = any(c.rules for c in tc.columns)
+            has_derived = any(c.derived for c in tc.columns)
+            if not has_rules and not has_derived:
+                continue
+            self.generated_data[table_name] = apply_rules_to_dataframe(
+                df, tc, helpers=self.helpers
+            )
+            any_applied = True
+        if any_applied:
+            self.logger.info("🧮 Applied row-level rules and derived columns")
 
     # ---------------------------------------------------------------------
     # Foreign Key Resolution

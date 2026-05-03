@@ -15,6 +15,12 @@ poetry install
 # Generate a snapshot
 python main.py generate --config config/Acct_bkng.xlsx --output output/run_01 --default-records 1000
 
+# Generate from a JSON config
+python main.py generate --config config/sample_workflow.json --output output/sample_run --seed 42
+
+# Generate using rules + derived columns + cdc:
+python main.py generate --config config/sample_workflow.yaml --output output/sample_run --seed 42
+
 # Reproducible run (--seed makes output deterministic)
 python main.py generate --config config/Acct_bkng.xlsx --output output/run_01 --seed 42
 
@@ -118,6 +124,7 @@ Excel / YAML Config
 | `utils/config_parser.py` | Excel & YAML parsing, validation with row/column error context, `lint_config()` |
 | `utils/helpers.py` | Regex generation, Faker integration (18 locales), type coercion, NULL rate logic, 60+ special rules |
 | `utils/parquet_post_processor.py` | Delta (I/U/D) and SCD2 effective-dating logic with delta-log rollback safety |
+| `utils/rule_evaluator.py` | Layer A (when/then) and Layer B (derived expressions) post-generation pass — operates on plain dicts so it can be reused by stub/mock renderers later |
 | `utils/data_validator.py` | Post-generation FK relationship validation |
 | `utils/er_diagram.py` | ER diagram generation: Mermaid (zero-dep), Graphviz DOT, PNG (matplotlib optional) |
 | `utils/cloud_uploader.py` | Azure Blob Storage and AWS S3 upload — credentials from env vars only |
@@ -136,9 +143,27 @@ FK resolution runs after generation on both paths to ensure referential integrit
 
 ### Configuration Formats
 
-**Excel workbook** (primary): four optional/required sheets — `Columns` is required; `Run_Settings`, `Tables`, `Relationships` are optional.
+**Excel workbook** (primary): four optional/required sheets — `Columns` is required; `Run_Settings`, `Tables`, `Relationships` are optional. New optional `Tables` columns: `cdc_mode` (snapshot|delta|scd2) and `cdc_track` (semicolon list). New optional `Columns` columns: `rules` (JSON-encoded list of when/then rules) and `derived` (template / =-expression).
 
 **YAML** (`config_format: sdp-yaml-v1`): code-friendly alternative; same semantics as Excel. See `Yaml_Config_Schema.md` for canonical format.
+
+**JSON** (`config_format: sdp-json-v1`): same field set as YAML in JSON syntax. See `Json_Config_Schema.md`. JSON Schema for IDE validation lives at `schemas/sdp_config.schema.json`.
+
+### Unified CDC block (replaces six legacy fields)
+
+```yaml
+cdc:
+  mode: scd2          # snapshot | delta | scd2 (scd2 implies delta)
+  track: [status]     # SCD2 tracked columns
+  event_time: ts      # monotonic ordering column
+  partition_by: []    # partition keys
+```
+
+Legacy flat fields (`delta_eligible`, `scd2_enabled`, `scd2_tracked_columns`, `partition_columns`, `event_time_column`, `generation_mode`) still parse — the parser back-fills both legacy and `cdc` views so downstream code keeps working.
+
+### Rules and derived columns (Layer A + B)
+
+Per-column `rules:` list applies when/then logic at row evaluation time; per-column `derived:` produces values computed from other columns. Both run after FK resolution. Engine lives at `utils/rule_evaluator.py` and operates on plain dicts so it can be reused by the future stub/mock track. See `Rules_and_Workflows.md`.
 
 ### Data Types
 
@@ -196,6 +221,9 @@ Both modules use a stable system prompt with `cache_control: ephemeral` for Anth
 
 - `Usage.md` — full user guide for all three CLI commands and config formats
 - `Yaml_Config_Schema.md` — canonical YAML schema reference
+- `Json_Config_Schema.md` — JSON schema reference (sdp-json-v1)
+- `Rules_and_Workflows.md` — Layer A (when/then rules), Layer B (derived columns), Layer C (planned workflows)
+- `Stubs_Mocks_Plan.md` — planned WireMock / stubs / mocks track (uses same rule engine)
 - `Regex_Rules.md` — regex pattern syntax supported in `special_rules`
 - `PRD_Roadmap.md` — product vision and future roadmap
-- `Pending_Items.md` — active engineering backlog (deterministic seeds, audit reports, Pydantic v2 migration, streaming)
+- `Pending_Items.md` — active engineering backlog

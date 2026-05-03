@@ -1,0 +1,250 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synthetic-data-platform/schemas/sdp_config.schema.json",
+  "title": "Synthetic Data Platform — config (YAML/JSON)",
+  "description": "Canonical schema for sdp-yaml-v1 / sdp-json-v1 configs. Use in IDEs (VS Code, IntelliJ) for autocompletion and validation.",
+  "type": "object",
+  "additionalProperties": true,
+  "properties": {
+    "config_format": {
+      "type": "string",
+      "enum": ["sdp-yaml-v1", "sdp-json-v1", "fdl-yaml-v1", "fdl-json-v1"],
+      "description": "Format marker. fdl-* values are accepted for backward compatibility."
+    },
+    "config_version": { "type": "string" },
+    "run_settings": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "seed": { "type": "integer" },
+        "default_records_per_table": { "type": "integer", "minimum": 1 },
+        "output_format": { "type": "string", "enum": ["parquet", "json", "csv"] },
+        "compression": { "type": "string", "enum": ["snappy", "gzip", "zstd", "none"] },
+        "operation_column": { "type": "string" },
+        "save_model_artifact": { "type": "boolean" },
+        "model_artifact_path": { "type": "string" }
+      }
+    },
+    "tables": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Table" }
+    },
+    "relationships": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Relationship" }
+    }
+  },
+  "$defs": {
+    "Table": {
+      "type": "object",
+      "required": ["name", "columns"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "table_kind": {
+          "type": "string",
+          "enum": ["transactional", "dimension", "reference", "fact", "bridge"]
+        },
+        "rows": { "type": "integer", "minimum": 0 },
+        "row_count": { "type": "integer", "minimum": 0 },
+        "active": { "type": "boolean" },
+        "notes": { "type": "string" },
+        "primary_key_columns": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ]
+        },
+        "business_key_columns": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ]
+        },
+        "cdc": { "$ref": "#/$defs/CDC" },
+        "delta": { "type": "boolean", "description": "Legacy alias of cdc.mode == delta." },
+        "delta_eligible": { "type": "boolean", "description": "Legacy flag — prefer cdc.mode." },
+        "scd2": { "type": "boolean", "description": "Legacy alias of cdc.mode == scd2." },
+        "scd2_enabled": { "type": "boolean", "description": "Legacy flag — prefer cdc.mode." },
+        "scd2_tracked_columns": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ],
+          "description": "Legacy — prefer cdc.track."
+        },
+        "track_changes": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ],
+          "description": "Legacy alias of scd2_tracked_columns."
+        },
+        "partition_enabled": { "type": "boolean" },
+        "partition_columns": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ]
+        },
+        "event_time_column": { "type": "string" },
+        "generation_mode": {
+          "type": "string",
+          "enum": ["snapshot", "delta", "delta_ready", "scd2", "scd2_ready"]
+        },
+        "columns": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Column" }
+        }
+      }
+    },
+    "CDC": {
+      "type": "object",
+      "description": "Unified change-data-capture configuration. Replaces the spread of legacy flags.",
+      "additionalProperties": false,
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["snapshot", "delta", "scd2"],
+          "description": "snapshot = full overwrite each run. delta = emit I/U/D rows. scd2 = effective-dated history (implies delta)."
+        },
+        "track": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ],
+          "description": "Columns whose changes trigger a new SCD2 version. Empty when mode != scd2."
+        },
+        "event_time": {
+          "type": "string",
+          "description": "Column used as the event time / monotonic ordering key."
+        },
+        "partition_by": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ],
+          "description": "Partition key columns. Empty disables partitioning."
+        }
+      }
+    },
+    "Column": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "data_type": { "type": "string" },
+        "type": { "type": "string", "description": "Alias for data_type." },
+        "is_pk": { "type": "boolean" },
+        "pk": { "type": "boolean" },
+        "is_fk": { "type": "boolean" },
+        "fk": { "type": "boolean" },
+        "ref_table": { "type": "string" },
+        "ref_column": { "type": "string" },
+        "business_values": {
+          "oneOf": [
+            { "type": "array" },
+            { "type": "string" }
+          ]
+        },
+        "values": {
+          "oneOf": [
+            { "type": "array" },
+            { "type": "string" }
+          ],
+          "description": "Alias for business_values."
+        },
+        "special_rules": { "type": "string" },
+        "min_value": {},
+        "max_value": {},
+        "min": {},
+        "max": {},
+        "nullable": { "type": "boolean" },
+        "is_business_key_component": { "type": "boolean" },
+        "event_time": { "type": "boolean" },
+        "partition_role": {
+          "type": "string",
+          "enum": ["partition_key", "event_time"]
+        },
+        "scd2_tracked": { "type": "boolean" },
+        "rules": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Rule" },
+          "description": "Layer A — same-row when/then rules."
+        },
+        "derived": {
+          "type": "string",
+          "description": "Layer B — same-row derived expression. Template ('{first} {last}') or =-prefixed expression ('={qty} * {price}')."
+        }
+      }
+    },
+    "Rule": {
+      "type": "object",
+      "required": ["when", "then"],
+      "additionalProperties": false,
+      "properties": {
+        "when": { "$ref": "#/$defs/When" },
+        "then": { "$ref": "#/$defs/Then" },
+        "note": { "type": "string" }
+      }
+    },
+    "When": {
+      "type": "object",
+      "description": "Condition tree. Keys are column names (mapped to operator dicts) or composite operators 'and' / 'or' (mapped to lists of sub-conditions).",
+      "additionalProperties": true
+    },
+    "Then": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "value": { "description": "Constant override for the column." },
+        "set_null": { "type": "boolean", "description": "Force the column to null." },
+        "min": { "description": "Numeric or date min override." },
+        "max": { "description": "Numeric or date max override." },
+        "distribution": { "type": "object" },
+        "null_rate": { "type": "number", "minimum": 0, "maximum": 1 },
+        "business_values": {
+          "oneOf": [
+            { "type": "array" },
+            { "type": "string" }
+          ]
+        },
+        "special_rules": { "type": "string" }
+      }
+    },
+    "Relationship": {
+      "type": "object",
+      "required": ["source_table", "target_table"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "source_table": { "type": "string" },
+        "source_columns": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ]
+        },
+        "source_column": { "type": "string" },
+        "target_table": { "type": "string" },
+        "target_columns": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ]
+        },
+        "target_column": { "type": "string" },
+        "relationship_type": {
+          "type": "string",
+          "enum": ["one_to_one", "one_to_many", "many_to_one", "many_to_many"]
+        },
+        "cardinality": { "type": "string" },
+        "preserve_on_delta": { "type": "boolean" },
+        "active": { "type": "boolean" },
+        "notes": { "type": "string" }
+      }
+    }
+  }
+}
