@@ -2,3 +2,10 @@ RAG - for test data generation
 Azure upload
 Referential integrity within the datasets - similar to workflow for data generation
 MCP for test data generation
+
+API - mocks/stubbs
+Identifying relationships using AI/ML and generating ER withit
+Prompt document for generating data for all users 
+How to combine the prompt with LLMS
+Include all LLMS support
+StreamLIT UI
