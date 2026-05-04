@@ -35,12 +35,22 @@ python main.py infer-relationships --config config/bare.xlsx --config-output con
 # Feed the SME's edits (kept / removed / added entries) back into the adaptive feedback store
 python main.py record-feedback --inferred config/inferred.yaml --reviewed config/inferred.yaml.reviewed
 
-# Stubs / Mocks track — convert an OpenAPI spec into editable sdp-mock-v1 YAML
+# Stubs / Mocks track — convert an OpenAPI / Postman / HAR artefact into editable sdp-mock-v1 YAML
 python main.py mock-init --from examples/openapi/medium_tasks.yaml --output mocks/tasks.yaml
+python main.py mock-init --from session.har --output mocks/captured.yaml          # HAR auto-detected
+python main.py mock-init --from collection.json --output mocks/postman.yaml       # Postman auto-detected
 
-# Render WireMock stubs + JSON fixtures from the mock config
+# Render any of: wiremock, json, pact, postman, openapi-examples
 python main.py mock-render --config mocks/tasks.yaml --output stubs/tasks \
-  --format wiremock,json --examples 5 --seed 42 --match-mode any
+  --format wiremock,json,pact,postman --examples 5 --seed 42 --match-mode any \
+  --pact-consumer client-app --pact-provider tasks-svc
+
+# OpenAPI examples enrichment — round-trip a spec with example: blocks injected
+python main.py mock-render --config mocks/tasks.yaml --output stubs/oas \
+  --format openapi-examples --openapi-source examples/openapi/medium_tasks.yaml
+
+# LLM-assisted authoring — fill missing examples + draft 4xx/5xx error envelopes
+python main.py mock-enrich --config mocks/tasks.yaml --output mocks/tasks_enriched.yaml
 
 # Validate a mock config without raising
 python main.py mock-lint --config mocks/tasks.yaml
@@ -167,8 +177,15 @@ Excel / YAML Config
 | `mocks/config_parser.py` | `sdp-mock-v1` YAML/JSON loader, dumper, and linter |
 | `mocks/openapi_importer.py` | OpenAPI 3.x spec → `MockConfig` (handles $refs, allOf, format hints, multi-status responses) |
 | `mocks/template_engine.py` | Walks `MockConfig` schemas/fields, generates JSON values via `utils/helpers.py` |
-| `mocks/renderers/wiremock.py` | `MockConfig` → WireMock-compatible mapping JSON files |
+| `mocks/renderers/wiremock.py` | `MockConfig` → WireMock-compatible mapping JSON files; honours scenarios |
 | `mocks/renderers/json_fixture.py` | `MockConfig` → standalone JSON response/request bodies and per-schema canonical examples |
+| `mocks/renderers/pact.py` | `MockConfig` → Pact v3 consumer-driven contract files |
+| `mocks/renderers/postman.py` | `MockConfig` → Postman v2.1 importable collection with saved example responses |
+| `mocks/renderers/openapi_examples.py` | Round-trip an OpenAPI spec, injecting `example:` blocks into schemas/responses/requests |
+| `mocks/scenario_engine.py` | Compiles `ScenarioConfig.states` into renderer-agnostic `ScenarioStep` records (used by the WireMock renderer for stateful stubs) |
+| `mocks/llm_enricher.py` | Two-pass LLM enrichment via `multi_provider`: fill missing schema examples + draft missing 4xx/5xx error envelopes |
+| `mocks/postman_importer.py` | Postman v2.1 collection JSON → `MockConfig` (folders → tags, saved responses → templates, variable substitution) |
+| `mocks/har_importer.py` | HAR (HTTP Archive) → `MockConfig`; clusters entries by templated path, filters volatile headers |
 
 ### Generation Strategy (Hybrid)
 
@@ -243,7 +260,11 @@ Tests live in `tests/`:
 - `test_openapi_importer.py` — OpenAPI 3.x → `MockConfig` (format hints, $refs, allOf, parameters, response headers) plus end-to-end import of all three example specs.
 - `test_template_engine.py` — value generation precedence (example > enum > special_rule > format > pattern > type), determinism, $refs, end-to-end renders.
 - `test_renderers.py` — WireMock + JSON fixture renderers (concrete vs any-mode paths, deterministic seeds, header injection, request matchers).
-- `test_cli_mocks.py` — `mock-init` / `mock-render` / `mock-lint` argparse + dispatch.
+- `test_renderers_phase_e.py` — Pact / Postman / OpenAPI-examples renderers (contract shape, collection import, example preservation vs overwrite).
+- `test_scenarios.py` — scenario engine compiler + WireMock scenario block emission (after-N chains, multi-transition, priority ordering).
+- `test_llm_enricher.py` — `mock-enrich` two-pass behaviour with the LLM call mocked (fence handling, exception tolerance, status-code filtering).
+- `test_reverse_importers.py` — Postman + HAR importers (path templating, variable substitution, header filtering, body type inference).
+- `test_cli_mocks.py` + `test_cli_mocks_phase_e_h_i.py` — `mock-*` argparse plumbing and dispatch end-to-end.
 
 No linting is configured (pending item in `Pending_Items.md`).
 

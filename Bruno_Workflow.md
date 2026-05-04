@@ -355,21 +355,128 @@ admin API to reset).
 
 ---
 
-## What's next
+## More render formats (Phase E)
 
-Phases not yet implemented (tracked in `Stubs_Mocks_Plan.md`):
+Beyond `wiremock` and `json`, the renderer supports three more:
 
-- **Pact / Postman / OpenAPI-examples renderers** — different output formats
-  for contract testing and exploratory work
-- **Scenarios** — stateful sequences (request N changes the response of N+1)
-- **LLM-assisted authoring** — `mock-enrich` to fill missing examples and
-  draft 4xx/5xx error envelopes
-- **Postman / HAR ingest** — reverse-engineer existing artefacts into
-  `MockConfig`
+```bash
+# Pact v3 contracts — for consumer-driven contract testing
+poetry run python main.py mock-render \
+  --config mocks/tasks.yaml --output stubs/pact \
+  --format pact --pact-consumer client-app --pact-provider tasks-svc
 
-The current set (mock-init, mock-render with WireMock + JSON, mock-lint) is
-enough to take any OpenAPI spec and put a realistic local mock server in
-front of Bruno. The rest is additive.
+# Postman v2.1 collection — drag-and-drop into Postman or Bruno
+poetry run python main.py mock-render \
+  --config mocks/tasks.yaml --output stubs/postman \
+  --format postman --examples 5
+
+# Inject realistic example: blocks back into the source OpenAPI spec —
+# useful for documentation tools (Redoc, Stoplight, Swagger UI)
+poetry run python main.py mock-render \
+  --config mocks/tasks.yaml --output stubs/oas-enriched \
+  --format openapi-examples \
+  --openapi-source examples/openapi/medium_tasks.yaml
+
+# Or all formats at once
+poetry run python main.py mock-render \
+  --config mocks/tasks.yaml --output stubs/everything \
+  --format wiremock,json,pact,postman --examples 3 --seed 42
+```
+
+Bruno can import the Postman collection directly:
+**Collection → Import → Postman** and pick the `*.postman_collection.json`.
+
+## Reverse importers (Phase I) — start from existing artefacts
+
+When you already have a Postman collection or a HAR capture and you want
+to convert it into a `sdp-mock-v1` config, `mock-init` auto-detects the
+source format:
+
+```bash
+# Postman collection → sdp-mock-v1 (auto-detected)
+poetry run python main.py mock-init \
+  --from my-team-collection.json --output mocks/imported.yaml
+
+# HAR capture from browser DevTools (Save All as HAR with content)
+poetry run python main.py mock-init \
+  --from session.har --output mocks/from-real-traffic.yaml
+
+# Force a particular importer if auto-detection guesses wrong
+poetry run python main.py mock-init \
+  --from ambiguous.json --output mocks/x.yaml --source-type postman
+```
+
+The HAR importer is especially handy: capture a session against the real
+API, run `mock-init`, and you have a starter `MockConfig` reflecting the
+exact requests/responses your code makes. Edit, render, run WireMock,
+and now your tests can run offline against that captured behaviour.
+
+## Scenarios (Phase G) — stateful stubs
+
+Add a `scenarios:` block to your `mocks/<name>.yaml` to model state changes:
+
+```yaml
+scenarios:
+  - name: rate_limit_after_3_calls
+    states:
+      - on_match: { endpoint: list_tasks }
+        after: 3
+        next_response:
+          status: 429
+          body: { code: RATE_LIMITED, message: Slow down }
+
+  - name: create_then_dup
+    states:
+      - on_match: { endpoint: create_task }
+        after: 1
+        next_response: { status: 409, body: { code: DUPLICATE } }
+```
+
+Re-render with WireMock format and the renderer will emit additional
+mappings carrying `scenarioName` + `requiredScenarioState` + `newScenarioState`.
+WireMock advances state automatically as each request matches; the third
+call to `list_tasks` returns 429, subsequent calls to `create_task` return
+409. No code changes — pure config.
+
+## LLM-assisted authoring (Phase H) — `mock-enrich`
+
+Once you have a `sdp-mock-v1` config, `mock-enrich` can fill in two
+common gaps using whatever LLM you have configured (hosted Anthropic /
+OpenAI / Groq, or local LM Studio / Ollama):
+
+```bash
+# Default: hosted Anthropic — needs ANTHROPIC_API_KEY
+poetry run python main.py mock-enrich \
+  --config mocks/tasks.yaml --output mocks/tasks_enriched.yaml
+
+# Local LM Studio — no key needed
+SDP_LLM_PROVIDER=lm-studio \
+SDP_LLM_MODEL="meta-llama-3.1-8b-instruct" \
+poetry run python main.py mock-enrich \
+  --config mocks/tasks.yaml --output mocks/tasks_enriched.yaml
+
+# Or set provider per-command
+poetry run python main.py mock-enrich \
+  --config mocks/tasks.yaml --output mocks/tasks_enriched.yaml \
+  --llm-provider ollama --llm-model llama3.2
+
+# Skip one of the two passes
+poetry run python main.py mock-enrich \
+  --config mocks/tasks.yaml --output mocks/x.yaml \
+  --no-draft-errors          # only fill examples
+```
+
+Two passes:
+1. **fill_missing_examples** — for each `MockConfig.schemas` entry without
+   an `example:`, ask the LLM to suggest one. Existing examples are
+   preserved.
+2. **draft_error_responses** — for each endpoint missing 4xx/5xx
+   variants, draft realistic error envelopes (NOT_FOUND, UNAUTHORIZED,
+   VALIDATION_FAILED, etc.) appropriate to the endpoint's domain.
+
+Failures degrade gracefully: malformed LLM JSON is skipped with a warning,
+provider exceptions are caught, and the config is returned unchanged.
+The result diff is purely additive — the source config never loses data.
 
 ---
 
@@ -384,20 +491,29 @@ poetry run python main.py mock-init \
 # 2. Validate (optional but useful)
 poetry run python main.py mock-lint --config mocks/tasks.yaml
 
-# 3. Render WireMock + JSON fixtures
+# 3. Render any combination of formats
 poetry run python main.py mock-render \
   --config mocks/tasks.yaml \
   --output stubs/tasks \
-  --format wiremock,json \
+  --format wiremock,json,pact,postman \
   --examples 5 \
   --seed 42 \
-  --match-mode any
+  --match-mode any \
+  --pact-consumer client-app --pact-provider tasks-svc
 
-# 4. Run WireMock locally
+# 4. Optional: enrich the config with LLM-suggested examples + error responses
+SDP_LLM_PROVIDER=lm-studio poetry run python main.py mock-enrich \
+  --config mocks/tasks.yaml --output mocks/tasks_enriched.yaml
+
+# 5. Reverse: start from a Postman collection or HAR capture
+poetry run python main.py mock-init \
+  --from session.har --output mocks/from-real-traffic.yaml
+
+# 6. Run WireMock locally
 java -jar ~/tools/wiremock.jar \
   --root-dir stubs/tasks/wiremock \
   --port 8081 \
   --verbose
 
-# 5. Send requests from Bruno against http://localhost:8081/...
+# 7. Send requests from Bruno against http://localhost:8081/...
 ```
