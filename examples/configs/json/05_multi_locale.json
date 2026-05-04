@@ -1,0 +1,193 @@
+{
+  "config_format": "sdp-json-v1",
+  "run_settings": {
+    "default_records_per_table": 100
+  },
+  "tables": [
+    {
+      "name": "us_users",
+      "rows": 100,
+      "primary_key_columns": [
+        "user_id"
+      ],
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "name",
+          "data_type": "VA64",
+          "special_rules": "NAME:en_US"
+        },
+        {
+          "name": "address",
+          "data_type": "VA256",
+          "special_rules": "ADDRESS:en_US"
+        },
+        {
+          "name": "phone",
+          "data_type": "VA20",
+          "special_rules": "PHONE:en_US"
+        },
+        {
+          "name": "ssn",
+          "data_type": "VA11",
+          "special_rules": "SSN"
+        },
+        {
+          "name": "us_routing",
+          "data_type": "VA9",
+          "special_rules": "US_ROUTING"
+        }
+      ]
+    },
+    {
+      "name": "de_users",
+      "rows": 100,
+      "primary_key_columns": [
+        "user_id"
+      ],
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "name",
+          "data_type": "VA64",
+          "special_rules": "NAME:de_DE"
+        },
+        {
+          "name": "address",
+          "data_type": "VA256",
+          "special_rules": "ADDRESS:de_DE"
+        },
+        {
+          "name": "phone",
+          "data_type": "VA20",
+          "special_rules": "PHONE:de_DE"
+        },
+        {
+          "name": "iban",
+          "data_type": "VA34",
+          "special_rules": "IBAN:DE"
+        },
+        {
+          "name": "vat",
+          "data_type": "VA14",
+          "special_rules": "EU_VAT:DE"
+        }
+      ]
+    },
+    {
+      "name": "fr_users",
+      "rows": 100,
+      "primary_key_columns": [
+        "user_id"
+      ],
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "name",
+          "data_type": "VA64",
+          "special_rules": "NAME:fr_FR"
+        },
+        {
+          "name": "address",
+          "data_type": "VA256",
+          "special_rules": "ADDRESS:fr_FR"
+        },
+        {
+          "name": "company",
+          "data_type": "VA128",
+          "special_rules": "COMPANY:fr_FR"
+        },
+        {
+          "name": "iban",
+          "data_type": "VA34",
+          "special_rules": "IBAN:FR"
+        },
+        {
+          "name": "siren",
+          "data_type": "VA9",
+          "special_rules": "FR_SIREN"
+        }
+      ]
+    },
+    {
+      "name": "jp_users",
+      "rows": 100,
+      "primary_key_columns": [
+        "user_id"
+      ],
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "name",
+          "data_type": "VA64",
+          "special_rules": "NAME:ja_JP"
+        },
+        {
+          "name": "address",
+          "data_type": "VA256",
+          "special_rules": "ADDRESS:ja_JP"
+        },
+        {
+          "name": "phone",
+          "data_type": "VA20",
+          "special_rules": "PHONE:ja_JP"
+        }
+      ]
+    },
+    {
+      "name": "in_users",
+      "rows": 100,
+      "primary_key_columns": [
+        "user_id"
+      ],
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "name",
+          "data_type": "VA64",
+          "special_rules": "NAME:en_IN"
+        },
+        {
+          "name": "pan",
+          "data_type": "VA10",
+          "special_rules": "IN_PAN"
+        },
+        {
+          "name": "aadhaar",
+          "data_type": "VA12",
+          "special_rules": "IN_AADHAAR"
+        },
+        {
+          "name": "ifsc",
+          "data_type": "VA11",
+          "special_rules": "IN_IFSC"
+        },
+        {
+          "name": "gstin",
+          "data_type": "VA15",
+          "special_rules": "GSTIN"
+        }
+      ]
+    }
+  ]
+}

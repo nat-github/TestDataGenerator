@@ -1,0 +1,157 @@
+{
+  "config_format": "sdp-json-v1",
+  "run_settings": {
+    "default_records_per_table": 50
+  },
+  "tables": [
+    {
+      "name": "identity_showcase",
+      "rows": 50,
+      "primary_key_columns": [
+        "row_id"
+      ],
+      "columns": [
+        {
+          "name": "row_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "name_global",
+          "data_type": "VA64",
+          "special_rules": "GLOBAL_NAME"
+        },
+        {
+          "name": "name_de",
+          "data_type": "VA64",
+          "special_rules": "NAME:de_DE"
+        },
+        {
+          "name": "name_jp",
+          "data_type": "VA64",
+          "special_rules": "NAME:ja_JP"
+        },
+        {
+          "name": "address_us",
+          "data_type": "VA256",
+          "special_rules": "ADDRESS:en_US"
+        },
+        {
+          "name": "phone_uk",
+          "data_type": "VA20",
+          "special_rules": "PHONE:en_GB"
+        },
+        {
+          "name": "company_fr",
+          "data_type": "VA128",
+          "special_rules": "COMPANY:fr_FR"
+        },
+        {
+          "name": "iban_de",
+          "data_type": "VA34",
+          "special_rules": "IBAN:DE"
+        },
+        {
+          "name": "iban_random",
+          "data_type": "VA34",
+          "special_rules": "IBAN"
+        },
+        {
+          "name": "swift_bic",
+          "data_type": "VA11",
+          "special_rules": "SWIFT"
+        },
+        {
+          "name": "us_routing",
+          "data_type": "VA9",
+          "special_rules": "US_ROUTING"
+        },
+        {
+          "name": "uk_sortcode",
+          "data_type": "VA8",
+          "special_rules": "UK_SORTCODE"
+        },
+        {
+          "name": "us_ssn",
+          "data_type": "VA11",
+          "special_rules": "SSN"
+        },
+        {
+          "name": "india_pan",
+          "data_type": "VA10",
+          "special_rules": "IN_PAN"
+        },
+        {
+          "name": "india_aadhaar",
+          "data_type": "VA12",
+          "special_rules": "IN_AADHAAR"
+        },
+        {
+          "name": "brazil_cpf",
+          "data_type": "VA14",
+          "special_rules": "BR_CPF"
+        },
+        {
+          "name": "eu_vat",
+          "data_type": "VA14",
+          "special_rules": "EU_VAT:DE"
+        },
+        {
+          "name": "india_gstin",
+          "data_type": "VA15",
+          "special_rules": "GSTIN"
+        },
+        {
+          "name": "ipv4",
+          "data_type": "VA15",
+          "special_rules": "IPV4"
+        },
+        {
+          "name": "ipv6",
+          "data_type": "VA45",
+          "special_rules": "IPV6"
+        },
+        {
+          "name": "mac",
+          "data_type": "VA17",
+          "special_rules": "MAC"
+        },
+        {
+          "name": "uuid",
+          "data_type": "VA36",
+          "special_rules": "UUID"
+        },
+        {
+          "name": "nhs_number",
+          "data_type": "VA10",
+          "special_rules": "NHS_NUMBER"
+        },
+        {
+          "name": "ean13",
+          "data_type": "VA13",
+          "special_rules": "EAN13"
+        },
+        {
+          "name": "isbn13",
+          "data_type": "VA13",
+          "special_rules": "ISBN13"
+        },
+        {
+          "name": "btc_address",
+          "data_type": "VA34",
+          "special_rules": "BTC_ADDRESS"
+        },
+        {
+          "name": "eth_address",
+          "data_type": "VA42",
+          "special_rules": "ETH_ADDRESS"
+        },
+        {
+          "name": "case_id",
+          "data_type": "VA12",
+          "special_rules": "REGEX:CASE-[0-9]{4}-[A-Z]{3}"
+        }
+      ]
+    }
+  ]
+}

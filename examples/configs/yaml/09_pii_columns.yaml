@@ -1,0 +1,96 @@
+# Example 09 — PII-rich data for the pii-scan command
+#
+# What this demonstrates:
+#   - A schema deliberately full of PII (names, emails, IDs, financial)
+#   - The pii-scan command identifies columns by name + content
+#   - Useful for compliance demos: "show me where the sensitive data is"
+#
+# Run:
+#
+#   # 1. Generate the data
+#   python main.py generate --config examples/configs/yaml/09_pii_columns.yaml \
+#       --output output/09_pii --default-records 200 --seed 4
+#
+#   # 2. Scan it for PII
+#   python main.py pii-scan --input output/09_pii --verbose
+#
+# Demo talking points:
+#   - The scanner looks at column names AND inspects sample values.
+#   - It confidently flags emails, IBANs, SSNs, phone numbers, names.
+#   - Compare against the source config: every column tagged with a PII-style
+#     special_rule should be flagged.
+config_format: sdp-yaml-v1
+
+run_settings:
+  default_records_per_table: 200
+
+tables:
+  - name: customer_records
+    rows: 200
+    primary_key_columns: [record_id]
+    columns:
+      - name: record_id
+        data_type: N10
+        is_pk: true
+
+      # Direct identifiers
+      - name: full_name
+        data_type: VA64
+        special_rules: NAME
+      - name: email_address
+        data_type: VA128
+        special_rules: EMAIL
+      - name: phone_number
+        data_type: VA20
+        special_rules: PHONE
+      - name: home_address
+        data_type: VA256
+        special_rules: ADDRESS
+
+      # Government / national IDs
+      - name: ssn
+        data_type: VA11
+        special_rules: SSN
+      - name: passport_number
+        data_type: VA9
+        special_rules: PASSPORT:US
+      - name: drivers_licence
+        data_type: VA20
+        special_rules: DRIVERS_LICENCE:US
+
+      # Financial
+      - name: bank_iban
+        data_type: VA34
+        special_rules: IBAN
+      - name: bic_swift
+        data_type: VA11
+        special_rules: SWIFT
+      - name: credit_card_last4
+        data_type: VA4
+        special_rules: REGEX:[0-9]{4}
+
+      # Healthcare
+      - name: nhs_number
+        data_type: VA10
+        special_rules: NHS_NUMBER
+
+      # Network
+      - name: ip_address
+        data_type: VA15
+        special_rules: IPV4
+      - name: device_mac
+        data_type: VA17
+        special_rules: MAC
+
+      # Date of birth — sensitive even without explicit PII rule
+      - name: date_of_birth
+        data_type: D
+
+      # Non-PII columns mixed in (should NOT be flagged)
+      - name: marketing_opt_in
+        data_type: VA1
+        business_values: Y;N
+      - name: account_balance
+        data_type: DC
+        min_value: 0
+        max_value: 100_000

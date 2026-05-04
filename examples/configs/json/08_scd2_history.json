@@ -1,0 +1,61 @@
+{
+  "config_format": "sdp-json-v1",
+  "run_settings": {
+    "default_records_per_table": 500
+  },
+  "tables": [
+    {
+      "name": "customers",
+      "rows": 500,
+      "business_key_columns": [
+        "customer_id"
+      ],
+      "primary_key_columns": [
+        "customer_id"
+      ],
+      "cdc": {
+        "mode": "scd2",
+        "track": [
+          "tier",
+          "address"
+        ],
+        "event_time": "last_updated"
+      },
+      "columns": [
+        {
+          "name": "customer_id",
+          "data_type": "N10",
+          "is_pk": true,
+          "is_business_key_component": true
+        },
+        {
+          "name": "name",
+          "data_type": "VA64",
+          "special_rules": "NAME"
+        },
+        {
+          "name": "email",
+          "data_type": "VA128",
+          "special_rules": "EMAIL"
+        },
+        {
+          "name": "tier",
+          "data_type": "VA10",
+          "business_values": "BRONZE;SILVER;GOLD;PLATINUM",
+          "scd2_tracked": true
+        },
+        {
+          "name": "address",
+          "data_type": "VA256",
+          "special_rules": "ADDRESS",
+          "scd2_tracked": true
+        },
+        {
+          "name": "last_updated",
+          "data_type": "TS",
+          "event_time": true
+        }
+      ]
+    }
+  ]
+}

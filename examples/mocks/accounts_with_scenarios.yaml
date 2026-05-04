@@ -1,0 +1,131 @@
+# sdp-mock-v1 — accounts API with stateful scenarios
+#
+# What this demonstrates:
+#   - The full sdp-mock-v1 model (schemas + endpoints + scenarios)
+#   - Stateful behaviour:
+#       * After 3 successful list_accounts calls the next is rate-limited (429)
+#       * The first create_account attempt succeeds (201), the second fails
+#         with 409 (idempotency / duplicate)
+#   - Multiple response variants per endpoint with weights (mostly 200,
+#     occasionally 404)
+#
+# Run end to end:
+#
+#   # Validate the config
+#   python main.py mock-lint --config examples/mocks/accounts_with_scenarios.yaml
+#
+#   # Render WireMock stubs (scenarios become scenarioName/state mappings)
+#   python main.py mock-render \
+#       --config examples/mocks/accounts_with_scenarios.yaml \
+#       --output stubs/accounts \
+#       --format wiremock --examples 3 --seed 42 --match-mode any
+#
+#   # Run WireMock standalone pointing at the rendered mappings
+#   java -jar ~/tools/wiremock.jar --root-dir stubs/accounts/wiremock --port 8080 --verbose
+#
+#   # Watch the rate limit kick in:
+#   curl http://localhost:8080/api/v1/accounts          # 200 (state: Started)
+#   curl http://localhost:8080/api/v1/accounts          # 200 (state: counter_0_1)
+#   curl http://localhost:8080/api/v1/accounts          # 200 (state: counter_0_2)
+#   curl http://localhost:8080/api/v1/accounts          # 429!
+config_format: sdp-mock-v1
+
+info:
+  title: Accounts API (with scenarios)
+  version: 1.0.0
+  description: Demonstrates stateful behaviour via WireMock scenarios.
+
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Local mock server
+
+settings:
+  default_latency_ms: 30
+  default_examples_count: 5
+
+schemas:
+  Account:
+    type: object
+    required: [iban, currency, balance]
+    properties:
+      iban:     { type: string, special_rule: IBAN, example: DE89370400440532013000 }
+      currency: { type: string, business_values: [EUR, USD, GBP, INR] }
+      balance:  { type: number, minimum: 0, maximum: 1000000 }
+      holder:   { type: string, special_rule: NAME }
+      opened_at: { type: string, format: date-time }
+      status:   { type: string, business_values: [active, frozen, closed] }
+
+  Error:
+    type: object
+    required: [code, message]
+    properties:
+      code:    { type: string, business_values: [NOT_FOUND, RATE_LIMITED, DUPLICATE, UNAUTHORIZED] }
+      message: { type: string }
+
+endpoints:
+  - name: list_accounts
+    path: /accounts
+    method: GET
+    request:
+      query_params:
+        page: { type: integer, minimum: 1, example: 1 }
+        size: { type: integer, minimum: 1, maximum: 100, example: 25 }
+    responses:
+      - status: 200
+        weight: 0.95
+        body_schema:
+          type: array
+          items: { ref: Account }
+      - status: 401
+        weight: 0.05
+        body_schema: { ref: Error }
+
+  - name: get_account
+    path: /accounts/{iban}
+    method: GET
+    request:
+      path_params:
+        iban: { type: string, special_rule: IBAN }
+    responses:
+      - status: 200
+        weight: 0.9
+        body_schema: { ref: Account }
+      - status: 404
+        weight: 0.1
+        body_schema: { ref: Error }
+
+  - name: create_account
+    path: /accounts
+    method: POST
+    request:
+      headers:
+        Idempotency-Key: { type: string, format: uuid }
+      body_schema: { ref: Account }
+    responses:
+      - status: 201
+        body_schema: { ref: Account }
+      - status: 422
+        weight: 0.05
+        body_schema: { ref: Error }
+
+scenarios:
+  # Burst control: third repeat call to list_accounts gets rate-limited.
+  - name: rate_limit_list_after_3
+    description: After 3 successful pages, next call to /accounts returns 429
+    states:
+      - on_match: { endpoint: list_accounts }
+        after: 3
+        next_response:
+          status: 429
+          headers: { Retry-After: "60" }
+          body: { code: RATE_LIMITED, message: "Rate limit exceeded; try again in 60 seconds" }
+
+  # Lifecycle: second create returns 409 (simulate duplicate idempotency key)
+  - name: duplicate_create_after_first
+    description: First POST /accounts succeeds; the second is treated as a duplicate
+    states:
+      - on_match: { endpoint: create_account }
+        after: 2
+        next_response:
+          status: 409
+          body: { code: DUPLICATE, message: "Account already exists with this idempotency key" }

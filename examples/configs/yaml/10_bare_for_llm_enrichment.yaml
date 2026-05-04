@@ -1,0 +1,77 @@
+# Example 10 — Deliberately bare config for the LLM enrichment demo
+#
+# What this demonstrates:
+#   - The `enrich` command takes a bare config and asks an LLM to suggest
+#     business_values, special_rules, and data_type corrections.
+#   - This file is intentionally sparse: column names are realistic but no
+#     values/rules are filled in. The LLM does the inference.
+#
+# Run:
+#
+#   # Hosted Anthropic (default)
+#   export ANTHROPIC_API_KEY=sk-ant-...
+#   python main.py enrich --config examples/configs/yaml/10_bare_for_llm_enrichment.yaml \
+#       --output output/10_enriched.yaml --confidence 0.7
+#
+#   # Or local LLM via LM Studio (no API key needed)
+#   export SDP_LLM_PROVIDER=lm-studio
+#   export SDP_LLM_MODEL="meta-llama-3.1-8b-instruct"
+#   python main.py enrich --config examples/configs/yaml/10_bare_for_llm_enrichment.yaml \
+#       --output output/10_enriched.yaml --confidence 0.6
+#
+# Demo talking points:
+#   - Diff the input vs `output/10_enriched.yaml`.
+#   - Expected enrichments: country_code → ISO list; currency_code → currency
+#     enum; email column → EMAIL special_rule; iban column → IBAN; status →
+#     ACTIVE/CLOSED enum; passport_no → PASSPORT.
+#   - Confidence threshold filters out the LLM's less-certain guesses.
+config_format: sdp-yaml-v1
+
+run_settings:
+  default_records_per_table: 100
+
+tables:
+  - name: party
+    rows: 100
+    primary_key_columns: [party_id]
+    columns:
+      - name: party_id
+        data_type: N10
+        is_pk: true
+      - name: full_name
+        data_type: VA64
+      - name: email
+        data_type: VA128
+      - name: phone
+        data_type: VA20
+      - name: country_code
+        data_type: VA2
+      - name: passport_no
+        data_type: VA9
+      - name: address_line
+        data_type: VA256
+      - name: status
+        data_type: VA10
+      - name: registered_on
+        data_type: D
+
+  - name: account
+    rows: 100
+    primary_key_columns: [account_no]
+    columns:
+      - name: account_no
+        data_type: VA34
+      - name: party_id
+        data_type: N10
+      - name: account_type
+        data_type: VA10
+      - name: currency_code
+        data_type: VA3
+      - name: balance
+        data_type: DC
+      - name: opened_on
+        data_type: D
+      - name: bic
+        data_type: VA11
+      - name: branch_postcode
+        data_type: VA10

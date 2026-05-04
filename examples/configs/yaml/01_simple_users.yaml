@@ -1,0 +1,51 @@
+# Example 01 — Simple single-table snapshot
+#
+# What this demonstrates:
+#   - The minimal viable sdp-yaml-v1 config
+#   - Faker-backed special rules (NAME, EMAIL, PHONE)
+#   - Business values as enums (status)
+#   - Basic constraints (min/max, regex via REGEX:)
+#
+# Run:
+#   python main.py generate --config examples/configs/yaml/01_simple_users.yaml \
+#       --output output/01_simple_users --default-records 200 --seed 42
+#
+# Inspect:
+#   poetry run python readParquet.py output/01_simple_users
+config_format: sdp-yaml-v1
+
+run_settings:
+  default_records_per_table: 200
+
+tables:
+  - name: users
+    rows: 200
+    description: Simple users table — exercises Faker, regex, and enum value generation
+    primary_key_columns: [user_id]
+    columns:
+      - name: user_id
+        data_type: N10
+        is_pk: true
+        nullable: false
+      - name: full_name
+        data_type: VA64
+        special_rules: NAME
+      - name: email
+        data_type: VA128
+        special_rules: EMAIL
+      - name: phone
+        data_type: VA20
+        special_rules: PHONE:en_GB
+      - name: country_code
+        data_type: VA2
+        special_rules: REGEX:[A-Z]{2}
+      - name: status
+        data_type: VA10
+        business_values: ACTIVE;PENDING;SUSPENDED;CLOSED
+      - name: signup_date
+        data_type: D
+        nullable: false
+      - name: lifetime_value
+        data_type: DC
+        min_value: 0
+        max_value: 25000

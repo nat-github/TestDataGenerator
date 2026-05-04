@@ -1,0 +1,67 @@
+# Example 08 — SCD2 history with effective dating
+#
+# What this demonstrates:
+#   - SCD2 mode (slowly changing dimension type 2)
+#   - Tracked columns: only changes to `tier` and `address` create new versions
+#   - Effective dating columns auto-added: effective_from_ts, effective_to_ts,
+#     is_current, version_num
+#   - Bootstrap from previous snapshot, then merge with current
+#
+# Workflow:
+#
+#   # 1. Generate baseline (will become "previous")
+#   python main.py generate --config examples/configs/yaml/08_scd2_history.yaml \
+#       --output output/08_scd2/snap_v1 --default-records 500 --seed 1
+#
+#   # 2. Generate "current" (new state of the world)
+#   python main.py generate --config examples/configs/yaml/08_scd2_history.yaml \
+#       --output output/08_scd2/snap_v2 --default-records 500 --seed 2
+#
+#   # 3. Build SCD2 history
+#   python main.py scd2 --config examples/configs/yaml/08_scd2_history.yaml \
+#       --previous output/08_scd2/snap_v1 \
+#       --current  output/08_scd2/snap_v2 \
+#       --output   output/08_scd2/history
+#
+# Demo talking points:
+#   - Records with unchanged tier+address get is_current=true with no version churn.
+#   - Records where tier or address changed get a closed-out v1 row plus a new
+#     v2 row with is_current=true.
+#   - Note that name changes alone do NOT trigger a new version — only the
+#     declared `track:` columns do.
+config_format: sdp-yaml-v1
+
+run_settings:
+  default_records_per_table: 500
+
+tables:
+  - name: customers
+    rows: 500
+    business_key_columns: [customer_id]
+    primary_key_columns: [customer_id]
+    cdc:
+      mode: scd2
+      track: [tier, address]
+      event_time: last_updated
+    columns:
+      - name: customer_id
+        data_type: N10
+        is_pk: true
+        is_business_key_component: true
+      - name: name
+        data_type: VA64
+        special_rules: NAME
+      - name: email
+        data_type: VA128
+        special_rules: EMAIL
+      - name: tier
+        data_type: VA10
+        business_values: BRONZE;SILVER;GOLD;PLATINUM
+        scd2_tracked: true
+      - name: address
+        data_type: VA256
+        special_rules: ADDRESS
+        scd2_tracked: true
+      - name: last_updated
+        data_type: TS
+        event_time: true

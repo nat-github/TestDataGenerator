@@ -1,0 +1,95 @@
+{
+  "config_format": "sdp-json-v1",
+  "run_settings": {
+    "default_records_per_table": 100
+  },
+  "tables": [
+    {
+      "name": "party",
+      "rows": 100,
+      "primary_key_columns": [
+        "party_id"
+      ],
+      "columns": [
+        {
+          "name": "party_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "full_name",
+          "data_type": "VA64"
+        },
+        {
+          "name": "email",
+          "data_type": "VA128"
+        },
+        {
+          "name": "phone",
+          "data_type": "VA20"
+        },
+        {
+          "name": "country_code",
+          "data_type": "VA2"
+        },
+        {
+          "name": "passport_no",
+          "data_type": "VA9"
+        },
+        {
+          "name": "address_line",
+          "data_type": "VA256"
+        },
+        {
+          "name": "status",
+          "data_type": "VA10"
+        },
+        {
+          "name": "registered_on",
+          "data_type": "D"
+        }
+      ]
+    },
+    {
+      "name": "account",
+      "rows": 100,
+      "primary_key_columns": [
+        "account_no"
+      ],
+      "columns": [
+        {
+          "name": "account_no",
+          "data_type": "VA34"
+        },
+        {
+          "name": "party_id",
+          "data_type": "N10"
+        },
+        {
+          "name": "account_type",
+          "data_type": "VA10"
+        },
+        {
+          "name": "currency_code",
+          "data_type": "VA3"
+        },
+        {
+          "name": "balance",
+          "data_type": "DC"
+        },
+        {
+          "name": "opened_on",
+          "data_type": "D"
+        },
+        {
+          "name": "bic",
+          "data_type": "VA11"
+        },
+        {
+          "name": "branch_postcode",
+          "data_type": "VA10"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,81 @@
+# Example 06 — Layer A (when/then rules) + Layer B (derived columns)
+#
+# What this demonstrates:
+#   - Per-column rules: conditional value/null based on other columns
+#   - Derived columns: computed from other columns via templates
+#   - The rule engine runs after FK resolution so business logic stays consistent
+#
+# Run:
+#   python main.py generate --config examples/configs/yaml/06_rules_and_derived.yaml \
+#       --output output/06_rules --default-records 200 --seed 21
+#
+# Inspect:
+#   poetry run python readParquet.py output/06_rules
+#
+# Demo talking points:
+#   - Confirm `closure_date` is null where status=ACTIVE
+#   - Confirm `closure_date` matches the rule value where status=CLOSED
+#   - Confirm `full_name` is `{first_name} {last_name}` for every row
+config_format: sdp-yaml-v1
+
+run_settings:
+  default_records_per_table: 200
+
+tables:
+  - name: accounts
+    rows: 200
+    primary_key_columns: [account_id]
+    columns:
+      - name: account_id
+        data_type: N10
+        is_pk: true
+
+      - name: status
+        data_type: VA10
+        business_values: ACTIVE;PENDING;CLOSED
+
+      # Rule-driven column: ACTIVE accounts have no closure date,
+      # CLOSED accounts inherit a fixed value.
+      - name: closure_date
+        data_type: D
+        nullable: true
+        rules:
+          - when: { status: { eq: ACTIVE } }
+            then: { set_null: true }
+          - when: { status: { eq: CLOSED } }
+            then: { value: 2024-06-15 }
+          # PENDING falls through to default generation
+
+      - name: first_name
+        data_type: VA32
+        special_rules: FIRST_NAME
+      - name: last_name
+        data_type: VA32
+        special_rules: LAST_NAME
+
+      # Derived column: composed from other columns at render time
+      - name: full_name
+        data_type: VA64
+        derived: "{first_name} {last_name}"
+
+      - name: email
+        data_type: VA128
+        special_rules: EMAIL
+
+      - name: balance
+        data_type: DC
+        min_value: -500
+        max_value: 25_000
+
+      # Composite rule: only flag when balance < 0 AND status = ACTIVE
+      - name: overdraft_flag
+        data_type: VA1
+        nullable: true
+        rules:
+          - when:
+              and:
+                - { balance: { lt: 0 } }
+                - { status: { eq: ACTIVE } }
+            then: { value: "Y" }
+          - when: { balance: { gte: 0 } }
+            then: { value: "N" }

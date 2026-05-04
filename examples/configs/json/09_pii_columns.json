@@ -1,0 +1,102 @@
+{
+  "config_format": "sdp-json-v1",
+  "run_settings": {
+    "default_records_per_table": 200
+  },
+  "tables": [
+    {
+      "name": "customer_records",
+      "rows": 200,
+      "primary_key_columns": [
+        "record_id"
+      ],
+      "columns": [
+        {
+          "name": "record_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "full_name",
+          "data_type": "VA64",
+          "special_rules": "NAME"
+        },
+        {
+          "name": "email_address",
+          "data_type": "VA128",
+          "special_rules": "EMAIL"
+        },
+        {
+          "name": "phone_number",
+          "data_type": "VA20",
+          "special_rules": "PHONE"
+        },
+        {
+          "name": "home_address",
+          "data_type": "VA256",
+          "special_rules": "ADDRESS"
+        },
+        {
+          "name": "ssn",
+          "data_type": "VA11",
+          "special_rules": "SSN"
+        },
+        {
+          "name": "passport_number",
+          "data_type": "VA9",
+          "special_rules": "PASSPORT:US"
+        },
+        {
+          "name": "drivers_licence",
+          "data_type": "VA20",
+          "special_rules": "DRIVERS_LICENCE:US"
+        },
+        {
+          "name": "bank_iban",
+          "data_type": "VA34",
+          "special_rules": "IBAN"
+        },
+        {
+          "name": "bic_swift",
+          "data_type": "VA11",
+          "special_rules": "SWIFT"
+        },
+        {
+          "name": "credit_card_last4",
+          "data_type": "VA4",
+          "special_rules": "REGEX:[0-9]{4}"
+        },
+        {
+          "name": "nhs_number",
+          "data_type": "VA10",
+          "special_rules": "NHS_NUMBER"
+        },
+        {
+          "name": "ip_address",
+          "data_type": "VA15",
+          "special_rules": "IPV4"
+        },
+        {
+          "name": "device_mac",
+          "data_type": "VA17",
+          "special_rules": "MAC"
+        },
+        {
+          "name": "date_of_birth",
+          "data_type": "D"
+        },
+        {
+          "name": "marketing_opt_in",
+          "data_type": "VA1",
+          "business_values": "Y;N"
+        },
+        {
+          "name": "account_balance",
+          "data_type": "DC",
+          "min_value": 0,
+          "max_value": 100000
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,118 @@
+{
+  "config_format": "sdp-json-v1",
+  "run_settings": {
+    "default_records_per_table": 100
+  },
+  "tables": [
+    {
+      "name": "customers",
+      "rows": 100,
+      "primary_key_columns": [
+        "customer_id"
+      ],
+      "columns": [
+        {
+          "name": "customer_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "name",
+          "data_type": "VA64"
+        },
+        {
+          "name": "email",
+          "data_type": "VA128"
+        },
+        {
+          "name": "country",
+          "data_type": "VA2"
+        }
+      ]
+    },
+    {
+      "name": "products",
+      "rows": 50,
+      "primary_key_columns": [
+        "sku"
+      ],
+      "columns": [
+        {
+          "name": "sku",
+          "data_type": "VA16",
+          "is_pk": true
+        },
+        {
+          "name": "title",
+          "data_type": "VA128"
+        },
+        {
+          "name": "category",
+          "data_type": "VA32"
+        },
+        {
+          "name": "list_price",
+          "data_type": "DC"
+        }
+      ]
+    },
+    {
+      "name": "orders",
+      "rows": 200,
+      "primary_key_columns": [
+        "order_id"
+      ],
+      "columns": [
+        {
+          "name": "order_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "customer_id",
+          "data_type": "N10"
+        },
+        {
+          "name": "order_total",
+          "data_type": "DC"
+        },
+        {
+          "name": "placed_at",
+          "data_type": "TS"
+        }
+      ]
+    },
+    {
+      "name": "order_items",
+      "rows": 600,
+      "primary_key_columns": [
+        "order_id",
+        "line_no"
+      ],
+      "columns": [
+        {
+          "name": "order_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "line_no",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "product_sku",
+          "data_type": "VA16"
+        },
+        {
+          "name": "quantity",
+          "data_type": "N10"
+        },
+        {
+          "name": "unit_price",
+          "data_type": "DC"
+        }
+      ]
+    }
+  ]
+}

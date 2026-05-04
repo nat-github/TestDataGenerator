@@ -1,0 +1,151 @@
+{
+  "config_format": "sdp-json-v1",
+  "run_settings": {
+    "default_records_per_table": 500
+  },
+  "tables": [
+    {
+      "name": "customers",
+      "rows": 200,
+      "primary_key_columns": [
+        "customer_id"
+      ],
+      "columns": [
+        {
+          "name": "customer_id",
+          "data_type": "N10",
+          "is_pk": true,
+          "nullable": false
+        },
+        {
+          "name": "name",
+          "data_type": "VA64",
+          "special_rules": "NAME"
+        },
+        {
+          "name": "email",
+          "data_type": "VA128",
+          "special_rules": "EMAIL"
+        },
+        {
+          "name": "country",
+          "data_type": "VA2",
+          "special_rules": "COUNTRY_CODE"
+        },
+        {
+          "name": "tier",
+          "data_type": "VA10",
+          "business_values": "BRONZE;SILVER;GOLD;PLATINUM"
+        }
+      ]
+    },
+    {
+      "name": "orders",
+      "rows": 500,
+      "primary_key_columns": [
+        "order_id"
+      ],
+      "columns": [
+        {
+          "name": "order_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "customer_id",
+          "data_type": "N10",
+          "is_fk": true,
+          "ref_table": "customers",
+          "ref_column": "customer_id"
+        },
+        {
+          "name": "total_amount",
+          "data_type": "DC",
+          "min_value": 5,
+          "max_value": 5000
+        },
+        {
+          "name": "currency",
+          "data_type": "VA3",
+          "business_values": "EUR;USD;GBP;INR"
+        },
+        {
+          "name": "order_status",
+          "data_type": "VA10",
+          "business_values": "PLACED;PAID;SHIPPED;DELIVERED;CANCELLED"
+        },
+        {
+          "name": "placed_at",
+          "data_type": "TS",
+          "nullable": false
+        }
+      ]
+    },
+    {
+      "name": "order_items",
+      "rows": 1500,
+      "primary_key_columns": [
+        "order_id",
+        "line_no"
+      ],
+      "columns": [
+        {
+          "name": "order_id",
+          "data_type": "N10",
+          "is_pk": true,
+          "is_fk": true,
+          "ref_table": "orders",
+          "ref_column": "order_id"
+        },
+        {
+          "name": "line_no",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "product_sku",
+          "data_type": "VA16",
+          "special_rules": "REGEX:SKU-[A-Z]{2}-[0-9]{6}"
+        },
+        {
+          "name": "quantity",
+          "data_type": "N10",
+          "min_value": 1,
+          "max_value": 12
+        },
+        {
+          "name": "unit_price",
+          "data_type": "DC",
+          "min_value": 0.99,
+          "max_value": 999.99
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "orders_to_customers",
+      "source_table": "orders",
+      "source_columns": [
+        "customer_id"
+      ],
+      "target_table": "customers",
+      "target_columns": [
+        "customer_id"
+      ],
+      "relationship_type": "many_to_one"
+    },
+    {
+      "name": "items_to_orders",
+      "source_table": "order_items",
+      "source_columns": [
+        "order_id"
+      ],
+      "target_table": "orders",
+      "target_columns": [
+        "order_id"
+      ],
+      "relationship_type": "many_to_one"
+    }
+  ]
+}

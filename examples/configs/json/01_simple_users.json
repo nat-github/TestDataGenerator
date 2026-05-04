@@ -1,0 +1,60 @@
+{
+  "config_format": "sdp-json-v1",
+  "run_settings": {
+    "default_records_per_table": 200
+  },
+  "tables": [
+    {
+      "name": "users",
+      "rows": 200,
+      "description": "Simple users table \u2014 exercises Faker, regex, and enum value generation",
+      "primary_key_columns": [
+        "user_id"
+      ],
+      "columns": [
+        {
+          "name": "user_id",
+          "data_type": "N10",
+          "is_pk": true,
+          "nullable": false
+        },
+        {
+          "name": "full_name",
+          "data_type": "VA64",
+          "special_rules": "NAME"
+        },
+        {
+          "name": "email",
+          "data_type": "VA128",
+          "special_rules": "EMAIL"
+        },
+        {
+          "name": "phone",
+          "data_type": "VA20",
+          "special_rules": "PHONE:en_GB"
+        },
+        {
+          "name": "country_code",
+          "data_type": "VA2",
+          "special_rules": "REGEX:[A-Z]{2}"
+        },
+        {
+          "name": "status",
+          "data_type": "VA10",
+          "business_values": "ACTIVE;PENDING;SUSPENDED;CLOSED"
+        },
+        {
+          "name": "signup_date",
+          "data_type": "D",
+          "nullable": false
+        },
+        {
+          "name": "lifetime_value",
+          "data_type": "DC",
+          "min_value": 0,
+          "max_value": 25000
+        }
+      ]
+    }
+  ]
+}

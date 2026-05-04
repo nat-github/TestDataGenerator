@@ -1,0 +1,116 @@
+{
+  "config_format": "sdp-json-v1",
+  "run_settings": {
+    "default_records_per_table": 200
+  },
+  "tables": [
+    {
+      "name": "accounts",
+      "rows": 200,
+      "primary_key_columns": [
+        "account_id"
+      ],
+      "columns": [
+        {
+          "name": "account_id",
+          "data_type": "N10",
+          "is_pk": true
+        },
+        {
+          "name": "status",
+          "data_type": "VA10",
+          "business_values": "ACTIVE;PENDING;CLOSED"
+        },
+        {
+          "name": "closure_date",
+          "data_type": "D",
+          "nullable": true,
+          "rules": [
+            {
+              "when": {
+                "status": {
+                  "eq": "ACTIVE"
+                }
+              },
+              "then": {
+                "set_null": true
+              }
+            },
+            {
+              "when": {
+                "status": {
+                  "eq": "CLOSED"
+                }
+              },
+              "then": {
+                "value": "2024-06-15"
+              }
+            }
+          ]
+        },
+        {
+          "name": "first_name",
+          "data_type": "VA32",
+          "special_rules": "FIRST_NAME"
+        },
+        {
+          "name": "last_name",
+          "data_type": "VA32",
+          "special_rules": "LAST_NAME"
+        },
+        {
+          "name": "full_name",
+          "data_type": "VA64",
+          "derived": "{first_name} {last_name}"
+        },
+        {
+          "name": "email",
+          "data_type": "VA128",
+          "special_rules": "EMAIL"
+        },
+        {
+          "name": "balance",
+          "data_type": "DC",
+          "min_value": -500,
+          "max_value": 25000
+        },
+        {
+          "name": "overdraft_flag",
+          "data_type": "VA1",
+          "nullable": true,
+          "rules": [
+            {
+              "when": {
+                "and": [
+                  {
+                    "balance": {
+                      "lt": 0
+                    }
+                  },
+                  {
+                    "status": {
+                      "eq": "ACTIVE"
+                    }
+                  }
+                ]
+              },
+              "then": {
+                "value": "Y"
+              }
+            },
+            {
+              "when": {
+                "balance": {
+                  "gte": 0
+                }
+              },
+              "then": {
+                "value": "N"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

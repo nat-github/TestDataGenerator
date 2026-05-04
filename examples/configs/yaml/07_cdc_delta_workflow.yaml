@@ -1,0 +1,64 @@
+# Example 07 — CDC snapshot → delta workflow
+#
+# What this demonstrates:
+#   - CDC mode declared per-table via the unified `cdc:` block
+#   - Two snapshots compared to produce a Delta Lake table with I/U/D rows
+#   - Partition strategy preserved across delta runs
+#
+# Workflow (3 commands):
+#
+#   # 1. Generate snapshot v1
+#   python main.py generate --config examples/configs/yaml/07_cdc_delta_workflow.yaml \
+#       --output output/07_cdc/snap_v1 --default-records 1000 --seed 1
+#
+#   # 2. Generate snapshot v2 (different seed → different rows; some accounts mutated)
+#   python main.py generate --config examples/configs/yaml/07_cdc_delta_workflow.yaml \
+#       --output output/07_cdc/snap_v2 --default-records 1000 --seed 2
+#
+#   # 3. Compute delta between them
+#   python main.py delta --config examples/configs/yaml/07_cdc_delta_workflow.yaml \
+#       --previous output/07_cdc/snap_v1 \
+#       --current  output/07_cdc/snap_v2 \
+#       --output   output/07_cdc/delta
+#
+# Demo talking points:
+#   - The delta directory is a real Delta Lake table — readable by Spark, Polars,
+#     deltalake (Python), Trino, anything Delta-compatible.
+#   - Each row in the delta has an _operation column: I (insert), U (update),
+#     D (delete) — driven by the business_key_columns declared on the table.
+config_format: sdp-yaml-v1
+
+run_settings:
+  default_records_per_table: 1000
+
+tables:
+  - name: account_balances
+    rows: 1000
+    business_key_columns: [account_id]
+    primary_key_columns: [account_id]
+    cdc:
+      mode: delta
+      event_time: balance_at
+      partition_by: [posting_date]
+    columns:
+      - name: account_id
+        data_type: N10
+        is_pk: true
+        is_business_key_component: true
+      - name: customer_name
+        data_type: VA64
+        special_rules: NAME
+      - name: currency
+        data_type: VA3
+        business_values: EUR;USD;GBP
+      - name: balance
+        data_type: DC
+        min_value: -1000
+        max_value: 100_000
+      - name: status
+        data_type: VA10
+        business_values: ACTIVE;FROZEN;CLOSED
+      - name: posting_date
+        data_type: D
+      - name: balance_at
+        data_type: TS

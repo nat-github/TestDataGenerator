@@ -1,0 +1,104 @@
+# Example 11 — Bare config for relationship inference (ML + LLM)
+#
+# What this demonstrates:
+#   - Three tables with obvious FK candidates but NO relationships block.
+#   - Both inferrers (ML heuristic + LLM) should propose the same set:
+#       orders.customer_id  -> customers.customer_id
+#       items.order_id      -> orders.order_id
+#       items.product_sku   -> products.sku
+#   - The ML inferrer is free + deterministic; the LLM one costs an API call.
+#   - The platform supports `--method both` to combine them: ML first, then
+#     LLM only on candidates ML missed.
+#
+# Run (ML, free, default):
+#   python main.py infer-relationships \
+#       --config examples/configs/yaml/11_bare_for_relationship_inference.yaml \
+#       --config-output output/11_inferred.yaml \
+#       --er-output     output/11_inferred.mmd \
+#       --method ml
+#
+# Run (LLM via LM Studio):
+#   SDP_LLM_PROVIDER=lm-studio python main.py infer-relationships \
+#       --config examples/configs/yaml/11_bare_for_relationship_inference.yaml \
+#       --config-output output/11_llm.yaml --method llm
+#
+# Run (both — ML first, LLM fills gaps):
+#   python main.py infer-relationships \
+#       --config examples/configs/yaml/11_bare_for_relationship_inference.yaml \
+#       --config-output output/11_both.yaml --method both
+#
+# Demo talking points:
+#   - Open output/11_inferred.yaml — every inferred relationship is annotated
+#     with confidence + signals + a "REVIEW" note for the SME.
+#   - The ML inferrer reports its signals (name_similarity, value_subset,
+#     pk_likeness, type_compatibility) so reviewers can audit decisions.
+#   - record-feedback closes the loop: edit the YAML, then run
+#     `python main.py record-feedback --inferred ... --reviewed ...`
+#     to teach the adaptive classifier.
+config_format: sdp-yaml-v1
+
+run_settings:
+  default_records_per_table: 100
+
+tables:
+  - name: customers
+    rows: 100
+    primary_key_columns: [customer_id]
+    columns:
+      - name: customer_id
+        data_type: N10
+        is_pk: true
+      - name: name
+        data_type: VA64
+      - name: email
+        data_type: VA128
+      - name: country
+        data_type: VA2
+
+  - name: products
+    rows: 50
+    primary_key_columns: [sku]
+    columns:
+      - name: sku
+        data_type: VA16
+        is_pk: true
+      - name: title
+        data_type: VA128
+      - name: category
+        data_type: VA32
+      - name: list_price
+        data_type: DC
+
+  - name: orders
+    rows: 200
+    primary_key_columns: [order_id]
+    columns:
+      - name: order_id
+        data_type: N10
+        is_pk: true
+      - name: customer_id   # <-- ML/LLM should infer this points to customers.customer_id
+        data_type: N10
+      - name: order_total
+        data_type: DC
+      - name: placed_at
+        data_type: TS
+
+  - name: order_items
+    rows: 600
+    primary_key_columns: [order_id, line_no]
+    columns:
+      - name: order_id      # <-- should infer points to orders.order_id
+        data_type: N10
+        is_pk: true
+      - name: line_no
+        data_type: N10
+        is_pk: true
+      - name: product_sku   # <-- should infer points to products.sku
+        data_type: VA16
+      - name: quantity
+        data_type: N10
+      - name: unit_price
+        data_type: DC
+
+# Note the deliberate absence of a `relationships:` block — that's what the
+# inferrers fill in.
