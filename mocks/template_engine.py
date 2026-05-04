@@ -54,9 +54,16 @@ class TemplateEngine:
     Use one engine per render run. Pass `seed` for determinism.
     """
 
-    def __init__(self, config: MockConfig, seed: Optional[int] = None):
+    def __init__(
+        self,
+        config: MockConfig,
+        seed: Optional[int] = None,
+        *,
+        ignore_authored_examples: bool = False,
+    ):
         self.config = config
         self._rng = random.Random(seed)
+        self._ignore_authored_examples = ignore_authored_examples
         # Some downstream helpers (regex generator, faker, mimesis) draw from
         # Python's global random + their own RNGs. Seed those too so the same
         # `seed` produces byte-identical output across the whole render path.
@@ -78,8 +85,8 @@ class TemplateEngine:
         if field.nullable and field.null_rate and self._rng.random() < field.null_rate:
             return None
 
-        # Authored example wins everything
-        if field.example is not None:
+        # Authored example wins everything (unless caller disabled this rule)
+        if field.example is not None and not self._ignore_authored_examples:
             return field.example
 
         # $ref — resolve and render the target SchemaConfig
@@ -103,7 +110,7 @@ class TemplateEngine:
 
     def render_schema(self, schema: SchemaConfig) -> Any:
         """Render a top-level SchemaConfig (lives in MockConfig.schemas)."""
-        if schema.example is not None:
+        if schema.example is not None and not self._ignore_authored_examples:
             return schema.example
 
         if schema.type == "array":
