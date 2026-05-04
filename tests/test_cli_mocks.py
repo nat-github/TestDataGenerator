@@ -84,7 +84,8 @@ def test_mock_init_simple_books_writes_yaml(tmp_path: Path, capsys):
     assert "list_books" in text
     assert "get_book_by_id" in text
     captured = capsys.readouterr().out
-    assert "Endpoints: 2" in captured
+    # Output is column-aligned, so just assert that the count-of-2 message landed
+    assert "Endpoints:" in captured and " 2\n" in captured
 
 
 def test_mock_init_complex_payments(tmp_path: Path):

@@ -20,7 +20,7 @@ from utils.parquet_post_processor import ParquetPostProcessor
 logger = logging.getLogger(__name__)
 KNOWN_COMMANDS = {"generate", "delta", "scd2", "lint", "enrich", "collibra-import",
                   "infer-config", "pii-scan", "infer-relationships", "record-feedback",
-                  "mock-init", "mock-render", "mock-lint"}
+                  "mock-init", "mock-render", "mock-lint", "mock-enrich"}
 
 
 def _normalize_argv(argv: Sequence[str]) -> List[str]:
@@ -187,12 +187,16 @@ def build_parser() -> argparse.ArgumentParser:
     # ── mock-init ──────────────────────────────────────────────────────────
     mi_parser = subparsers.add_parser(
         "mock-init",
-        help="Convert an OpenAPI spec (or other API artefact) into a sdp-mock-v1 YAML",
+        help="Convert an OpenAPI spec / Postman collection / HAR capture into a sdp-mock-v1 YAML",
     )
     mi_parser.add_argument("--from", dest="source", required=True,
-                           help="Path to OpenAPI 3.x YAML/JSON spec")
+                           help="Path to source artefact (OpenAPI YAML/JSON, Postman collection JSON, or HAR file)")
     mi_parser.add_argument("--output", required=True,
                            help="Destination path for the generated sdp-mock-v1 YAML")
+    mi_parser.add_argument(
+        "--source-type", choices=["auto", "openapi", "postman", "har"], default="auto",
+        help="Override the auto-detection of the source format (default: auto)",
+    )
     mi_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
 
     # ── mock-render ────────────────────────────────────────────────────────
@@ -205,7 +209,15 @@ def build_parser() -> argparse.ArgumentParser:
     mr_parser.add_argument("--output", required=True,
                            help="Output directory for generated artefacts")
     mr_parser.add_argument("--format", default="wiremock",
-                           help="Comma-separated list of formats: wiremock,json (default: wiremock)")
+                           help="Comma-separated list of formats: wiremock,json,pact,postman,openapi-examples (default: wiremock)")
+    mr_parser.add_argument("--pact-consumer", default="consumer",
+                           help="Consumer name for Pact contracts (default: consumer)")
+    mr_parser.add_argument("--pact-provider", default="provider",
+                           help="Provider name for Pact contracts (default: provider)")
+    mr_parser.add_argument("--openapi-source",
+                           help="Source OpenAPI spec to enrich with examples (required when --format includes openapi-examples)")
+    mr_parser.add_argument("--openapi-overwrite", action="store_true",
+                           help="When enriching OpenAPI examples, overwrite hand-authored ones (default: preserve)")
     mr_parser.add_argument("--examples", type=int, default=None,
                            help="How many concrete example stubs per endpoint (overrides MockConfig)")
     mr_parser.add_argument("--match-mode", choices=["concrete", "any"], default="concrete",
@@ -220,6 +232,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ml_parser.add_argument("--config", required=True, help="Path to sdp-mock-v1 YAML/JSON")
     ml_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    # ── mock-enrich ────────────────────────────────────────────────────────
+    me_parser = subparsers.add_parser(
+        "mock-enrich",
+        help="Use an LLM to fill missing schema examples and draft 4xx/5xx responses",
+    )
+    me_parser.add_argument("--config", required=True, help="Path to sdp-mock-v1 YAML/JSON")
+    me_parser.add_argument("--output", required=True, help="Destination path for the enriched config")
+    me_parser.add_argument("--no-fill-examples", action="store_true",
+                           help="Skip the fill-missing-examples pass")
+    me_parser.add_argument("--no-draft-errors", action="store_true",
+                           help="Skip the draft-error-responses pass")
+    me_parser.add_argument("--llm-provider", default=None,
+                           help="LLM provider override (anthropic, openai, lm-studio, ollama, ...)")
+    me_parser.add_argument("--llm-model", default=None,
+                           help="LLM model override (provider-specific)")
+    me_parser.add_argument("--llm-base-url", default=None,
+                           help="LLM base URL override (for LM Studio / Ollama / custom)")
+    me_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
 
     return parser
 
@@ -921,36 +952,75 @@ def run_record_feedback(args) -> int:
 
 
 def run_mock_init(args) -> int:
-    """Convert an OpenAPI spec into a sdp-mock-v1 YAML config."""
+    """Convert an OpenAPI / Postman / HAR artefact into a sdp-mock-v1 YAML config."""
     configure_logging(getattr(args, "verbose", False))
     try:
-        from mocks.openapi_importer import import_openapi, OpenAPIImportError
         from mocks.config_parser import dump_mock_config
 
-        cfg = import_openapi(args.source)
+        source_type = _detect_mock_source_type(args.source, getattr(args, "source_type", "auto"))
+
+        if source_type == "openapi":
+            from mocks.openapi_importer import import_openapi
+            cfg = import_openapi(args.source)
+        elif source_type == "postman":
+            from mocks.postman_importer import import_postman
+            cfg = import_postman(args.source)
+        elif source_type == "har":
+            from mocks.har_importer import import_har
+            cfg = import_har(args.source)
+        else:
+            logger.error(f"Could not detect source format for {args.source} — pass --source-type explicitly")
+            return 1
+
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         dump_mock_config(cfg, out_path)
 
         print(f"=== mock-init ===")
-        print(f"  Source:    {args.source}")
-        print(f"  Output:    {out_path}")
-        print(f"  Endpoints: {len(cfg.endpoints)}")
-        print(f"  Schemas:   {len(cfg.schemas)}")
+        print(f"  Source:      {args.source}")
+        print(f"  Source type: {source_type}")
+        print(f"  Output:      {out_path}")
+        print(f"  Endpoints:   {len(cfg.endpoints)}")
+        print(f"  Schemas:     {len(cfg.schemas)}")
         for ep in cfg.endpoints[:10]:
             statuses = ",".join(str(r.status) for r in ep.responses)
             print(f"    {ep.method:6s} {ep.path}  -> [{statuses}]  ({ep.name})")
         if len(cfg.endpoints) > 10:
             print(f"    ... and {len(cfg.endpoints) - 10} more")
         return 0
-    except OpenAPIImportError as exc:
-        logger.error(f"mock-init failed: {exc}")
-        return 1
     except Exception as exc:
         logger.error(f"mock-init failed: {exc}")
         import traceback
         traceback.print_exc()
         return 1
+
+
+def _detect_mock_source_type(source_path: str, override: str) -> str:
+    """Heuristic detection between openapi / postman / har sources."""
+    if override and override != "auto":
+        return override
+    p = Path(source_path)
+    if not p.exists():
+        return "auto"
+    suffix = p.suffix.lower()
+    raw = ""
+    try:
+        raw = p.read_text(encoding="utf-8", errors="ignore")[:4096]
+    except Exception:
+        pass
+    # HAR files always contain a top-level "log": with "version" + "entries"
+    if '"log"' in raw and '"entries"' in raw:
+        return "har"
+    # Postman collections start with an `info` block referencing the schema
+    if "schema.getpostman.com" in raw or '"_postman_id"' in raw:
+        return "postman"
+    # OpenAPI specs declare `openapi:` (3.x) or `swagger:` (2.x)
+    if "openapi:" in raw or "swagger:" in raw or '"openapi"' in raw or '"swagger"' in raw:
+        return "openapi"
+    # Fallback by extension
+    if suffix in (".yaml", ".yml"):
+        return "openapi"
+    return "auto"
 
 
 def run_mock_render(args) -> int:
@@ -975,12 +1045,46 @@ def run_mock_render(args) -> int:
                     examples_per_endpoint=args.examples,
                     match_mode=args.match_mode,
                 )
-                print(f"  wiremock:  {len(files)} mapping(s) -> {target}")
+                print(f"  wiremock:        {len(files)} mapping(s) -> {target}")
                 total_files += len(files)
             elif fmt in ("json", "json-fixture", "fixture"):
                 from mocks.renderers.json_fixture import render_json_fixtures
                 files = render_json_fixtures(cfg, target, seed=args.seed)
-                print(f"  json:      {len(files)} fixture(s) -> {target}")
+                print(f"  json:            {len(files)} fixture(s) -> {target}")
+                total_files += len(files)
+            elif fmt == "pact":
+                from mocks.renderers.pact import render_pact
+                files = render_pact(
+                    cfg, target,
+                    consumer=getattr(args, "pact_consumer", "consumer"),
+                    provider=getattr(args, "pact_provider", "provider"),
+                    seed=args.seed,
+                    examples_per_endpoint=args.examples,
+                )
+                print(f"  pact:            {len(files)} contract(s) -> {target}")
+                total_files += len(files)
+            elif fmt == "postman":
+                from mocks.renderers.postman import render_postman
+                files = render_postman(
+                    cfg, target,
+                    seed=args.seed,
+                    examples_per_endpoint=args.examples,
+                )
+                print(f"  postman:         {len(files)} collection(s) -> {target}")
+                total_files += len(files)
+            elif fmt in ("openapi-examples", "openapi"):
+                source = getattr(args, "openapi_source", None)
+                if not source:
+                    logger.error("openapi-examples format requires --openapi-source <spec>")
+                    continue
+                from mocks.renderers.openapi_examples import render_openapi_examples
+                files = render_openapi_examples(
+                    cfg, target,
+                    source_spec=source,
+                    seed=args.seed,
+                    overwrite_existing=getattr(args, "openapi_overwrite", False),
+                )
+                print(f"  openapi-examples: {len(files)} file(s) -> {target}")
                 total_files += len(files)
             else:
                 logger.warning(f"Unknown format: {fmt} — skipping")
@@ -995,6 +1099,46 @@ def run_mock_render(args) -> int:
         return 0 if total_files > 0 else 1
     except Exception as exc:
         logger.error(f"mock-render failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def run_mock_enrich(args) -> int:
+    """Use an LLM to fill missing examples and draft missing 4xx/5xx responses."""
+    configure_logging(getattr(args, "verbose", False))
+    try:
+        from mocks.config_parser import load_mock_config, dump_mock_config
+        from mocks.llm_enricher import enrich
+
+        cfg = load_mock_config(args.config)
+        enriched, result = enrich(
+            cfg,
+            fill_missing_examples=not getattr(args, "no_fill_examples", False),
+            draft_error_responses=not getattr(args, "no_draft_errors", False),
+            provider=getattr(args, "llm_provider", None),
+            model=getattr(args, "llm_model", None),
+            base_url=getattr(args, "llm_base_url", None),
+        )
+
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        dump_mock_config(enriched, out_path)
+
+        print(f"=== mock-enrich ===")
+        print(f"  Source:           {args.config}")
+        print(f"  Output:           {out_path}")
+        print(f"  Examples added:   {result.examples_added}")
+        print(f"  Errors drafted:   {result.error_responses_added}")
+        if result.schemas_touched:
+            print(f"  Schemas touched:  {', '.join(sorted(set(result.schemas_touched)))}")
+        if result.endpoints_touched:
+            print(f"  Endpoints touched:{', '.join(sorted(set(result.endpoints_touched)))}")
+        for warn in result.warnings:
+            print(f"  WARN: {warn}")
+        return 0
+    except Exception as exc:
+        logger.error(f"mock-enrich failed: {exc}")
         import traceback
         traceback.print_exc()
         return 1
@@ -1053,6 +1197,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_mock_render(args)
         if args.command == "mock-lint":
             return run_mock_lint(args)
+        if args.command == "mock-enrich":
+            return run_mock_enrich(args)
         logger.error(f"Unknown command: {args.command}")
         return 1
     except FileNotFoundError as exc:
