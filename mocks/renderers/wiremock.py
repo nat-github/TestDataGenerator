@@ -40,6 +40,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from mocks.scenario_engine import ScenarioPlan, ScenarioStep, compile_scenarios
 from mocks.template_engine import TemplateEngine
 from models.mock_models import (
     EndpointConfig,
@@ -94,7 +95,27 @@ def render_wiremock(
     files_dir.mkdir(parents=True, exist_ok=True)
 
     engine = TemplateEngine(config, seed=seed)
+    plan = compile_scenarios(config)
     written: List[Path] = []
+
+    # Scenario steps render alongside the regular mappings (one extra mapping
+    # per step). They're tagged with the scenario name so consumers can
+    # filter or replay them through WireMock's admin API.
+    for step in plan.steps:
+        mapping = _build_scenario_mapping(
+            config=config,
+            step=step,
+            engine=engine,
+            match_mode=match_mode,
+        )
+        if mapping is None:
+            continue
+        fname = _safe_filename(
+            f"scenario__{step.scenario_name}__{step.required_state}__to__{step.new_state}.json"
+        )
+        out_path = mappings_dir / fname
+        out_path.write_text(json.dumps(mapping, indent=2, default=str), encoding="utf-8")
+        written.append(out_path)
 
     for endpoint in config.endpoints:
         n_examples = examples_per_endpoint or endpoint.examples_count or 5
@@ -274,6 +295,109 @@ def _render_headers(
         if value is not None:
             out[name] = str(value)
     return out
+
+
+# ---------------------------------------------------------------------------
+# Scenario mappings
+# ---------------------------------------------------------------------------
+
+
+def _build_scenario_mapping(
+    *,
+    config: MockConfig,
+    step: ScenarioStep,
+    engine: TemplateEngine,
+    match_mode: str,
+) -> Optional[Dict[str, Any]]:
+    """Translate a compiled `ScenarioStep` into a WireMock mapping JSON.
+
+    The mapping carries ``scenarioName`` + ``requiredScenarioState`` + ``newScenarioState``
+    so WireMock advances its internal scenario state machine on each match.
+    """
+    base = config.settings.base_path or ""
+
+    # If the step targets a specific endpoint, use that endpoint's path/method;
+    # otherwise emit a wildcard request matcher.
+    request_block: Dict[str, Any]
+    if step.endpoint_name:
+        endpoint = config.get_endpoint(step.endpoint_name)
+        if endpoint is None:
+            return None
+        full_path = base + endpoint.path
+        rendered_path, url_field = _resolve_path(
+            full_path, endpoint, engine, match_mode,
+        )
+        request_block = {
+            "method": endpoint.method,
+            url_field: rendered_path,
+        }
+    else:
+        # Catch-all scenario step
+        request_block = {"method": "ANY", "urlPathPattern": ".*"}
+
+    # Response — either the override declared in the transition, or the
+    # endpoint's default 2xx response.
+    if step.response_override:
+        response_block = _build_override_response(step.response_override)
+    elif step.endpoint_name:
+        endpoint = config.get_endpoint(step.endpoint_name)
+        default = endpoint.responses[0] if endpoint and endpoint.responses else None
+        if default is None:
+            return None
+        response_block = {
+            "status": default.status,
+            "headers": _render_headers(default, endpoint, engine),
+        }
+        body = _render_body(default, engine)
+        if body is not None:
+            if isinstance(body, (dict, list)):
+                response_block["jsonBody"] = body
+            else:
+                response_block["body"] = str(body)
+    else:
+        response_block = {"status": 200}
+
+    # Higher priority than the "regular" mappings so scenario steps win
+    # when both could match (priority is "lower number = higher precedence"
+    # in WireMock).
+    priority = 1
+
+    return {
+        "name": f"scenario:{step.scenario_name}:{step.required_state}->{step.new_state}",
+        "priority": priority,
+        "scenarioName": step.scenario_name,
+        "requiredScenarioState": step.required_state,
+        "newScenarioState": step.new_state,
+        "request": request_block,
+        "response": response_block,
+        "metadata": {
+            "sdp": {
+                "scenario": step.scenario_name,
+                "endpoint": step.endpoint_name,
+                "after": step.after,
+                "requires_state": step.requires_state,
+                "sets_state": step.sets_state,
+            }
+        },
+    }
+
+
+def _build_override_response(override: Dict[str, Any]) -> Dict[str, Any]:
+    """Translate `StateTransition.next_response` into a WireMock response block."""
+    resp: Dict[str, Any] = {"status": int(override.get("status", 200))}
+    headers = override.get("headers")
+    if headers:
+        resp["headers"] = {str(k): str(v) for k, v in headers.items()}
+    body = override.get("body")
+    if body is not None:
+        if isinstance(body, (dict, list)):
+            resp["jsonBody"] = body
+        else:
+            resp["body"] = str(body)
+    delay = override.get("delay_ms")
+    if delay is not None:
+        resp["fixedDelayMilliseconds"] = int(delay)
+    return resp
 
 
 # ---------------------------------------------------------------------------
