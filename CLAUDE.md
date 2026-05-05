@@ -186,6 +186,8 @@ Excel / YAML Config
 | `mocks/llm_enricher.py` | Two-pass LLM enrichment via `multi_provider`: fill missing schema examples + draft missing 4xx/5xx error envelopes |
 | `mocks/postman_importer.py` | Postman v2.1 collection JSON → `MockConfig` (folders → tags, saved responses → templates, variable substitution) |
 | `mocks/har_importer.py` | HAR (HTTP Archive) → `MockConfig`; clusters entries by templated path, filters volatile headers |
+| `ui/streamlit_app.py` | Streamlit UI for the data-generation track (≤ 10k rows). Single page: pick config → settings → generate → preview → download. |
+| `mcp_server/server.py` | MCP server exposing `generate_data`, `lint_config`, `infer_relationships`, `mock_init`, `mock_render`, `list_examples` as tools so Claude Desktop / Claude Code / Cursor can drive the platform. |
 
 ### Generation Strategy (Hybrid)
 
@@ -265,6 +267,8 @@ Tests live in `tests/`:
 - `test_llm_enricher.py` — `mock-enrich` two-pass behaviour with the LLM call mocked (fence handling, exception tolerance, status-code filtering).
 - `test_reverse_importers.py` — Postman + HAR importers (path templating, variable substitution, header filtering, body type inference).
 - `test_cli_mocks.py` + `test_cli_mocks_phase_e_h_i.py` — `mock-*` argparse plumbing and dispatch end-to-end.
+- `test_ui_streamlit.py` — Streamlit AppTest smoke tests (no-exception load, widget presence, 10k cap).
+- `test_mcp_server.py` — MCP tool registry + per-tool behaviour (12 tests, no real MCP transport spun up).
 
 No linting is configured (pending item in `Pending_Items.md`).
 
@@ -307,5 +311,8 @@ Both modules use a stable system prompt with `cache_control: ephemeral` for Anth
 - `LLM_Ecosystem.md` — reference map of providers, open-weight model families, local runtimes (Ollama, LM Studio, vLLM, llama.cpp), provider abstractions (LiteLLM, OpenRouter), and orchestration frameworks (LangChain, LlamaIndex, DSPy, Haystack, …)
 - `Stubs_Mocks_Plan.md` — parallel-track plan for API stubs/mocks generation (`MockConfig` model, OpenAPI ingest, WireMock/Pact/Postman renderers)
 - `Bruno_Workflow.md` — end-to-end recipe: OpenAPI spec → `mock-init` → `mock-render` → WireMock standalone → Bruno API client
+- `Examples_Walkthrough.md` — demo playbook: 11 example configs (YAML/JSON/XLSX) covering every feature, with copy-pasteable commands and a 10-minute stakeholder demo arc
+- `UI_Quickstart.md` — install + run the Streamlit UI (`poetry install --extras ui`)
+- `MCP_Integration.md` — what MCP is, how to wire the platform's MCP server into Claude Desktop / Claude Code / Cursor, and demo prompts
 - `PRD_Roadmap.md` — product vision and future roadmap
 - `Pending_Items.md` — active engineering backlog

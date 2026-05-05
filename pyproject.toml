@@ -49,6 +49,9 @@ mimesis = { version = ">=17.0.0", optional = true }
 # --- Optional: Streamlit UI (install via `--extras ui`) ---
 streamlit = { version = ">=1.40,<2.0", optional = true }
 
+# --- Optional: MCP server (install via `--extras mcp`) ---
+mcp = { version = ">=1.0.0", optional = true }
+
 # --- Optional: cloud upload (install as needed) ---
 # pip install azure-storage-blob   → enables --upload-to azure://...
 # pip install boto3                → enables --upload-to s3://...
@@ -119,6 +122,7 @@ pytest-cov = ">=6.0.0"
 [tool.poetry.extras]
 mimesis = ["mimesis"]
 ui = ["streamlit"]
+mcp = ["mcp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
