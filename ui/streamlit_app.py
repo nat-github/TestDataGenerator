@@ -102,16 +102,12 @@ def lint_config(path: Path) -> Dict[str, Any]:
 def run_generation(config_path: Path, output_dir: Path, *, default_records: int, seed: int):
     """Run the generator in-process and return (per_table_dataframes, elapsed_seconds)."""
     from generators.data_generator import DataGenerator
-    from utils.config_parser import ConfigParser
     import pandas as pd
     import pyarrow.parquet as pq
 
-    parser = ConfigParser(str(config_path))
-    parser.load_config()
-    parser.parse_tables()
-    parser.parse_relationships()
-
-    gen = DataGenerator(parser)
+    gen = DataGenerator(str(config_path), seed=seed)
+    if not gen.load_configuration():
+        raise ValueError(f"Failed to load configuration from {config_path}")
 
     # Honour the platform's existing API. records_per_table is per-table count.
     records_config = {
@@ -122,8 +118,8 @@ def run_generation(config_path: Path, output_dir: Path, *, default_records: int,
 
     started = time.perf_counter()
     gen.create_sdv_metadata()
-    gen.train_synthesizer(sample_size=min(default_records, 200), seed=seed)
-    gen.generate_data(records_config=records_config, seed=seed)
+    gen.train_synthesizer(sample_size=min(default_records, 200))
+    gen.generate_data(records_per_table=records_config)
     output_dir.mkdir(parents=True, exist_ok=True)
     gen.export_to_parquet(str(output_dir))
     elapsed = time.perf_counter() - started
