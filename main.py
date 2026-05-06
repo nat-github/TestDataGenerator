@@ -566,7 +566,7 @@ def run_enrich(args) -> int:
 
     try:
         from llm.schema_enricher import SchemaEnricher
-        enricher = SchemaEnricher(min_confidence=args.confidence)
+        enricher = SchemaEnricher(confidence_threshold=args.confidence)
         enricher.enrich(parser.tables, output_yaml_path=args.output)
         logger.info(f"Enriched schema written to {args.output}")
         suggestions = enricher.get_suggestions(parser.tables)
