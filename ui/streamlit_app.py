@@ -327,8 +327,101 @@ if dataframes:
                 st.caption(f"Showing first {min(PREVIEW_ROWS, len(df))} of {len(df):,} rows")
                 st.dataframe(df.head(PREVIEW_ROWS), use_container_width=True)
 
+    # --- quality report ---
+    st.subheader("5. Quality report")
+    st.caption(
+        "Statistical fidelity, distribution checks, and a privacy proxy. "
+        "Optionally upload **source** Parquet/CSV files to compare against; without source, "
+        "you'll get univariate stats + a correlation matrix."
+    )
+
+    qcol1, qcol2 = st.columns([2, 3])
+    with qcol1:
+        source_uploads = st.file_uploader(
+            "Source data (optional, for fidelity comparison)",
+            type=["parquet", "csv"],
+            accept_multiple_files=True,
+            help=(
+                "Upload one file per table. Filename without extension "
+                "must match the synthetic table name (e.g. `users.parquet`)."
+            ),
+            key="source_uploads",
+        )
+    with qcol2:
+        st.markdown("&nbsp;")
+        run_quality_clicked = st.button(
+            "Generate quality report",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if run_quality_clicked:
+        with st.spinner("Computing quality metrics…"):
+            try:
+                from validators.quality_report import quality_report as _qr
+
+                # Build optional source dict from uploads
+                source_dfs = None
+                if source_uploads:
+                    import pandas as pd
+                    source_dfs = {}
+                    for upload in source_uploads:
+                        stem = Path(upload.name).stem
+                        suffix = Path(upload.name).suffix.lower()
+                        if suffix == ".parquet":
+                            source_dfs[stem] = pd.read_parquet(io.BytesIO(upload.getvalue()))
+                        elif suffix == ".csv":
+                            source_dfs[stem] = pd.read_csv(io.BytesIO(upload.getvalue()))
+
+                report = _qr(dataframes, source=source_dfs or None)
+                st.session_state["last_quality_report"] = report
+                st.session_state["last_quality_error"] = None
+            except Exception as exc:
+                st.session_state["last_quality_error"] = f"{type(exc).__name__}: {exc}"
+                st.session_state["last_quality_report"] = None
+
+    quality_err = st.session_state.get("last_quality_error")
+    if quality_err:
+        st.error(f"Quality report failed: {quality_err}")
+
+    quality_report = st.session_state.get("last_quality_report")
+    if quality_report is not None:
+        # Top-line summary
+        if quality_report.has_source:
+            fidelity = quality_report.overall_fidelity
+            if fidelity is not None:
+                if fidelity >= 0.85:
+                    st.success(f"Overall fidelity score: **{fidelity:.3f}** (1.0 = identical to source)")
+                elif fidelity >= 0.6:
+                    st.warning(f"Overall fidelity score: **{fidelity:.3f}** — partial match to source")
+                else:
+                    st.error(f"Overall fidelity score: **{fidelity:.3f}** — large divergence from source")
+            else:
+                st.info("Source provided but fidelity could not be computed (insufficient overlap).")
+        else:
+            st.info("Univariate-only report — no source data provided.")
+
+        # Per-table tabs
+        if len(quality_report.tables) == 1:
+            only_name = next(iter(quality_report.tables))
+            _render_quality_table(quality_report.tables[only_name])
+        else:
+            qtabs = st.tabs(list(quality_report.tables.keys()))
+            for tab, name in zip(qtabs, quality_report.tables.keys()):
+                with tab:
+                    _render_quality_table(quality_report.tables[name])
+
+        # Download button for the structured JSON
+        import json as _json
+        st.download_button(
+            label="Download report JSON",
+            data=_json.dumps(quality_report.to_dict(), indent=2, default=str),
+            file_name=f"quality_report_{int(time.time())}.json",
+            mime="application/json",
+        )
+
     # --- download ---
-    st.subheader("5. Download")
+    st.subheader("6. Download")
     if run_dir_str:
         zip_bytes = zip_output_dir(Path(run_dir_str))
         st.download_button(
@@ -339,3 +432,55 @@ if dataframes:
             use_container_width=False,
         )
         st.caption(f"Output staged at `{run_dir_str}` (deleted when the OS cleans up its temp dir)")
+
+
+def _render_quality_table(t):
+    """Render one TableQualityMetrics inline."""
+    import pandas as pd
+
+    metrics_md = [
+        f"**Synthetic rows:** {t.row_count_synthetic:,}",
+    ]
+    if t.row_count_source is not None:
+        metrics_md.append(f"**Source rows:** {t.row_count_source:,}")
+    if t.fidelity_score is not None:
+        metrics_md.append(f"**Fidelity score:** {t.fidelity_score:.3f}")
+    if t.correlation_distance is not None:
+        metrics_md.append(f"**Correlation distance:** {t.correlation_distance:.3f}")
+    if t.privacy_nn_too_close_rate is not None:
+        rate = t.privacy_nn_too_close_rate
+        flag = " ⚠️" if rate > 0.05 else ""
+        metrics_md.append(f"**Privacy NN too-close rate:** {rate:.1%}{flag}")
+    st.markdown("&nbsp;&nbsp;|&nbsp;&nbsp;".join(metrics_md))
+
+    if t.notes:
+        for note in t.notes:
+            st.caption(f"_Note: {note}_")
+
+    # Per-column metrics table
+    rows = []
+    for c in t.columns:
+        rows.append({
+            "column": c.column,
+            "dtype": c.dtype,
+            "null_rate": c.null_rate,
+            "unique": c.unique_count,
+            "mean": c.mean,
+            "std": c.std,
+            "min": c.min,
+            "max": c.max,
+            "ks_stat": c.ks_statistic,
+            "tv_dist": c.tv_distance,
+            "score": c.distribution_score,
+        })
+    if rows:
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Top-values bar chart for the first categorical column with values
+    cat_with_values = [c for c in t.columns if not c.is_numeric and c.top_values]
+    if cat_with_values:
+        first_cat = cat_with_values[0]
+        st.caption(f"Top values for `{first_cat.column}`")
+        chart_df = pd.DataFrame(first_cat.top_values, columns=["value", "count"]).set_index("value")
+        st.bar_chart(chart_df)

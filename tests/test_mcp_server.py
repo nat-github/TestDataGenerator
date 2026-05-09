@@ -44,6 +44,7 @@ def test_expected_tools_registered():
         "list_examples",
         "llm_diagnose",
         "validate_data",
+        "quality_report",
     }
     tool_names = set(srv.mcp._tool_manager._tools.keys())
     missing = expected - tool_names
@@ -292,6 +293,51 @@ def test_validate_data_reports_missing_gx_dependency(monkeypatch):
     )
     assert out["ok"] is False
     assert "Great Expectations" in out["error"]
+
+
+def test_quality_report_univariate_only(tmp_path: Path):
+    """Run the quality_report tool against a tiny Parquet directory without source data."""
+    import pandas as pd
+
+    out_dir = tmp_path / "syn"
+    out_dir.mkdir()
+    pd.DataFrame({"x": [1, 2, 3, 4, 5], "y": [10, 20, 30, 40, 50]}).to_parquet(
+        out_dir / "users.parquet", index=False,
+    )
+
+    out = _call("quality_report", generated_dir=str(out_dir))
+    assert out["ok"] is True
+    assert out["has_source"] is False
+    assert "users" in out["tables"]
+    assert out["tables"]["users"]["row_count_synthetic"] == 5
+    assert "markdown_summary" in out
+    assert "Quality Report" in out["markdown_summary"]
+
+
+def test_quality_report_with_source_computes_fidelity(tmp_path: Path):
+    """When source_dir is provided, fidelity score is computed."""
+    import pandas as pd
+
+    syn_dir = tmp_path / "syn"
+    src_dir = tmp_path / "src"
+    syn_dir.mkdir()
+    src_dir.mkdir()
+
+    df = pd.DataFrame({"k": ["A", "B"] * 50, "v": list(range(100))})
+    df.to_parquet(syn_dir / "t.parquet", index=False)
+    df.to_parquet(src_dir / "t.parquet", index=False)
+
+    out = _call("quality_report", generated_dir=str(syn_dir), source_dir=str(src_dir))
+    assert out["ok"] is True
+    assert out["has_source"] is True
+    assert out["overall_fidelity"] is not None
+    assert out["overall_fidelity"] > 0.95
+
+
+def test_quality_report_handles_missing_dir():
+    out = _call("quality_report", generated_dir="/does/not/exist/anywhere")
+    assert out["ok"] is False
+    assert "error" in out
 
 
 def test_validate_data_runs_against_real_data(tmp_path: Path):

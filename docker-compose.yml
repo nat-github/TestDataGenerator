@@ -1,0 +1,56 @@
+# Synthetic Data Platform — docker-compose
+#
+# Two services share the same image:
+#   - cli:        run any platform subcommand on demand (one-shot)
+#   - streamlit:  long-running UI on http://localhost:8501
+#
+# The MCP server is best wired directly into your AI client (Claude Desktop,
+# LM Studio, Cursor, etc.) using the entries in MCP_Integration.md, so it's
+# not exposed here as a long-running service. If you do want it over a
+# network, add a third service that runs `mcp` and exposes its port.
+#
+# Local Poetry path is unaffected — using docker-compose is *additive*.
+#
+# Quick start:
+#   docker compose build
+#
+#   # CLI (one-shot)
+#   docker compose run --rm cli generate \
+#       --config /work/examples/configs/yaml/01_simple_users.yaml \
+#       --output /work/output --default-records 200 --seed 42
+#
+#   # Streamlit UI
+#   docker compose up streamlit
+#   # then open http://localhost:8501
+
+services:
+  # ── one-shot CLI runs ──────────────────────────────────────────────────
+  cli:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sdp:latest
+    volumes:
+      - ./:/work          # mount the repo so configs + outputs are accessible
+    working_dir: /work
+    # Override on the command line: `docker compose run --rm cli generate ...`
+    command: ["help"]
+
+  # ── long-running Streamlit UI ──────────────────────────────────────────
+  streamlit:
+    image: sdp:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./:/work
+    working_dir: /work
+    command: ["streamlit"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health').read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

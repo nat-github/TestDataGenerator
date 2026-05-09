@@ -1,0 +1,53 @@
+# Keep the build context lean — the image's runtime stage doesn't need any of these.
+
+# Local virtualenv (recreated inside the image)
+.venv/
+
+# Generated outputs from past local runs
+output/
+runs/
+sdp_run_*/
+sdp_upload_*/
+*.parquet
+*.delta_log/
+
+# Test artefacts
+.pytest_cache/
+.tmp_*.py
+.tmp_*/
+
+# Python build / cache
+__pycache__/
+*.pyc
+*.pyo
+.mypy_cache/
+.ruff_cache/
+
+# Git
+.git/
+.gitignore
+
+# IDEs / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Large reference materials we don't need at runtime
+Claude+Certified+Architect+-+Foundations*.pdf
+
+# Docker artefacts themselves
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Dev-only: Streamlit's local cache
+.streamlit/
+
+# Logs
+*.log
+logs/
+
+# Misc temp
+.commit-msg.txt
+*.tmp

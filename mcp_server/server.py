@@ -535,6 +535,51 @@ def validate_data(
 
 
 @mcp.tool()
+def quality_report(
+    generated_dir: str,
+    source_dir: Optional[str] = None,
+    privacy_threshold: float = 0.0,
+) -> Dict[str, Any]:
+    """Statistical quality / fidelity / privacy report on generated Parquet output.
+
+    Two modes:
+
+      - **Univariate-only** (no source_dir): per-column dtype, null rate,
+        unique count, summary stats, plus a Pearson correlation matrix.
+        Use this to answer "does this synthetic data look plausible on
+        its own?"
+
+      - **Fidelity vs source** (source_dir provided): adds KS test for
+        numeric columns, total-variation distance for categoricals,
+        correlation-matrix delta, and a nearest-neighbour distance
+        privacy proxy. Use this to answer "is this synthetic data
+        faithful to the source distribution while not leaking individual
+        rows?"
+
+    Returns the structured report. For human-readable output, the
+    response includes a `markdown_summary` field. The full per-column
+    metrics live under `tables[<table_name>].columns`.
+    """
+    try:
+        from validators.quality_report import quality_report_from_paths
+    except Exception as exc:
+        return {"ok": False, "error": f"validators unavailable: {exc}"}
+    try:
+        report = quality_report_from_paths(
+            synthetic_dir=generated_dir,
+            source_dir=source_dir,
+            privacy_threshold=privacy_threshold,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    payload = report.to_dict()
+    payload["ok"] = True
+    payload["markdown_summary"] = report.to_markdown(max_columns_shown=30)
+    return payload
+
+
+@mcp.tool()
 def list_examples() -> Dict[str, Any]:
     """List the bundled example configs that ship with the platform.
 

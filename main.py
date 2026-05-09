@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 KNOWN_COMMANDS = {"generate", "delta", "scd2", "lint", "enrich", "collibra-import",
                   "infer-config", "pii-scan", "infer-relationships", "record-feedback",
                   "mock-init", "mock-render", "mock-lint", "mock-enrich",
-                  "validate-data"}
+                  "validate-data", "quality-report"}
 
 
 def _normalize_argv(argv: Sequence[str]) -> List[str]:
@@ -276,6 +276,23 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Print every expectation, including passed ones")
     vd_parser.add_argument("--fail-on-error", action="store_true",
                            help="Exit non-zero when any expectation fails")
+
+    # ── quality-report ─────────────────────────────────────────────────────
+    qr_parser = subparsers.add_parser(
+        "quality-report",
+        help="Statistical quality / fidelity / privacy report on generated Parquet output",
+    )
+    qr_parser.add_argument("--generated", required=True,
+                           help="Directory containing the generated <table>.parquet files")
+    qr_parser.add_argument("--source", default=None,
+                           help="Optional directory of source Parquet files for fidelity comparison")
+    qr_parser.add_argument("--output-html", default=None,
+                           help="Optional path to write a self-contained HTML report")
+    qr_parser.add_argument("--output-json", default=None,
+                           help="Optional path to write the structured JSON report")
+    qr_parser.add_argument("--privacy-threshold", type=float, default=0.0,
+                           help="Distance below which a synthetic row is flagged as too close to source (0.0 = exact duplicates)")
+    qr_parser.add_argument("--verbose", action="store_true", help="Print full markdown report")
 
     return parser
 
@@ -1283,6 +1300,63 @@ def _serialise_report(report) -> str:
     return json.dumps(payload, indent=2, default=str)
 
 
+def run_quality_report(args) -> int:
+    """Run a statistical quality / fidelity / privacy report on generated data."""
+    configure_logging(getattr(args, "verbose", False))
+    try:
+        from validators.quality_report import quality_report_from_paths
+
+        report = quality_report_from_paths(
+            synthetic_dir=args.generated,
+            source_dir=args.source,
+            privacy_threshold=getattr(args, "privacy_threshold", 0.0),
+        )
+    except Exception as exc:
+        logger.error(f"quality-report failed: {exc}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+    md = report.to_markdown(max_columns_shown=200)
+    if getattr(args, "verbose", False):
+        print(md)
+    else:
+        # Print the header lines + a one-line per-table summary
+        print("=" * 60)
+        print("Synthetic Data Quality Report")
+        print("=" * 60)
+        if report.overall_fidelity is not None:
+            print(f"Overall fidelity score: {report.overall_fidelity:.3f} "
+                  "(1.0 = identical to source, 0.0 = disjoint)")
+        elif report.has_source:
+            print("Overall fidelity score: not computable")
+        else:
+            print("(univariate-only — no source data provided)")
+        print()
+        for name, t in report.tables.items():
+            line = f"  {name:30s}  rows={t.row_count_synthetic:>8}"
+            if t.fidelity_score is not None:
+                line += f"  fidelity={t.fidelity_score:.3f}"
+            if t.privacy_nn_too_close_rate is not None:
+                line += f"  privacy_too_close={t.privacy_nn_too_close_rate:.1%}"
+            print(line)
+
+    if getattr(args, "output_html", None):
+        out = Path(args.output_html)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(report.to_html(), encoding="utf-8")
+        logger.info(f"\nWrote HTML report to {out}")
+    if getattr(args, "output_json", None):
+        import json
+        out = Path(args.output_json)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report.to_dict(), indent=2, default=str),
+                       encoding="utf-8")
+        logger.info(f"\nWrote JSON report to {out}")
+
+    return 0
+
+
 def run_mock_lint(args) -> int:
     """Validate a sdp-mock-v1 config and pretty-print the report."""
     configure_logging(getattr(args, "verbose", False))
@@ -1340,6 +1414,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_mock_enrich(args)
         if args.command == "validate-data":
             return run_validate_data(args)
+        if args.command == "quality-report":
+            return run_quality_report(args)
         logger.error(f"Unknown command: {args.command}")
         return 1
     except FileNotFoundError as exc:
