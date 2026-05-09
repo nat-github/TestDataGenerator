@@ -169,15 +169,29 @@ def infer_relationships(
     config_output: str,
     method: str = "ml",
     ml_confidence: float = 0.55,
+    llm_provider: Optional[str] = None,
+    llm_model: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Infer foreign-key relationships from a config that doesn't declare them.
 
     Use this when the user has tables but no relationships block, and wants
     the platform to suggest FKs. `method` is "ml" (free, deterministic),
-    "llm" (Claude/etc., needs an API key), or "both".
+    "llm" (any LLM provider — see below), or "both".
 
-    The output is a YAML annotated with confidence + signals. The user can
-    then edit it and feed accept/reject decisions back via record-feedback.
+    LLM provider configuration (passed through to llm.multi_provider):
+      - llm_provider: "anthropic" (default), "openai", "lm-studio", "ollama",
+        "azure-openai", "groq", "together", "openrouter"
+      - llm_model: provider-specific model identifier
+      - llm_base_url: override base URL (e.g. http://localhost:1234/v1 for
+        a custom LM Studio port)
+
+    When omitted, these read from SDP_LLM_PROVIDER / SDP_LLM_MODEL /
+    SDP_LLM_BASE_URL env vars, then fall back to the hosted Anthropic
+    default (which requires ANTHROPIC_API_KEY).
+
+    The output YAML is annotated with confidence + signals. The user can
+    edit it and feed accept/reject decisions back via record-feedback.
     """
     from utils.config_parser import ConfigParser
     from ml.relationship_inferrer import MLRelationshipInferrer
@@ -197,7 +211,12 @@ def infer_relationships(
     if method in ("llm", "both"):
         try:
             from llm.relationship_inferrer import RelationshipInferrer
-            llm = RelationshipInferrer(confidence_threshold=0.7)
+            llm = RelationshipInferrer(
+                confidence_threshold=0.7,
+                provider=llm_provider,
+                model=llm_model,
+                base_url=llm_base_url,
+            )
             llm_result = llm.infer(tables, existing_relationships=existing)
             seen = {(r.source_table, r.source_column, r.target_table, r.target_column) for r in inferred}
             for r in llm_result.relationships:
@@ -362,6 +381,157 @@ def mock_render(
 # ---------------------------------------------------------------------------
 # Tools — discoverability
 # ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def mock_enrich(
+    config_path: str,
+    output: str,
+    fill_missing_examples: bool = True,
+    draft_error_responses: bool = True,
+    llm_provider: Optional[str] = None,
+    llm_model: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Use an LLM to fill missing schema examples and draft 4xx/5xx responses.
+
+    Routes through llm.multi_provider, so any supported backend works:
+    Anthropic (default), OpenAI, LM Studio, Ollama, Azure OpenAI, Groq,
+    Together, OpenRouter. When `llm_provider` etc. are omitted, the
+    SDP_LLM_PROVIDER / SDP_LLM_MODEL / SDP_LLM_BASE_URL env vars are
+    honoured.
+    """
+    try:
+        from mocks.config_parser import load_mock_config, dump_mock_config
+        from mocks.llm_enricher import enrich
+    except Exception as exc:
+        return {"ok": False, "error": f"mocks track unavailable: {exc}"}
+
+    try:
+        cfg = load_mock_config(config_path)
+        enriched, result = enrich(
+            cfg,
+            fill_missing_examples=fill_missing_examples,
+            draft_error_responses=draft_error_responses,
+            provider=llm_provider,
+            model=llm_model,
+            base_url=llm_base_url,
+        )
+        out_path = Path(output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        dump_mock_config(enriched, out_path)
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    return {
+        "ok": True,
+        "output": str(out_path.resolve()),
+        "examples_added": result.examples_added,
+        "error_responses_added": result.error_responses_added,
+        "schemas_touched": list(set(result.schemas_touched)),
+        "endpoints_touched": list(set(result.endpoints_touched)),
+        "warnings": result.warnings,
+    }
+
+
+@mcp.tool()
+def llm_diagnose(
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    base_url: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Send a tiny ping to the configured LLM and report what came back.
+
+    Use this as a connectivity sanity check before invoking
+    infer_relationships(method="llm") or mock_enrich. Confirms the
+    provider/model/base_url combination resolves and the model responds.
+
+    Returns the resolved provider config, the model's reply, and
+    elapsed milliseconds. On failure returns {"ok": false, "error": ...}.
+    """
+    import time
+    try:
+        from llm.multi_provider import chat, resolve_config
+        cfg = resolve_config(provider=provider, model=model, base_url=base_url)
+        started = time.perf_counter()
+        reply = chat(
+            messages=[{"role": "user", "content": "Reply with the single word: ready"}],
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            max_tokens=20,
+            temperature=0.0,
+        )
+        elapsed_ms = int((time.perf_counter() - started) * 1000)
+        return {
+            "ok": True,
+            "provider": cfg.provider.name,
+            "model": cfg.model,
+            "base_url": cfg.base_url,
+            "api_key_set": bool(cfg.api_key),
+            "reply": reply.strip()[:200],
+            "elapsed_ms": elapsed_ms,
+        }
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+@mcp.tool()
+def validate_data(
+    config_path: str,
+    output_dir: str,
+    tolerance: float = 0.5,
+) -> Dict[str, Any]:
+    """Run Great Expectations validation on generated Parquet output.
+
+    Use this after generate_data to verify the output complies with the
+    constraints declared in the config (PK uniqueness, business_values,
+    min/max, special_rules with deterministic shapes, row counts).
+
+    Requires `poetry install --extras gx`.
+    """
+    try:
+        from validators.gx_validator import HAS_GX, validate_tables, format_report
+    except Exception as exc:
+        return {"ok": False, "error": f"validators unavailable: {exc}"}
+    if not HAS_GX:
+        return {
+            "ok": False,
+            "error": "Great Expectations not installed. Run: poetry install --extras gx",
+        }
+
+    from utils.config_parser import ConfigParser
+    parser = ConfigParser(config_path)
+    if not parser.load_config():
+        return {"ok": False, "error": "Failed to load config"}
+    tables = parser.parse_tables()
+    parser.parse_relationships()
+
+    try:
+        report = validate_tables(
+            tables,
+            output_dir=output_dir,
+            row_count_tolerance=tolerance,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+    return {
+        "ok": report.success,
+        "summary": format_report(report, verbose=False),
+        "total_expectations": report.total_expectations,
+        "total_passed": report.total_passed,
+        "total_failed": report.total_failed,
+        "tables": {
+            name: {
+                "row_count": t.row_count,
+                "passed": t.passed_expectations,
+                "failed": t.failed_expectations,
+                "error": t.error,
+            }
+            for name, t in report.tables.items()
+        },
+    }
 
 
 @mcp.tool()

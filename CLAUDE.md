@@ -187,7 +187,8 @@ Excel / YAML Config
 | `mocks/postman_importer.py` | Postman v2.1 collection JSON → `MockConfig` (folders → tags, saved responses → templates, variable substitution) |
 | `mocks/har_importer.py` | HAR (HTTP Archive) → `MockConfig`; clusters entries by templated path, filters volatile headers |
 | `ui/streamlit_app.py` | Streamlit UI for the data-generation track (≤ 10k rows). Single page: pick config → settings → generate → preview → download. |
-| `mcp_server/server.py` | MCP server exposing `generate_data`, `lint_config`, `infer_relationships`, `mock_init`, `mock_render`, `list_examples` as tools so Claude Desktop / Claude Code / Cursor can drive the platform. |
+| `mcp_server/server.py` | MCP server exposing `generate_data`, `lint_config`, `validate_data`, `infer_relationships`, `mock_init`, `mock_render`, `mock_enrich`, `list_examples`, `llm_diagnose` as tools so Claude Desktop / Claude Code / **LM Studio** / Cursor can drive the platform. LLM-using tools accept `llm_provider`/`llm_model`/`llm_base_url` for full provider portability. |
+| `validators/gx_validator.py` | Great Expectations 1.x adapter — auto-derives an expectation suite from each table's `ColumnConfig` (PK→unique+not-null, business_values→in_set, min/max→between, REGEX:→matches_regex, EMAIL/UUID/IBAN/IPV4 etc.→regex with canonical shape, length→value_lengths_to_be_between, num_rows→row_count_between with tolerance). |
 
 ### Generation Strategy (Hybrid)
 
@@ -311,6 +312,8 @@ Both modules use a stable system prompt with `cache_control: ephemeral` for Anth
 - `LLM_Ecosystem.md` — reference map of providers, open-weight model families, local runtimes (Ollama, LM Studio, vLLM, llama.cpp), provider abstractions (LiteLLM, OpenRouter), and orchestration frameworks (LangChain, LlamaIndex, DSPy, Haystack, …)
 - `Stubs_Mocks_Plan.md` — parallel-track plan for API stubs/mocks generation (`MockConfig` model, OpenAPI ingest, WireMock/Pact/Postman renderers)
 - `Bruno_Workflow.md` — end-to-end recipe: OpenAPI spec → `mock-init` → `mock-render` → WireMock standalone → Bruno API client
+- `Data_Validation.md` — Great Expectations integration: auto-derived suites from `ColumnConfig`, the `validate-data` subcommand, and how to extend
+- `MCP_Integration.md` — what MCP is, why it matters, how the server is implemented, and how to wire it into LM Studio / Claude Desktop / Claude Code / Cursor / Zed (with multi-provider LLM passthrough)
 - `Examples_Walkthrough.md` — demo playbook: 11 example configs (YAML/JSON/XLSX) covering every feature, with copy-pasteable commands and a 10-minute stakeholder demo arc
 - `UI_Quickstart.md` — install + run the Streamlit UI (`poetry install --extras ui`)
 - `MCP_Integration.md` — what MCP is, how to wire the platform's MCP server into Claude Desktop / Claude Code / Cursor, and demo prompts

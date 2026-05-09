@@ -40,7 +40,10 @@ def test_expected_tools_registered():
         "infer_relationships",
         "mock_init",
         "mock_render",
+        "mock_enrich",
         "list_examples",
+        "llm_diagnose",
+        "validate_data",
     }
     tool_names = set(srv.mcp._tool_manager._tools.keys())
     missing = expected - tool_names
@@ -202,3 +205,125 @@ def test_generate_data_caps_at_max_rows(tmp_path: Path, monkeypatch):
     # The records_config the generator saw must also be capped
     for cap in captured["records_config"].values():
         assert cap == srv.MAX_ROWS_PER_TABLE
+
+
+# ---------------------------------------------------------------------------
+# Multi-provider LLM tools
+# ---------------------------------------------------------------------------
+
+
+def test_infer_relationships_threads_provider_to_llm(monkeypatch):
+    """The MCP wrapper must pass llm_provider/model/base_url through to RelationshipInferrer."""
+    captured: dict = {}
+
+    class FakeResult:
+        relationships = []
+
+    class FakeInferrer:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+        def infer(self, tables, existing_relationships=None):
+            return FakeResult()
+
+    import llm.relationship_inferrer as rli
+    monkeypatch.setattr(rli, "RelationshipInferrer", FakeInferrer)
+
+    out = _call(
+        "infer_relationships",
+        config_path=str(EXAMPLES_YAML / "01_simple_users.yaml"),
+        config_output=str(REPO_ROOT / "build" / "ignored.yaml"),
+        method="llm",
+        llm_provider="lm-studio",
+        llm_model="qwen-coder",
+        llm_base_url="http://localhost:1234/v1",
+    )
+    assert out["ok"] is True
+    assert captured.get("provider") == "lm-studio"
+    assert captured.get("model") == "qwen-coder"
+    assert captured.get("base_url") == "http://localhost:1234/v1"
+
+
+def test_llm_diagnose_returns_resolved_config(monkeypatch):
+    """The diagnose tool reports the resolved provider + a brief reply."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    import llm.multi_provider as mp
+
+    def fake_chat(messages, **kwargs):
+        return "ready"
+
+    monkeypatch.setattr(mp, "chat", fake_chat)
+    # The MCP wrapper imports `chat` lazily inside the function; patch the
+    # source module so it's used regardless of import path.
+    out = _call("llm_diagnose", provider="anthropic", model="claude-haiku-4-5-20251001")
+    assert out["ok"] is True
+    assert out["provider"] == "anthropic"
+    assert out["model"] == "claude-haiku-4-5-20251001"
+    assert "ready" in out["reply"]
+
+
+def test_llm_diagnose_reports_failure_gracefully(monkeypatch):
+    """Provider config errors come back as ok: false rather than raising."""
+    # Strip every recognised key so resolve_config raises EnvironmentError
+    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "SDP_LLM_API_KEY",
+                "GROQ_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY",
+                "AZURE_OPENAI_API_KEY", "SDP_LLM_PROVIDER"):
+        monkeypatch.delenv(key, raising=False)
+
+    out = _call("llm_diagnose", provider="anthropic")
+    assert out["ok"] is False
+    assert "error" in out
+
+
+# ---------------------------------------------------------------------------
+# validate_data tool
+# ---------------------------------------------------------------------------
+
+
+def test_validate_data_reports_missing_gx_dependency(monkeypatch):
+    """When GX isn't installed, the tool returns a useful error rather than raising."""
+    import validators.gx_validator as gxv
+    monkeypatch.setattr(gxv, "HAS_GX", False)
+
+    out = _call(
+        "validate_data",
+        config_path=str(EXAMPLES_YAML / "01_simple_users.yaml"),
+        output_dir="/tmp/nonexistent",
+    )
+    assert out["ok"] is False
+    assert "Great Expectations" in out["error"]
+
+
+def test_validate_data_runs_against_real_data(tmp_path: Path):
+    """End-to-end: write a tiny Parquet file, validate it through the MCP tool."""
+    import pandas as pd
+    import validators.gx_validator as gxv
+    if not gxv.HAS_GX:
+        pytest.skip("great-expectations not installed")
+
+    # Use the simple_users config and write a compliant Parquet file
+    cfg = EXAMPLES_YAML / "01_simple_users.yaml"
+    out_dir = tmp_path / "out"
+    out_dir.mkdir(parents=True)
+
+    # Build a DataFrame that satisfies the simple_users config
+    df = pd.DataFrame({
+        "user_id": list(range(1, 6)),
+        "full_name": ["A B"] * 5,
+        "email": [f"u{i}@x.com" for i in range(5)],
+        "phone": ["+44 1234567890"] * 5,
+        "country_code": ["GB"] * 5,
+        "status": ["ACTIVE"] * 5,
+        "signup_date": pd.to_datetime(["2024-01-01"] * 5),
+        "lifetime_value": [100.0] * 5,
+    })
+    df.to_parquet(out_dir / "users.parquet", index=False)
+
+    out = _call(
+        "validate_data",
+        config_path=str(cfg),
+        output_dir=str(out_dir),
+        tolerance=0.95,  # 5 rows vs 200 declared — wide tolerance
+    )
+    assert "summary" in out
+    assert out["total_expectations"] > 0
