@@ -142,6 +142,58 @@ def zip_output_dir(output_dir: Path) -> bytes:
     return buf.getvalue()
 
 
+def _render_quality_table(t):
+    """Render one TableQualityMetrics inline."""
+    import pandas as pd
+
+    metrics_md = [
+        f"**Synthetic rows:** {t.row_count_synthetic:,}",
+    ]
+    if t.row_count_source is not None:
+        metrics_md.append(f"**Source rows:** {t.row_count_source:,}")
+    if t.fidelity_score is not None:
+        metrics_md.append(f"**Fidelity score:** {t.fidelity_score:.3f}")
+    if t.correlation_distance is not None:
+        metrics_md.append(f"**Correlation distance:** {t.correlation_distance:.3f}")
+    if t.privacy_nn_too_close_rate is not None:
+        rate = t.privacy_nn_too_close_rate
+        flag = " ⚠️" if rate > 0.05 else ""
+        metrics_md.append(f"**Privacy NN too-close rate:** {rate:.1%}{flag}")
+    st.markdown("&nbsp;&nbsp;|&nbsp;&nbsp;".join(metrics_md))
+
+    if t.notes:
+        for note in t.notes:
+            st.caption(f"_Note: {note}_")
+
+    # Per-column metrics table
+    rows = []
+    for c in t.columns:
+        rows.append({
+            "column": c.column,
+            "dtype": c.dtype,
+            "null_rate": c.null_rate,
+            "unique": c.unique_count,
+            "mean": c.mean,
+            "std": c.std,
+            "min": c.min,
+            "max": c.max,
+            "ks_stat": c.ks_statistic,
+            "tv_dist": c.tv_distance,
+            "score": c.distribution_score,
+        })
+    if rows:
+        df = pd.DataFrame(rows)
+        st.dataframe(df, use_container_width=True, hide_index=True)
+
+    # Top-values bar chart for the first categorical column with values
+    cat_with_values = [c for c in t.columns if not c.is_numeric and c.top_values]
+    if cat_with_values:
+        first_cat = cat_with_values[0]
+        st.caption(f"Top values for `{first_cat.column}`")
+        chart_df = pd.DataFrame(first_cat.top_values, columns=["value", "count"]).set_index("value")
+        st.bar_chart(chart_df)
+
+
 # ---------------------------------------------------------------------------
 # Sidebar — provider info + links
 # ---------------------------------------------------------------------------
@@ -433,54 +485,3 @@ if dataframes:
         )
         st.caption(f"Output staged at `{run_dir_str}` (deleted when the OS cleans up its temp dir)")
 
-
-def _render_quality_table(t):
-    """Render one TableQualityMetrics inline."""
-    import pandas as pd
-
-    metrics_md = [
-        f"**Synthetic rows:** {t.row_count_synthetic:,}",
-    ]
-    if t.row_count_source is not None:
-        metrics_md.append(f"**Source rows:** {t.row_count_source:,}")
-    if t.fidelity_score is not None:
-        metrics_md.append(f"**Fidelity score:** {t.fidelity_score:.3f}")
-    if t.correlation_distance is not None:
-        metrics_md.append(f"**Correlation distance:** {t.correlation_distance:.3f}")
-    if t.privacy_nn_too_close_rate is not None:
-        rate = t.privacy_nn_too_close_rate
-        flag = " ⚠️" if rate > 0.05 else ""
-        metrics_md.append(f"**Privacy NN too-close rate:** {rate:.1%}{flag}")
-    st.markdown("&nbsp;&nbsp;|&nbsp;&nbsp;".join(metrics_md))
-
-    if t.notes:
-        for note in t.notes:
-            st.caption(f"_Note: {note}_")
-
-    # Per-column metrics table
-    rows = []
-    for c in t.columns:
-        rows.append({
-            "column": c.column,
-            "dtype": c.dtype,
-            "null_rate": c.null_rate,
-            "unique": c.unique_count,
-            "mean": c.mean,
-            "std": c.std,
-            "min": c.min,
-            "max": c.max,
-            "ks_stat": c.ks_statistic,
-            "tv_dist": c.tv_distance,
-            "score": c.distribution_score,
-        })
-    if rows:
-        df = pd.DataFrame(rows)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-
-    # Top-values bar chart for the first categorical column with values
-    cat_with_values = [c for c in t.columns if not c.is_numeric and c.top_values]
-    if cat_with_values:
-        first_cat = cat_with_values[0]
-        st.caption(f"Top values for `{first_cat.column}`")
-        chart_df = pd.DataFrame(first_cat.top_values, columns=["value", "count"]).set_index("value")
-        st.bar_chart(chart_df)
