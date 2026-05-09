@@ -20,7 +20,8 @@ from utils.parquet_post_processor import ParquetPostProcessor
 logger = logging.getLogger(__name__)
 KNOWN_COMMANDS = {"generate", "delta", "scd2", "lint", "enrich", "collibra-import",
                   "infer-config", "pii-scan", "infer-relationships", "record-feedback",
-                  "mock-init", "mock-render", "mock-lint", "mock-enrich"}
+                  "mock-init", "mock-render", "mock-lint", "mock-enrich",
+                  "validate-data"}
 
 
 def _normalize_argv(argv: Sequence[str]) -> List[str]:
@@ -66,6 +67,12 @@ def build_parser() -> argparse.ArgumentParser:
                                  help="Output directory for ER diagram (default: same as --output)")
     generate_parser.add_argument("--upload-to", default=None,
                                  help="Upload generated files to cloud: azure://<container>[/prefix] or s3://<bucket>[/prefix]")
+    generate_parser.add_argument("--validate-with-gx", action="store_true",
+                                 help="Run Great Expectations validation after generation (requires --extras gx)")
+    generate_parser.add_argument("--gx-tolerance", type=float, default=0.5,
+                                 help="Row-count tolerance for GX validation (0.5 = ±50%%; default 0.5)")
+    generate_parser.add_argument("--gx-fail-on-error", action="store_true",
+                                 help="Exit non-zero when GX validation fails (default: report and continue)")
 
     delta_parser = subparsers.add_parser("delta", help="Generate parquet deltas from two snapshot folders")
     delta_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
@@ -251,6 +258,24 @@ def build_parser() -> argparse.ArgumentParser:
     me_parser.add_argument("--llm-base-url", default=None,
                            help="LLM base URL override (for LM Studio / Ollama / custom)")
     me_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
+
+    # ── validate-data (Great Expectations) ─────────────────────────────────
+    vd_parser = subparsers.add_parser(
+        "validate-data",
+        help="Run Great Expectations validation on generated Parquet output (requires --extras gx)",
+    )
+    vd_parser.add_argument("--config", required=True,
+                           help="Path to the config used to generate the data")
+    vd_parser.add_argument("--input", required=True,
+                           help="Directory containing <table>.parquet files to validate")
+    vd_parser.add_argument("--tolerance", type=float, default=0.5,
+                           help="Row-count tolerance (0.5 = ±50%%; default 0.5)")
+    vd_parser.add_argument("--report-json", default=None,
+                           help="Optional path to write the full validation report as JSON")
+    vd_parser.add_argument("--verbose", action="store_true",
+                           help="Print every expectation, including passed ones")
+    vd_parser.add_argument("--fail-on-error", action="store_true",
+                           help="Exit non-zero when any expectation fails")
 
     return parser
 
@@ -469,8 +494,43 @@ def run_generate(args) -> int:
     if getattr(args, "upload_to", None):
         _run_upload(args.output, args.upload_to)
 
+    # --- Great Expectations validation ---
+    if getattr(args, "validate_with_gx", False):
+        gx_rc = _run_gx_validation(
+            generator,
+            output_dir=args.output,
+            tolerance=getattr(args, "gx_tolerance", 0.5),
+            verbose=getattr(args, "verbose", False),
+        )
+        if gx_rc != 0 and getattr(args, "gx_fail_on_error", False):
+            return gx_rc
+
     logger.info(f"\nAll files saved to: {Path(args.output).absolute()}")
     return 0
+
+
+def _run_gx_validation(generator, *, output_dir: str, tolerance: float, verbose: bool) -> int:
+    """Run GX validation against the generated Parquet output and print a summary."""
+    try:
+        from validators.gx_validator import (
+            HAS_GX, validate_tables, format_report,
+        )
+    except Exception as exc:
+        logger.error(f"Could not import validators.gx_validator: {exc}")
+        return 1
+    if not HAS_GX:
+        logger.error(
+            "Great Expectations is not installed. Run: poetry install --extras gx"
+        )
+        return 1
+    logger.info("\nRunning Great Expectations validation...")
+    report = validate_tables(
+        generator.tables_config,
+        output_dir=output_dir,
+        row_count_tolerance=tolerance,
+    )
+    print(format_report(report, verbose=verbose))
+    return 0 if report.success else 2
 
 
 def run_delta(args) -> int:
@@ -1144,6 +1204,85 @@ def run_mock_enrich(args) -> int:
         return 1
 
 
+def run_validate_data(args) -> int:
+    """Run Great Expectations validation on a directory of generated Parquet files."""
+    configure_logging(getattr(args, "verbose", False))
+    try:
+        from validators.gx_validator import (
+            HAS_GX, validate_tables, format_report,
+        )
+    except Exception as exc:
+        logger.error(f"Could not import validators.gx_validator: {exc}")
+        return 1
+    if not HAS_GX:
+        logger.error(
+            "Great Expectations is not installed. Run: poetry install --extras gx"
+        )
+        return 1
+
+    if not validate_config_file(args.config):
+        return 1
+
+    parser = load_config_context(args.config)
+    tables = parser.tables_config
+
+    report = validate_tables(
+        tables,
+        output_dir=args.input,
+        row_count_tolerance=args.tolerance,
+    )
+
+    print(format_report(report, verbose=getattr(args, "verbose", False)))
+
+    if getattr(args, "report_json", None):
+        import json
+        out_path = Path(args.report_json)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(_serialise_report(report), encoding="utf-8")
+        logger.info(f"\nWrote JSON report to {out_path}")
+
+    if not report.success and getattr(args, "fail_on_error", False):
+        return 2
+    return 0
+
+
+def _serialise_report(report) -> str:
+    """Convert a ValidationReport into a JSON string."""
+    import json
+
+    payload = {
+        "success": report.success,
+        "total_expectations": report.total_expectations,
+        "total_passed": report.total_passed,
+        "total_failed": report.total_failed,
+        "tables": {
+            name: {
+                "row_count": t.row_count,
+                "success": t.success,
+                "error": t.error,
+                "total_expectations": t.total_expectations,
+                "passed": t.passed_expectations,
+                "failed": t.failed_expectations,
+                "pass_rate": round(t.pass_rate, 4),
+                "results": [
+                    {
+                        "expectation_type": r.expectation_type,
+                        "column": r.column,
+                        "success": r.success,
+                        "observed_value": r.observed_value,
+                        "unexpected_count": r.unexpected_count,
+                        "unexpected_percent": r.unexpected_percent,
+                        "details": r.details,
+                    }
+                    for r in t.results
+                ],
+            }
+            for name, t in report.tables.items()
+        },
+    }
+    return json.dumps(payload, indent=2, default=str)
+
+
 def run_mock_lint(args) -> int:
     """Validate a sdp-mock-v1 config and pretty-print the report."""
     configure_logging(getattr(args, "verbose", False))
@@ -1199,6 +1338,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_mock_lint(args)
         if args.command == "mock-enrich":
             return run_mock_enrich(args)
+        if args.command == "validate-data":
+            return run_validate_data(args)
         logger.error(f"Unknown command: {args.command}")
         return 1
     except FileNotFoundError as exc:
