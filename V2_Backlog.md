@@ -91,6 +91,19 @@ shipped and reviewed.
 - [ ] **Helm chart** for k8s-hosted deployments (Streamlit + MCP). Effort:
   **1-2 days**. Skip until someone asks.
 
+### Output format extensions
+
+- [ ] **CSV / XLSX export from `generate`** — today the generator only
+  writes Parquet (chosen for typed-dtype preservation, size, and
+  downstream Spark/Delta/Trino compatibility). Add `--output-format`
+  accepting any combo of `parquet,csv,xlsx`; expose `export_to_csv()`
+  and `export_to_excel()` on `DataGenerator`; surface the choice in the
+  Streamlit UI's download section. **Why:** Excel-bound stakeholders,
+  legacy ETL tools, and data scientists who paste into other systems
+  need readable text formats. **Caveat:** CSV/XLSX lose dtype precision
+  on round-trip — keep Parquet as the default, format flag opts in to
+  the others alongside it. Effort: **1 day**.
+
 ### Intentionally deferred
 
 - [-] **CI/CD via GitHub Actions** — explicitly off the table per platform
