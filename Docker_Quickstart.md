@@ -12,6 +12,130 @@ to work unchanged.
 
 ---
 
+## Onboarding — never used Docker before?
+
+This section is for people doing this from scratch on a fresh laptop.
+**Skip to "[Prerequisites](#prerequisites)" if Docker is already on your
+machine.**
+
+### What Docker is, in one paragraph
+
+Docker packages an application together with everything it needs to run
+(Python, libraries, OS-level tooling) into a single self-contained
+**image**. You then run **containers** from that image. The container is
+isolated from your host — no Python install, no dependency conflicts, no
+"works on my machine." Anyone with Docker can run our exact build with
+`docker run`.
+
+### Step 1 — install Docker Desktop
+
+Pick the right installer for your OS. Docker Desktop is the GUI + CLI
+combo most users want.
+
+| OS | Where to get it | Notes |
+|---|---|---|
+| **Windows 10/11** | Docker Desktop for Windows from the Docker website | Needs WSL 2 (the installer prompts you). Pro / Enterprise / Education editions for free; some companies require a paid licence — check with your employer. |
+| **macOS** | Docker Desktop for Mac (separate installers for Intel and Apple Silicon) | Free for personal use. |
+| **Linux (Ubuntu / Debian / Fedora / etc.)** | Either Docker Desktop *or* Docker Engine via your package manager | Docker Engine alone is enough; Docker Desktop adds the GUI. |
+
+After install:
+- **Windows:** the installer will ask to enable WSL 2 and may need a reboot.
+- **Mac:** open Docker Desktop from Applications. Wait for the whale icon in the menu bar to settle to "Running."
+- **Linux (Engine only):** add your user to the `docker` group so you don't need `sudo`:
+  `sudo usermod -aG docker "$USER"` then log out and back in.
+
+### Step 2 — verify Docker works
+
+Open a new terminal and run:
+
+```bash
+docker --version
+docker run --rm hello-world
+```
+
+Expected:
+- `docker --version` prints something like `Docker version 24.0.7, build ...`
+- `docker run hello-world` pulls a tiny image and prints "Hello from Docker!"
+
+If either fails, Docker Desktop probably isn't running. On Windows / Mac,
+launch Docker Desktop and wait for it to finish starting.
+
+### Step 3 — clone or copy this repo
+
+```bash
+git clone <your-repo-url> TestDataGeneration
+cd TestDataGeneration
+```
+
+(If you already have the repo, just `cd` into it.)
+
+### Step 4 — build the platform image
+
+From the repo root:
+
+```bash
+docker build -t sdp:latest .
+```
+
+This is a **one-time** step. First run takes 5–10 minutes because it
+installs SDV, Great Expectations, Streamlit, the MCP SDK, and friends.
+Subsequent builds are seconds (Docker caches layers; only changes to
+`pyproject.toml` / `poetry.lock` / source bust the cache).
+
+You'll see a lot of output — that's normal. Successful build ends with:
+
+```
+Successfully tagged sdp:latest
+```
+
+Verify the image exists:
+
+```bash
+docker images | grep sdp
+# sdp   latest   <hash>   <size>
+```
+
+### Step 5 — first run: launch the Streamlit UI
+
+```bash
+# Linux / Mac
+docker run --rm -p 8501:8501 -v "$PWD:/work" sdp:latest streamlit
+
+# Windows PowerShell
+docker run --rm -p 8501:8501 -v "${PWD}:/work" sdp:latest streamlit
+
+# Windows cmd
+docker run --rm -p 8501:8501 -v "%CD%:/work" sdp:latest streamlit
+```
+
+Wait for the line `You can now view your Streamlit app in your browser`,
+then open **http://localhost:8501**. You should see the Synthetic Data
+Platform UI with the **Generate Data** and **API Mocks** pages in the
+sidebar. Press `Ctrl-C` in the terminal to stop the server.
+
+### Step 6 — run a CLI command
+
+```bash
+# Linux / Mac
+docker run --rm -v "$PWD:/work" sdp:latest \
+  generate --config /work/examples/configs/yaml/01_simple_users.yaml \
+           --output /work/output --default-records 200 --seed 42
+
+# Windows PowerShell
+docker run --rm -v "${PWD}:/work" sdp:latest `
+  generate --config /work/examples/configs/yaml/01_simple_users.yaml `
+           --output /work/output --default-records 200 --seed 42
+```
+
+Check the result on your host (the `output/` directory inside the repo
+will now contain `users.parquet`).
+
+> **You're up.** Skip ahead to [Common workflows](#common-workflows) for
+> end-to-end recipes, or [docker-compose](#docker-compose) if you'd
+> rather use the shorthand.
+
+---
+
 ## Prerequisites
 
 - **Docker 20.10+** (older 19.x works but won't support `docker compose` —

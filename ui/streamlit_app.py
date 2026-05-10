@@ -51,7 +51,9 @@ st.set_page_config(
 st.title("Synthetic Data Platform")
 st.caption(
     "Generate realistic, relationship-aware test data from Excel / YAML / "
-    "JSON configs. UI cap: 10,000 rows per table."
+    "JSON configs. UI cap: 10,000 rows per table. "
+    "→ Open **API Mocks** in the sidebar for the OpenAPI / Postman / HAR → "
+    "WireMock / Pact / Postman flow."
 )
 
 
@@ -484,4 +486,132 @@ if dataframes:
             use_container_width=False,
         )
         st.caption(f"Output staged at `{run_dir_str}` (deleted when the OS cleans up its temp dir)")
+
+    # ---------------------------------------------------------------------
+    # Step 7 — Cloud upload (Azure / S3)
+    # ---------------------------------------------------------------------
+    st.subheader("7. Upload to cloud")
+    st.caption(
+        "Push the generated Parquet (or any directory of Parquet — delta / SCD2 outputs work too) "
+        "to Azure Blob Storage or AWS S3. Credentials are read from environment variables — "
+        "the UI never stores them. Pass them in **before** launching Streamlit, or set them in "
+        "your container's `.env` if you're running the Docker image."
+    )
+
+    upload_dir_choice = st.radio(
+        "What to upload",
+        [
+            "The generated output above",
+            "A different local directory (delta / SCD2 / saved run)",
+        ],
+        horizontal=False,
+        label_visibility="collapsed",
+        key="upload_dir_choice",
+    )
+
+    upload_dir: Optional[str] = None
+    if upload_dir_choice == "The generated output above":
+        upload_dir = run_dir_str
+    else:
+        upload_dir = st.text_input(
+            "Local directory to upload (absolute path, must contain Parquet files)",
+            placeholder="/path/to/output/snap_v1  or  C:/runs/scd2_history",
+            help=(
+                "Pick any directory of Parquet files — typically a snapshot, "
+                "a `delta` output, or an `scd2` history directory. The uploader "
+                "walks recursively."
+            ),
+        )
+
+    ucol1, ucol2 = st.columns([1, 2])
+    with ucol1:
+        provider = st.selectbox(
+            "Provider",
+            ["Azure Blob Storage", "AWS S3"],
+            help=(
+                "Azure: requires AZURE_STORAGE_CONNECTION_STRING (preferred) or "
+                "AZURE_STORAGE_ACCOUNT + AZURE_STORAGE_KEY. "
+                "S3: requires AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY (and "
+                "optionally AWS_DEFAULT_REGION) in the env."
+            ),
+        )
+    with ucol2:
+        if provider == "Azure Blob Storage":
+            container = st.text_input("Container name", value="synthetic-data")
+            prefix = st.text_input("Path / prefix in the container", value=f"runs/{int(time.time())}")
+            destination_uri = f"azure://{container}/{prefix}".rstrip("/")
+        else:
+            bucket = st.text_input("Bucket name", value="my-synthetic-data")
+            prefix = st.text_input("Path / prefix in the bucket", value=f"runs/{int(time.time())}")
+            destination_uri = f"s3://{bucket}/{prefix}".rstrip("/")
+
+    st.code(f"Destination: {destination_uri}", language="text")
+
+    # Show whether the credentials we need are actually present in the env
+    import os as _os
+    creds_ok = False
+    creds_msg = ""
+    if provider == "Azure Blob Storage":
+        if _os.environ.get("AZURE_STORAGE_CONNECTION_STRING"):
+            creds_ok = True
+            creds_msg = "AZURE_STORAGE_CONNECTION_STRING is set."
+        elif _os.environ.get("AZURE_STORAGE_ACCOUNT") and _os.environ.get("AZURE_STORAGE_KEY"):
+            creds_ok = True
+            creds_msg = "AZURE_STORAGE_ACCOUNT + AZURE_STORAGE_KEY are set."
+        else:
+            creds_msg = (
+                "❌ No Azure credentials found in the env. Set "
+                "`AZURE_STORAGE_CONNECTION_STRING` (preferred) or "
+                "`AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY` before launching."
+            )
+    else:
+        if _os.environ.get("AWS_ACCESS_KEY_ID") and _os.environ.get("AWS_SECRET_ACCESS_KEY"):
+            creds_ok = True
+            creds_msg = "AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY are set."
+        else:
+            creds_msg = (
+                "❌ No AWS credentials found in the env. Set "
+                "`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` "
+                "(and optionally `AWS_DEFAULT_REGION`) before launching."
+            )
+    if creds_ok:
+        st.success(creds_msg)
+    else:
+        st.warning(creds_msg)
+
+    upload_disabled = (not upload_dir) or (not creds_ok)
+    upload_clicked = st.button(
+        f"Upload to {provider}",
+        type="primary",
+        disabled=upload_disabled,
+        help="Disabled until a directory is chosen and the matching env credentials are present.",
+        key="upload_button",
+    )
+
+    if upload_clicked and upload_dir:
+        with st.spinner(f"Uploading {upload_dir} → {destination_uri}…"):
+            try:
+                from utils.cloud_uploader import upload_output
+
+                if not Path(upload_dir).exists():
+                    raise FileNotFoundError(f"Directory not found: {upload_dir}")
+
+                paths = upload_output(upload_dir, destination_uri)
+                st.success(
+                    f"Uploaded **{len(paths)} file(s)** to `{destination_uri}`."
+                )
+                with st.expander("Uploaded files", expanded=False):
+                    for p in paths[:200]:
+                        st.code(p, language="text")
+                    if len(paths) > 200:
+                        st.caption(f"... and {len(paths) - 200} more")
+            except ModuleNotFoundError as exc:
+                st.error(
+                    f"Cloud SDK missing: {exc}. Install it: "
+                    "`pip install azure-storage-blob` (Azure) or `pip install boto3` (S3)."
+                )
+            except Exception as exc:
+                st.error(f"Upload failed: {type(exc).__name__}: {exc}")
+                with st.expander("Stack trace"):
+                    st.code(traceback.format_exc(), language="text")
 
