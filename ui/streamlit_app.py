@@ -494,9 +494,148 @@ if dataframes:
     st.caption(
         "Push the generated Parquet (or any directory of Parquet — delta / SCD2 outputs work too) "
         "to Azure Blob Storage or AWS S3. Credentials are read from environment variables — "
-        "the UI never stores them. Pass them in **before** launching Streamlit, or set them in "
-        "your container's `.env` if you're running the Docker image."
+        "**the UI never stores or transmits them**. Set the env vars *before* launching Streamlit "
+        "(or pass them through to your Docker container)."
     )
+
+    with st.expander("📋 Where do credentials go? (click for setup)", expanded=False):
+        st.markdown(
+            "Credentials are read from the **process environment** of whatever is running the "
+            "Streamlit server. This means the env vars must be set *before* `streamlit run` is "
+            "invoked. The UI cannot ask you for them at runtime — that would mean storing them "
+            "somewhere, which is a security trap."
+        )
+        st.markdown("**Required env vars by provider:**")
+        st.markdown(
+            "| Provider | Variable(s) — set at least one of these groups |\n"
+            "|---|---|\n"
+            "| **Azure Blob Storage** | `AZURE_STORAGE_CONNECTION_STRING` *(preferred)* "
+            "&nbsp;&nbsp;**OR**&nbsp;&nbsp; `AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY` |\n"
+            "| **AWS S3** | `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` "
+            "&nbsp;&nbsp;(plus optional `AWS_DEFAULT_REGION`, `AWS_SESSION_TOKEN` for STS creds) |"
+        )
+        st.markdown("---")
+        tab_psh, tab_bash, tab_docker, tab_compose = st.tabs([
+            "PowerShell (local)", "bash / zsh (local)", "docker run", "docker-compose",
+        ])
+
+        with tab_psh:
+            st.markdown("Set in the same PowerShell session **before** launching Streamlit:")
+            st.code(
+                '# Azure (connection string — preferred)\n'
+                '$env:AZURE_STORAGE_CONNECTION_STRING = "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"\n'
+                '\n'
+                '# OR Azure account + key\n'
+                '$env:AZURE_STORAGE_ACCOUNT = "myaccount"\n'
+                '$env:AZURE_STORAGE_KEY     = "your-key"\n'
+                '\n'
+                '# AWS S3\n'
+                '$env:AWS_ACCESS_KEY_ID     = "AKIA..."\n'
+                '$env:AWS_SECRET_ACCESS_KEY = "your-secret"\n'
+                '$env:AWS_DEFAULT_REGION    = "eu-west-1"\n'
+                '\n'
+                '# Then launch:\n'
+                'poetry run streamlit run ui/streamlit_app.py',
+                language="powershell",
+            )
+            st.caption(
+                "💡 To make these persist across PowerShell sessions, use "
+                "`[System.Environment]::SetEnvironmentVariable('NAME', 'VALUE', 'User')` and "
+                "open a new shell."
+            )
+
+        with tab_bash:
+            st.markdown("Set in the same shell session **before** launching Streamlit:")
+            st.code(
+                '# Azure (connection string — preferred)\n'
+                'export AZURE_STORAGE_CONNECTION_STRING="DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"\n'
+                '\n'
+                '# OR Azure account + key\n'
+                'export AZURE_STORAGE_ACCOUNT="myaccount"\n'
+                'export AZURE_STORAGE_KEY="your-key"\n'
+                '\n'
+                '# AWS S3\n'
+                'export AWS_ACCESS_KEY_ID="AKIA..."\n'
+                'export AWS_SECRET_ACCESS_KEY="your-secret"\n'
+                'export AWS_DEFAULT_REGION="eu-west-1"\n'
+                '\n'
+                '# Then launch:\n'
+                'poetry run streamlit run ui/streamlit_app.py',
+                language="bash",
+            )
+            st.caption(
+                "💡 To persist, add the `export` lines to `~/.bashrc` / `~/.zshrc` / "
+                "`~/.profile` (or use direnv with a project-local `.envrc`)."
+            )
+
+        with tab_docker:
+            st.markdown("Pass through to the container with `-e` or `--env-file`:")
+            st.code(
+                '# Inline (one-off) — Azure\n'
+                'docker run --rm -p 8501:8501 -v "$PWD:/work" \\\n'
+                '  -e AZURE_STORAGE_CONNECTION_STRING="DefaultEndpoints..." \\\n'
+                '  sdp:latest streamlit\n'
+                '\n'
+                '# Inline — S3\n'
+                'docker run --rm -p 8501:8501 -v "$PWD:/work" \\\n'
+                '  -e AWS_ACCESS_KEY_ID="AKIA..." \\\n'
+                '  -e AWS_SECRET_ACCESS_KEY="your-secret" \\\n'
+                '  -e AWS_DEFAULT_REGION="eu-west-1" \\\n'
+                '  sdp:latest streamlit\n'
+                '\n'
+                '# Or load from a file (cleaner for multiple vars)\n'
+                'docker run --rm -p 8501:8501 -v "$PWD:/work" \\\n'
+                '  --env-file ./cloud.env \\\n'
+                '  sdp:latest streamlit',
+                language="bash",
+            )
+            st.caption(
+                "⚠️ **Don't commit `cloud.env` to git.** Add it to `.gitignore`. "
+                "On Windows PowerShell, replace `\\` line continuations with backticks (`` ` ``)."
+            )
+
+        with tab_compose:
+            st.markdown(
+                "Easiest path: drop a `.env` file next to `docker-compose.yml`. "
+                "docker-compose auto-loads it into every service's environment."
+            )
+            st.code(
+                '# .env  (next to docker-compose.yml — git-ignored!)\n'
+                'AZURE_STORAGE_CONNECTION_STRING=DefaultEndpoints...\n'
+                'AWS_ACCESS_KEY_ID=AKIA...\n'
+                'AWS_SECRET_ACCESS_KEY=your-secret\n'
+                'AWS_DEFAULT_REGION=eu-west-1\n',
+                language="bash",
+            )
+            st.markdown(
+                "If you want to be explicit, reference the vars in `docker-compose.yml`:"
+            )
+            st.code(
+                'services:\n'
+                '  streamlit:\n'
+                '    image: sdp:latest\n'
+                '    environment:\n'
+                '      - AZURE_STORAGE_CONNECTION_STRING\n'
+                '      - AWS_ACCESS_KEY_ID\n'
+                '      - AWS_SECRET_ACCESS_KEY\n'
+                '      - AWS_DEFAULT_REGION\n'
+                '    ports:\n'
+                '      - "8501:8501"\n'
+                '    volumes:\n'
+                '      - ./:/work\n'
+                '    command: ["streamlit"]\n',
+                language="yaml",
+            )
+            st.caption(
+                "Then `docker compose up streamlit` — the env vars flow through automatically. "
+                "Add `.env` to `.gitignore` (the project's `.dockerignore` already excludes it from images)."
+            )
+
+        st.markdown("---")
+        st.markdown(
+            "**After setting the variables, restart Streamlit** so the new process picks up "
+            "the env. The credential check below will turn green when the right vars are visible."
+        )
 
     upload_dir_choice = st.radio(
         "What to upload",
@@ -560,9 +699,11 @@ if dataframes:
             creds_msg = "AZURE_STORAGE_ACCOUNT + AZURE_STORAGE_KEY are set."
         else:
             creds_msg = (
-                "❌ No Azure credentials found in the env. Set "
+                "❌ No Azure credentials found in this Streamlit process's environment. Set "
                 "`AZURE_STORAGE_CONNECTION_STRING` (preferred) or "
-                "`AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY` before launching."
+                "`AZURE_STORAGE_ACCOUNT` + `AZURE_STORAGE_KEY` **before launching Streamlit**, "
+                "then restart it. See the *Where do credentials go?* expander above for "
+                "copy-paste setup commands."
             )
     else:
         if _os.environ.get("AWS_ACCESS_KEY_ID") and _os.environ.get("AWS_SECRET_ACCESS_KEY"):
@@ -570,9 +711,10 @@ if dataframes:
             creds_msg = "AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY are set."
         else:
             creds_msg = (
-                "❌ No AWS credentials found in the env. Set "
-                "`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` "
-                "(and optionally `AWS_DEFAULT_REGION`) before launching."
+                "❌ No AWS credentials found in this Streamlit process's environment. Set "
+                "`AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` (and optionally "
+                "`AWS_DEFAULT_REGION`) **before launching Streamlit**, then restart it. "
+                "See the *Where do credentials go?* expander above for copy-paste setup commands."
             )
     if creds_ok:
         st.success(creds_msg)
