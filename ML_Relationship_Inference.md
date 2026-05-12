@@ -21,6 +21,14 @@ python main.py infer-relationships \
     --er-output diagrams/inferred.mmd \
     --method ml
 
+# 1b. Use schema-aware knowledge-graph disambiguation on lookup-heavy configs.
+# In this mode the YAML output defaults to a simple shape: tables + relationships.
+python main.py infer-relationships \
+    --config config/Creditcard_no_rel.xlsx \
+    --config-output output/creditcard_kg.yaml \
+    --method ml \
+    --ml-mode knowledge-graph
+
 # 2. SME edits config/inferred.yaml — deletes wrong entries, adds missing ones
 
 # 3. Feed the diff back so the model learns
@@ -29,8 +37,9 @@ python main.py record-feedback \
     --reviewed config/inferred.yaml.reviewed
 ```
 
-After enough rounds (~30 labelled examples with both classes represented), an
-adaptive logistic-regression classifier activates and starts overriding the
+Running inference alone does not mutate the model. After enough
+review-and-record rounds (~30 labelled examples with both classes represented),
+an adaptive logistic-regression classifier activates and starts overriding the
 heuristic on future runs.
 
 ---
@@ -67,6 +76,24 @@ For every `(child_table.col, parent_table.col)` candidate pair the engine:
 7. **Dedupe per child column.** When several PK candidates compete for the
    same child column, only the highest-confidence one survives.
 
+### Knowledge-graph mode
+
+`ml/relationship_knowledge_graph.py` adds an opt-in schema-aware layer on top of
+the baseline ML inferrer. It is aimed at cases where many reference tables
+share generic PK names such as `CODE`, making pure name similarity too noisy.
+
+Additional signals include:
+
+- table semantic similarity
+- descriptor-column semantic similarity
+- FK priors from `is_fk`
+- lookup-table bonuses
+- generic-key and ambiguity penalties
+- datatype length compatibility
+
+The implementation is additive: `--ml-mode standard` keeps the original ML
+behaviour, while `--ml-mode knowledge-graph` opts into the enhanced ranking.
+
 ---
 
 ## Modules
@@ -91,10 +118,13 @@ For every `(child_table.col, parent_table.col)` candidate pair the engine:
 ```bash
 python main.py infer-relationships \
     --config <path>                     # .xlsx | .yaml | .yml | .json
-    --config-output <path>              # YAML written for SME review
+    --config-output <path>              # YAML written for review or direct use
     [--method ml|llm|both]              # default: ml
     [--ml-confidence 0.55]
+    [--ml-mode standard|knowledge-graph]
     [--llm-confidence 0.7]
+    [--simple-yaml]                     # force minimal tables+relationships YAML
+    [--review-yaml]                     # force richer review YAML with metadata
     [--feedback-store <path>]           # default: ml_feedback/relationship_feedback.jsonl
     [--er-output <path>]                # .mmd|.dot|.png — drawn from existing + inferred
     [--sample-data <dir>]               # parquet/CSV files for value-subset signal
@@ -103,6 +133,13 @@ python main.py infer-relationships \
 `--method both` runs the ML inferrer first, then asks the LLM only about
 candidates ML didn't cover. Useful when you want the cost ceiling of ML with
 the recall of the LLM on novel schemas.
+
+YAML output defaults:
+
+- `--ml-mode standard` → richer review YAML
+- `--ml-mode knowledge-graph` → simple YAML by default
+- `--review-yaml` overrides the knowledge-graph default when SME review metadata
+  is needed
 
 ### `record-feedback`
 
@@ -122,6 +159,11 @@ Diff strategy:
 - Entries in the reviewed file the inferrer never proposed → recorded as
   **SME-added** (with empty signals so they only feed pattern-memory, not
   classifier training).
+
+This is the point where the system learns. `record-feedback` writes accepted,
+rejected, and SME-added examples to the feedback store; future ML runs reuse
+that history immediately via pattern memory and later via the classifier once
+training thresholds are met.
 
 ### `generate --infer-relationships`
 
@@ -191,3 +233,4 @@ state on every run, so callers can tell when learning has kicked in.
 | `tests/test_relationship_feedback_and_classifier.py` | JSONL persistence, pattern lookups, classifier cold-start + activation + retraining |
 | `tests/test_relationship_inferrer.py` | End-to-end: two/three-table chains, ambiguity dedup, threshold, pattern-memory boost, classifier activation |
 | `tests/test_cli_relationship_inference.py` | `infer-relationships` + `record-feedback` CLI dispatch and round-trip |
+| `tests/test_relationship_knowledge_graph.py` | Knowledge-graph disambiguation on synthetic lookup schemas and `config/Creditcard_no_rel.xlsx` |
