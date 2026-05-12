@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+import pytest
 import yaml
 
 from main import main, parse_arguments
@@ -60,8 +61,43 @@ def test_argparse_infer_relationships_defaults_to_ml():
     ])
     assert args.command == "infer-relationships"
     assert args.method == "ml"
-    assert args.ml_confidence == 0.55
-    assert args.llm_confidence == 0.7
+    assert args.ml_mode == "standard"
+    assert args.simple_yaml is None
+    assert args.ml_confidence == pytest.approx(0.55)
+    assert args.llm_confidence == pytest.approx(0.7)
+
+
+def test_argparse_infer_relationships_accepts_knowledge_graph_mode():
+    args = parse_arguments([
+        "infer-relationships",
+        "--config", "x.yaml",
+        "--config-output", "y.yaml",
+        "--ml-mode", "knowledge-graph",
+    ])
+    assert args.command == "infer-relationships"
+    assert args.ml_mode == "knowledge-graph"
+
+
+def test_argparse_infer_relationships_accepts_simple_yaml_flag():
+    args = parse_arguments([
+        "infer-relationships",
+        "--config", "x.yaml",
+        "--config-output", "y.yaml",
+        "--simple-yaml",
+    ])
+    assert args.command == "infer-relationships"
+    assert args.simple_yaml is True
+
+
+def test_argparse_infer_relationships_accepts_review_yaml_flag():
+    args = parse_arguments([
+        "infer-relationships",
+        "--config", "x.yaml",
+        "--config-output", "y.yaml",
+        "--review-yaml",
+    ])
+    assert args.command == "infer-relationships"
+    assert args.simple_yaml is False
 
 
 def test_argparse_record_feedback_requires_both_files():
@@ -113,8 +149,16 @@ def test_infer_relationships_writes_reviewable_yaml(tmp_path: Path, capsys):
     assert 0 < target["ml_confidence"] <= 1
     # SME instructions present so reviewers know what to do
     assert "_review_metadata" in doc
+    assert doc["_review_metadata"]["summary"]["average_confidence"] is not None
+    assert doc["_review_metadata"]["summary"]["recommendation"]
+    assert target["confidence_band"] in {"high", "medium", "low"}
+    assert target["review_recommendation"]
+    assert "_review_debug" in doc
     out = capsys.readouterr().out
     assert "Inference summary" in out
+    assert "ML mode:                standard" in out
+    assert "Average confidence:" in out
+    assert "Recommendation:" in out
 
 
 def test_infer_relationships_emits_er_diagram(tmp_path: Path):
@@ -136,6 +180,84 @@ def test_infer_relationships_emits_er_diagram(tmp_path: Path):
     text = er_path.read_text(encoding="utf-8")
     # Mermaid ER diagrams open with `erDiagram` — sanity check it's not empty
     assert text.strip(), "ER diagram file is empty"
+
+
+def test_infer_relationships_can_write_simple_yaml(tmp_path: Path):
+    config_path = _two_table_yaml(tmp_path / "in.yaml")
+    out_path = tmp_path / "simple.yaml"
+    fb_path = tmp_path / "fb.jsonl"
+
+    rc = main([
+        "infer-relationships",
+        "--config", str(config_path),
+        "--config-output", str(out_path),
+        "--feedback-store", str(fb_path),
+        "--method", "ml",
+        "--simple-yaml",
+    ])
+    assert rc == 0
+
+    doc = yaml.safe_load(out_path.read_text(encoding="utf-8"))
+    assert doc.get("config_format") == "sdp-yaml-v1"
+    assert "tables" in doc
+    assert "relationships" in doc
+    assert "_review_metadata" not in doc
+    assert "_review_debug" not in doc
+
+    customers = next(t for t in doc["tables"] if t["name"] == "customers")
+    assert customers["primary_key_columns"] == ["customer_id"]
+    assert any(col["name"] == "customer_id" for col in customers["columns"])
+
+    rel = next(r for r in doc["relationships"] if r["source_table"] == "orders")
+    assert rel["target_table"] == "customers"
+    assert "ml_confidence" not in rel
+    assert "review_status" not in rel
+    assert "review_recommendation" not in rel
+
+
+def test_knowledge_graph_mode_defaults_to_simple_yaml(tmp_path: Path):
+    config_path = _two_table_yaml(tmp_path / "in.yaml")
+    out_path = tmp_path / "kg-simple.yaml"
+    fb_path = tmp_path / "fb.jsonl"
+
+    rc = main([
+        "infer-relationships",
+        "--config", str(config_path),
+        "--config-output", str(out_path),
+        "--feedback-store", str(fb_path),
+        "--method", "ml",
+        "--ml-mode", "knowledge-graph",
+    ])
+    assert rc == 0
+
+    doc = yaml.safe_load(out_path.read_text(encoding="utf-8"))
+    assert doc.get("config_format") == "sdp-yaml-v1"
+    assert "tables" in doc
+    assert "relationships" in doc
+    assert "_review_metadata" not in doc
+    assert "_review_debug" not in doc
+
+
+def test_knowledge_graph_mode_can_still_force_review_yaml(tmp_path: Path):
+    config_path = _two_table_yaml(tmp_path / "in.yaml")
+    out_path = tmp_path / "kg-review.yaml"
+    fb_path = tmp_path / "fb.jsonl"
+
+    rc = main([
+        "infer-relationships",
+        "--config", str(config_path),
+        "--config-output", str(out_path),
+        "--feedback-store", str(fb_path),
+        "--method", "ml",
+        "--ml-mode", "knowledge-graph",
+        "--review-yaml",
+    ])
+    assert rc == 0
+
+    doc = yaml.safe_load(out_path.read_text(encoding="utf-8"))
+    assert doc.get("config_format") == "sdp-yaml-v1"
+    assert "_review_metadata" in doc
+    assert "relationships" in doc
 
 
 # ---------------------------------------------------------------------------
