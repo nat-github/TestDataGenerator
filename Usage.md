@@ -520,6 +520,91 @@ Tracked columns are resolved in this order:
 
 ---
 
+## 4A. Relationship inference command
+
+Use `infer-relationships` when a config has tables and columns but is missing FK
+definitions. The command inspects the schema, proposes relationships, and can
+optionally draw an ER diagram.
+
+### Basic ML inference
+
+```zsh
+python main.py infer-relationships \
+  --config config/bare.xlsx \
+  --config-output config/inferred.yaml
+```
+
+### Knowledge-graph mode
+
+The opt-in knowledge-graph mode is designed for ambiguous schemas with many
+lookup tables that share generic parent keys such as `CODE` or `ID`.
+
+```zsh
+python main.py infer-relationships \
+  --config config/Creditcard_no_rel.xlsx \
+  --config-output output/creditcard_kg.yaml \
+  --method ml \
+  --ml-mode knowledge-graph
+```
+
+### Output modes
+
+- `standard` ML mode defaults to a **review YAML** with confidence, review
+  status, and debug metadata.
+- `knowledge-graph` ML mode defaults to a **simple YAML** with only:
+  - `config_format`
+  - `tables`
+  - `relationships`
+
+If you want to override the default output shape:
+
+```zsh
+# Force simple YAML in any mode
+python main.py infer-relationships \
+  --config config/bare.xlsx \
+  --config-output output/inferred_simple.yaml \
+  --method ml \
+  --simple-yaml
+
+# Force the richer review YAML even in knowledge-graph mode
+python main.py infer-relationships \
+  --config config/Creditcard_no_rel.xlsx \
+  --config-output output/creditcard_kg_review.yaml \
+  --method ml \
+  --ml-mode knowledge-graph \
+  --review-yaml
+```
+
+### Optional sample-data assist
+
+If you have sample CSV or Parquet files per table, place them in a directory and
+pass that directory with `--sample-data`. Matching files are used to improve the
+value-subset signal.
+
+```zsh
+python main.py infer-relationships \
+  --config config/bare.xlsx \
+  --config-output output/inferred.yaml \
+  --method ml \
+  --sample-data samples/relationships
+```
+
+### Learning loop
+
+The ML inferrer does **not** permanently learn just by running inference.
+Learning happens after a human reviews the output and records feedback:
+
+```zsh
+python main.py record-feedback \
+  --inferred output/inferred.yaml \
+  --reviewed output/inferred.reviewed.yaml
+```
+
+That feedback updates the JSONL-backed feedback store and, once enough accepted
+and rejected examples exist, activates the classifier used on future runs.
+
+---
+
 ## Synthesizer fitting behavior
 
 ## Important rule
