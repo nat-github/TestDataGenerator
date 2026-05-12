@@ -166,10 +166,16 @@ def build_parser() -> argparse.ArgumentParser:
                             help="Inference engine (default: ml)")
     rel_parser.add_argument("--ml-confidence", type=float, default=0.55,
                             help="Minimum ML confidence threshold (0-1)")
+    rel_parser.add_argument("--ml-mode", choices=["standard", "knowledge-graph"], default="standard",
+                            help="ML inference mode: standard (existing heuristic path) or knowledge-graph (opt-in semantic disambiguation)")
     rel_parser.add_argument("--llm-confidence", type=float, default=0.7,
                             help="Minimum LLM confidence threshold (0-1)")
     rel_parser.add_argument("--config-output", required=True,
                             help="Output YAML path with inferred relationships annotated for SME review")
+    rel_parser.add_argument("--simple-yaml", dest="simple_yaml", action="store_true", default=None,
+                            help="Write a minimal YAML with only tables and relationships; omit inference metadata, confidence, and recommendations")
+    rel_parser.add_argument("--review-yaml", dest="simple_yaml", action="store_false",
+                            help="Force the richer review YAML with inference metadata, confidence, and recommendations")
     rel_parser.add_argument("--er-output", default=None,
                             help="Output path for the ER diagram. Extension determines format (.mmd|.dot|.png)")
     rel_parser.add_argument("--feedback-store", default=None,
@@ -798,6 +804,7 @@ def run_infer_relationships(args) -> int:
     try:
         from utils.config_parser import ConfigParser
         from ml.relationship_inferrer import MLRelationshipInferrer
+        from ml.relationship_knowledge_graph import KnowledgeGraphRelationshipInferrer
         from ml.relationship_feedback_store import FeedbackStore
 
         if not validate_config_file(args.config):
@@ -812,17 +819,24 @@ def run_infer_relationships(args) -> int:
 
         inferred: list = []
         method = args.method
+        sample_data = _load_relationship_sample_data(getattr(args, "sample_data", None), tables)
 
         if method in ("ml", "both"):
             store = FeedbackStore(args.feedback_store) if args.feedback_store else FeedbackStore()
-            ml_inferrer = MLRelationshipInferrer(
+            inferrer_cls = KnowledgeGraphRelationshipInferrer if getattr(args, "ml_mode", "standard") == "knowledge-graph" else MLRelationshipInferrer
+            ml_inferrer = inferrer_cls(
                 confidence_threshold=args.ml_confidence,
                 feedback_store=store,
             )
-            ml_result = ml_inferrer.infer(tables, existing_relationships=existing)
+            ml_result = ml_inferrer.infer(
+                tables,
+                existing_relationships=existing,
+                sample_data=sample_data,
+            )
             inferred.extend(ml_result.relationships)
             logger.info(
-                f"ML inferred {len(ml_result.relationships)} relationship(s); "
+                f"ML inferred {len(ml_result.relationships)} relationship(s) "
+                f"using mode={getattr(args, 'ml_mode', 'standard')}; "
                 f"classifier_fitted={ml_result.classifier_fitted} "
                 f"(n={ml_result.classifier_examples} feedback examples)"
             )
@@ -843,11 +857,21 @@ def run_infer_relationships(args) -> int:
             except Exception as exc:
                 logger.warning(f"LLM inference unavailable, continuing with ML only: {exc}")
 
-        # Write reviewable YAML
+        inference_summary = _build_inference_summary(
+            inferred,
+            ml_mode=getattr(args, "ml_mode", "standard") if method in ("ml", "both") else None,
+        )
+
+        # Write YAML output
         output_path = Path(args.config_output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        _write_reviewable_yaml(output_path, tables, existing, inferred)
-        logger.info(f"✅ Wrote reviewable YAML: {output_path}")
+        simple_yaml = _should_write_simple_yaml(args)
+        if simple_yaml:
+            _write_simple_relationship_yaml(output_path, tables, existing, inferred)
+        else:
+            _write_reviewable_yaml(output_path, existing, inferred, inference_summary)
+        yaml_mode = "simple" if simple_yaml else "review"
+        logger.info(f"✅ Wrote {yaml_mode} YAML: {output_path}")
 
         # Optional ER diagram
         if args.er_output:
@@ -856,8 +880,13 @@ def run_infer_relationships(args) -> int:
         # Print summary
         print(f"\n=== Inference summary ===")
         print(f"Method:                 {method}")
+        if method in ("ml", "both"):
+            print(f"ML mode:                {getattr(args, 'ml_mode', 'standard')}")
         print(f"Existing relationships: {len(existing)}")
         print(f"Inferred relationships: {len(inferred)}")
+        if inference_summary.get("average_confidence") is not None:
+            print(f"Average confidence:     {inference_summary['average_confidence']:.2f}")
+        print(f"Recommendation:         {inference_summary['recommendation']}")
         for rel in inferred:
             conf = rel.ml_confidence if rel.inferred_by_ml else rel.llm_confidence
             tag = "ML" if rel.inferred_by_ml else "LLM"
@@ -870,43 +899,173 @@ def run_infer_relationships(args) -> int:
         return 1
 
 
-def _write_reviewable_yaml(path: Path, tables, existing_rels, inferred_rels) -> None:
+def _relationship_confidence(rel) -> Optional[float]:
+    return rel.ml_confidence if rel.inferred_by_ml else rel.llm_confidence
+
+
+def _should_write_simple_yaml(args) -> bool:
+    """Resolve the effective YAML mode for infer-relationships.
+
+    Default behaviour remains unchanged for the standard ML path, but the
+    opt-in knowledge-graph mode now defaults to a cleaner, simple YAML unless
+    callers explicitly request the richer review document via --review-yaml.
+    """
+    explicit = getattr(args, "simple_yaml", None)
+    if explicit is not None:
+        return bool(explicit)
+    return getattr(args, "ml_mode", "standard") == "knowledge-graph"
+
+
+def _confidence_band(confidence: Optional[float]) -> str:
+    if confidence is None:
+        return "unknown"
+    if confidence >= 0.85:
+        return "high"
+    if confidence >= 0.65:
+        return "medium"
+    return "low"
+
+
+def _relationship_recommendation(confidence: Optional[float]) -> str:
+    band = _confidence_band(confidence)
+    if band == "high":
+        return "Spot-check, then likely keep"
+    if band == "medium":
+        return "Review before accepting"
+    if band == "low":
+        return "Review carefully or reject"
+    return "Manual review required"
+
+
+def _build_inference_summary(inferred_rels, ml_mode: Optional[str] = None) -> Dict[str, object]:
+    confidences = [c for c in (_relationship_confidence(r) for r in inferred_rels) if c is not None]
+    average_confidence = round(sum(confidences) / len(confidences), 4) if confidences else None
+    bands = {"high": 0, "medium": 0, "low": 0, "unknown": 0}
+    for rel in inferred_rels:
+        bands[_confidence_band(_relationship_confidence(rel))] += 1
+
+    recommendation = "No inferred relationships. Review schema hints or provide sample data."
+    if inferred_rels:
+        if bands["low"] == 0 and (average_confidence or 0.0) >= 0.80:
+            recommendation = "High-confidence set. Spot-check key relationships, then keep the rest if they look right."
+        elif bands["low"] <= max(1, len(inferred_rels) // 4):
+            recommendation = "Mostly medium/high confidence. Review the medium-confidence relationships before accepting."
+        else:
+            recommendation = "Several low-confidence relationships exist. Review every inferred relationship carefully."
+        if ml_mode == "standard" and bands["low"] > 0:
+            recommendation += " If ambiguity remains, try --ml-mode knowledge-graph."
+
+    return {
+        "average_confidence": average_confidence,
+        "confidence_bands": bands,
+        "recommendation": recommendation,
+    }
+
+
+def _relationship_sort_key(rel) -> tuple:
+    source_cols = rel.get("source_columns") or [rel.get("source_column") or ""]
+    target_cols = rel.get("target_columns") or [rel.get("target_column") or ""]
+    return (
+        str(rel.get("source_table", "")),
+        str(source_cols[0]),
+        str(rel.get("target_table", "")),
+        str(target_cols[0]),
+        str(rel.get("name", "")),
+    )
+
+
+def _build_review_relationship_entry(rel, *, inferred: bool) -> Dict[str, object]:
+    entry: Dict[str, object] = {
+        "name": rel.name,
+        "source_table": rel.source_table,
+        "source_columns": [rel.source_column],
+        "target_table": rel.target_table,
+        "target_columns": [rel.target_column],
+        "relationship_type": rel.relationship_type,
+        "active": rel.active,
+    }
+    if not inferred:
+        entry["review_status"] = "existing"
+        return entry
+
+    confidence = _relationship_confidence(rel)
+    entry["review_status"] = "pending_review"
+    entry["confidence_band"] = _confidence_band(confidence)
+    entry["review_recommendation"] = _relationship_recommendation(confidence)
+    if rel.inferred_by_ml:
+        entry["inferred_by_ml"] = True
+        entry["ml_confidence"] = rel.ml_confidence
+    if rel.inferred_by_llm:
+        entry["inferred_by_llm"] = True
+        entry["llm_confidence"] = rel.llm_confidence
+    entry["notes"] = "REVIEW: keep to accept, delete to reject, or edit the columns/table names to correct it."
+    return entry
+
+
+def _build_simple_table_entry(table_cfg: object) -> Dict[str, object]:
+    return {
+        "name": table_cfg.name,
+        "rows": table_cfg.num_rows,
+        "primary_key_columns": list(table_cfg.primary_key_columns or []),
+        "columns": [
+            {
+                "name": col.column_name,
+                "data_type": col.data_type,
+                "is_pk": bool(col.is_pk),
+                "is_fk": bool(col.is_fk),
+                "nullable": bool(col.nullable),
+            }
+            for col in table_cfg.columns
+        ],
+    }
+
+
+def _build_simple_relationship_entry(rel) -> Dict[str, object]:
+    return {
+        "name": rel.name,
+        "source_table": rel.source_table,
+        "source_columns": [rel.source_column],
+        "target_table": rel.target_table,
+        "target_columns": [rel.target_column],
+        "relationship_type": rel.relationship_type,
+        "active": rel.active,
+    }
+
+
+def _write_simple_relationship_yaml(path: Path, tables, existing_rels, inferred_rels) -> None:
+    """Write a minimal YAML containing only table schemas and relationships."""
+    import yaml as _yaml
+
+    payload = {
+        "config_format": "sdp-yaml-v1",
+        "tables": [
+            _build_simple_table_entry(table_cfg)
+            for _, table_cfg in sorted(tables.items(), key=lambda item: item[0])
+        ],
+        "relationships": sorted(
+            [_build_simple_relationship_entry(r) for r in [*existing_rels, *inferred_rels]],
+            key=_relationship_sort_key,
+        ),
+    }
+    path.write_text(_yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def _write_reviewable_yaml(path: Path, existing_rels, inferred_rels, inference_summary: Optional[Dict[str, object]] = None) -> None:
     """Emit a YAML containing both the original relationships (kept) and the
     inferred ones (annotated with confidence + signals) so the SME can edit
     in place — delete what's wrong, keep what's right.
     """
     import yaml as _yaml
     rel_dicts = []
+    debug_signals = {}
     for r in existing_rels:
-        rel_dicts.append({
-            "name": r.name,
-            "source_table": r.source_table,
-            "source_columns": [r.source_column],
-            "target_table": r.target_table,
-            "target_columns": [r.target_column],
-            "relationship_type": r.relationship_type,
-            "active": r.active,
-        })
+        rel_dicts.append(_build_review_relationship_entry(r, inferred=False))
     for r in inferred_rels:
-        d = {
-            "name": r.name,
-            "source_table": r.source_table,
-            "source_columns": [r.source_column],
-            "target_table": r.target_table,
-            "target_columns": [r.target_column],
-            "relationship_type": r.relationship_type,
-            "active": r.active,
-        }
-        if r.inferred_by_ml:
-            d["inferred_by_ml"] = True
-            d["ml_confidence"] = r.ml_confidence
-            if r.inference_signals:
-                d["inference_signals"] = r.inference_signals
-        if r.inferred_by_llm:
-            d["inferred_by_llm"] = True
-            d["llm_confidence"] = r.llm_confidence
-        d["notes"] = "REVIEW: inferred — delete this entry to reject, edit columns to correct, leave to accept."
-        rel_dicts.append(d)
+        rel_dicts.append(_build_review_relationship_entry(r, inferred=True))
+        if r.name and r.inference_signals:
+            debug_signals[r.name] = dict(r.inference_signals)
+
+    rel_dicts = sorted(rel_dicts, key=_relationship_sort_key)
 
     payload = {
         "config_format": "sdp-yaml-v1",
@@ -916,10 +1075,54 @@ def _write_reviewable_yaml(path: Path, tables, existing_rels, inferred_rels) -> 
                             "--inferred <this-file> --reviewed <your-edited-file>` to teach the system.",
             "existing_count": len(existing_rels),
             "inferred_count": len(inferred_rels),
+            "summary": inference_summary or _build_inference_summary(inferred_rels),
         },
         "relationships": rel_dicts,
     }
+    if debug_signals:
+        payload["_review_debug"] = {
+            "inference_signals_by_relationship": debug_signals,
+        }
     path.write_text(_yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def _load_relationship_sample_data(sample_data_arg: Optional[str], tables: Dict[str, object]) -> Optional[Dict[str, pd.DataFrame]]:
+    """Load optional sample data for the value-subset signal.
+
+    The CLI advertises `--sample-data`; keep it opt-in so existing behaviour is
+    unchanged when callers do not provide it.
+    """
+    if not sample_data_arg:
+        return None
+
+    root = Path(sample_data_arg)
+    if not root.exists() or not root.is_dir():
+        logger.warning(f"sample-data path is not a readable directory: {root}")
+        return None
+
+    loaded: Dict[str, pd.DataFrame] = {}
+    wanted = {str(name).lower() for name in tables.keys()}
+    for path in sorted(root.iterdir()):
+        if not path.is_file():
+            continue
+        stem = path.stem.lower()
+        if stem not in wanted:
+            continue
+        try:
+            if path.suffix.lower() == ".csv":
+                loaded[stem] = pd.read_csv(path, nrows=5000)
+            elif path.suffix.lower() == ".parquet":
+                frame = pd.read_parquet(path)
+                loaded[stem] = frame.head(5000) if len(frame) > 5000 else frame
+        except Exception as exc:
+            logger.warning(f"sample-data: skipped {path.name}: {exc}")
+
+    if loaded:
+        logger.info(f"Loaded sample data for {len(loaded)} table(s) from {root}")
+        return loaded
+
+    logger.warning(f"No matching sample CSV/Parquet files found in {root}")
+    return None
 
 
 def _write_er_diagram(out_path: Path, tables, relationships) -> None:
@@ -951,6 +1154,7 @@ def run_record_feedback(args) -> int:
 
         inferred_doc = _yaml.safe_load(Path(args.inferred).read_text(encoding="utf-8")) or {}
         reviewed_doc = _yaml.safe_load(Path(args.reviewed).read_text(encoding="utf-8")) or {}
+        debug_signals = ((inferred_doc.get("_review_debug") or {}).get("inference_signals_by_relationship") or {})
 
         def _index(doc) -> dict:
             out = {}
@@ -976,13 +1180,14 @@ def run_record_feedback(args) -> int:
         accept_count = reject_count = 0
         for key, original in inferred_only.items():
             kept = key in reviewed
+            original_name = original.get("name")
             entry = FeedbackEntry(
                 source_table=key[0],
                 source_column=key[1],
                 target_table=key[2],
                 target_column=key[3],
                 accepted=kept,
-                signals=dict(original.get("inference_signals") or {}),
+                signals=dict(original.get("inference_signals") or debug_signals.get(original_name) or {}),
                 predicted_confidence=original.get("ml_confidence") or original.get("llm_confidence"),
                 note="recorded via record-feedback",
             )
