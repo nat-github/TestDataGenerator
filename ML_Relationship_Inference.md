@@ -79,20 +79,41 @@ For every `(child_table.col, parent_table.col)` candidate pair the engine:
 ### Knowledge-graph mode
 
 `ml/relationship_knowledge_graph.py` adds an opt-in schema-aware layer on top of
-the baseline ML inferrer. It is aimed at cases where many reference tables
+the baseline ML inferrer. It builds a real `networkx.DiGraph` over the schema —
+**table**, **column** and **entity** nodes, plus **candidate_fk** edges — and
+reasons over its structure. It is aimed at cases where many reference tables
 share generic PK names such as `CODE`, making pure name similarity too noisy.
 
-Additional signals include:
+Four reliability mechanisms run on top of the heuristic baseline:
 
-- table semantic similarity
-- descriptor-column semantic similarity
-- FK priors from `is_fk`
-- lookup-table bonuses
-- generic-key and ambiguity penalties
-- datatype length compatibility
+1. **Inclusion dependency (primary, fully domain-agnostic).** When sample data
+   is supplied, a real FK requires the child's value set to sit inside the
+   parent's. A candidate with value containment below `0.30` is dropped outright
+   regardless of how well the names match. This is the strongest, most generic
+   FK signal and the data-led scoring path is led by it.
+2. **Hub / degree prior.** A parent key referenced by many child columns is a
+   genuine dimension and earns a small (≤ 0.03) tie-breaking boost.
+3. **Global one-parent assignment.** Each child FK column commits to exactly one
+   parent — the highest-scoring — resolving generic `CODE`/`ID` ambiguity.
+4. **FK-cycle resolution.** Cycles among distinct tables are almost always
+   wrong; the weakest edge in each cycle is dropped (self-references are kept).
+
+Supporting structural signals: table/descriptor semantic similarity, FK priors
+from `is_fk`, lookup-table bonuses, generic-key and ambiguity penalties, and
+datatype length compatibility. All `kg_*` signals (including `kg_value_inclusion`
+and `kg_hub_bonus`) are written into `inference_signals` for auditability.
+
+**Genericity.** The graph machinery is domain-agnostic. The only domain-specific
+knowledge — abbreviations and stopwords used for name matching — lives in a
+pluggable `SemanticProfile` (`ml/semantic_profile.py`): a `GENERIC` layer of
+universal abbreviations plus an optional bundled `BANKING` layer. Point
+`SDP_SEMANTIC_PROFILE` at a YAML file to extend or replace the vocabulary for a
+different domain without touching inference code.
 
 The implementation is additive: `--ml-mode standard` keeps the original ML
 behaviour, while `--ml-mode knowledge-graph` opts into the enhanced ranking.
+With no sample data the knowledge-graph mode falls back to the name/structure
+path and behaves as before.
 
 ---
 
