@@ -1,0 +1,52 @@
+name: CI
+
+# Runs the full test suite on every push to master / feature branches and on
+# every pull request. This is the safety net that was previously missing — the
+# ~440 tests only ran when someone remembered to run them locally.
+
+on:
+  push:
+    branches: [master, "feature/**"]
+  pull_request:
+
+# Cancel an in-progress run when the same ref is pushed again.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Use an in-project virtualenv
+        run: poetry config virtualenvs.in-project true
+
+      - name: Cache the virtualenv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: ${{ runner.os }}-py3.12-venv-${{ hashFiles('poetry.lock') }}
+
+      - name: Validate pyproject.toml
+        run: poetry check
+
+      - name: Install dependencies (with all extras)
+        # All extras so optional-feature tests (api / ui / mcp / gx / mimesis)
+        # actually run instead of skipping.
+        run: poetry install --no-interaction --extras "api ui mcp gx mimesis"
+
+      - name: Run tests
+        run: poetry run pytest tests/ -q --tb=short

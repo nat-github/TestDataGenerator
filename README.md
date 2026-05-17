@@ -1,5 +1,7 @@
 # Synthetic Data Platform (`sdp`)
 
+[![CI](https://github.com/nat-github/TestDataGenerator/actions/workflows/ci.yml/badge.svg)](https://github.com/nat-github/TestDataGenerator/actions/workflows/ci.yml)
+
 Relationship-aware synthetic data generation. Produces realistic, referentially
 consistent Parquet data — plus delta (CDC) and SCD2 history — from Excel, YAML
 or JSON configs. Built on SDV (Synthetic Data Vault) with an automatic

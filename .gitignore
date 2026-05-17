@@ -371,10 +371,10 @@ Dockerfile
 docker-compose.yml
 .dockerignore
 
-# Kubernetes
+# Kubernetes manifests
 k8s/
-*.yaml
-*.yml
+# NOTE: do NOT blanket-ignore *.yaml / *.yml — that silently dropped config
+# files and CI workflows. Ignore specific generated YAML by path instead.
 
 # ============================================
 # Never commit these

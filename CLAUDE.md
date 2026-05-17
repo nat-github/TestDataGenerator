@@ -312,8 +312,10 @@ Tests live in `tests/`:
 - `test_mcp_server.py` — MCP tool registry + per-tool behaviour (no real MCP transport spun up).
 - `test_sdk_and_api.py` — Python SDK facade (`generate`/`lint`/`run`, seed reproducibility) and REST API endpoints (`/healthz`, `/generate`, `/lint`); API tests skip without the `api` extra.
 - `test_contracts.py` — data contract testing: `contract-test` verdict/severity and `contract-diff` breaking-change classification; checker tests skip without the `gx` extra.
+- `test_pk_generation.py` — regression guard: primary-key columns must be non-null and unique through the SDV path and Parquet export.
 
-No linting is configured (pending item in `Pending_Items.md`).
+CI (`.github/workflows/ci.yml`) runs the full suite with all extras on every
+push and pull request. No linting is configured yet (pending item in `Pending_Items.md`).
 
 ## Relationship Inference
 

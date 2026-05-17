@@ -946,6 +946,18 @@ class DataGenerator:
                 if column.is_fk:
                     continue
 
+                # SDV emits opaque string ids ("sdv-id-XXXX") for primary keys,
+                # which ignore the column's declared data type and get wiped to
+                # NaN when the typed cast runs on export. Regenerate every PK as a
+                # clean, type-correct, unique sequence so the declared type holds.
+                if column.is_pk:
+                    table_df[column_name] = [
+                        self._generate_unique_primary_key(column, table_name, index, row_count)
+                        for index in range(row_count)
+                    ]
+                    reconciled_columns += 1
+                    continue
+
                 has_value_rule = self._column_has_value_generation_rule(column)
                 is_semantic = not has_value_rule and self._is_semantic_text_column(column)
                 null_probability = 0.0 if column.is_pk else self._get_null_probability(column)
