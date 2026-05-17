@@ -46,3 +46,62 @@ def test_primary_key_survives_parquet_export(tmp_path: Path):
     # user_id is declared N10 (numeric) — values must be numeric, not 'sdv-id-...'.
     assert pd.to_numeric(pk, errors="coerce").notna().all(), \
         "numeric-typed primary key must hold numeric values"
+
+
+# A one-to-one / shared-primary-key schema: person_detail.person_id is BOTH the
+# child's primary key AND a foreign key to person.person_id.
+_ONE_TO_ONE_YAML = """\
+config_format: sdp-yaml-v1
+run_settings:
+  default_records_per_table: 60
+tables:
+  - name: person
+    rows: 60
+    primary_key_columns: [person_id]
+    columns:
+      - name: person_id
+        data_type: N10
+        is_pk: true
+        nullable: false
+      - name: full_name
+        data_type: VA64
+        special_rules: NAME
+  - name: person_detail
+    rows: 60
+    primary_key_columns: [person_id]
+    columns:
+      - name: person_id
+        data_type: N10
+        is_pk: true
+        is_fk: true
+        ref_table: person
+        ref_column: person_id
+        nullable: false
+      - name: detail_note
+        data_type: VA64
+        special_rules: NAME
+"""
+
+
+def test_one_to_one_fk_keeps_child_primary_key_unique(tmp_path: Path):
+    """Regression: when a child's FK column is also its sole primary key
+    (one-to-one / shared-PK), FK resolution must assign *unique* parent keys.
+    It previously sampled with replacement, duplicating the child primary key.
+    """
+    cfg = tmp_path / "one_to_one.yaml"
+    cfg.write_text(_ONE_TO_ONE_YAML, encoding="utf-8")
+
+    gen = DataGenerator(str(cfg), seed=42)
+    assert gen.load_configuration()
+    gen.create_sdv_metadata()
+    gen.train_synthesizer()
+    data = gen.generate_data({"person": 60, "person_detail": 60})
+
+    parent_ids = set(data["person"]["person_id"])
+    child_pk = data["person_detail"]["person_id"]
+
+    assert child_pk.isna().sum() == 0, "child primary key must have no nulls"
+    assert child_pk.nunique() == len(child_pk), \
+        "child PK is also the FK — it must stay unique (one-to-one)"
+    assert set(child_pk).issubset(parent_ids), \
+        "every child FK value must reference an existing parent key"

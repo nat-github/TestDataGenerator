@@ -316,7 +316,13 @@ def derive_expectations_for_column(
     if bv_raw:
         bv_list = _parse_business_values(bv_raw)
         if bv_list:
-            out.append(("values_to_be_in_set", name, {"value_set": bv_list}))
+            if (getattr(col, "data_type", None) or "").strip().upper() in ("D", "DT", "TS"):
+                # Datetime membership must compare *normalized datetimes* — a
+                # pandas Timestamp never equals an ISO date string, so the plain
+                # set check would false-fail every row.
+                out.append(("temporal_values_in_set", name, {"value_set": bv_list}))
+            else:
+                out.append(("values_to_be_in_set", name, {"value_set": bv_list}))
 
     # Min/max
     min_v = getattr(col, "min_value", None)
@@ -387,7 +393,10 @@ def _regex_from_rule(rule: str) -> Optional[str]:
         return None
     rule_clean = rule.strip()
     if rule_clean.upper().startswith("REGEX:"):
-        return rule_clean[6:]
+        # The pattern runs until the next rule separator (';'); strip trailing
+        # rule tokens such as ';;NULL_RATE=0.20' so they don't corrupt the regex.
+        pattern = rule_clean[6:].split(";", 1)[0].strip()
+        return pattern or None
     # Strip locale suffix (`EMAIL:de_DE` → `EMAIL`)
     primary = rule_clean.split(":", 1)[0].strip().upper()
     return _FORMAT_REGEX.get(primary)
@@ -543,6 +552,36 @@ def _evaluate_expectation(
             unexpected_count=bad,
             unexpected_percent=round(100.0 * bad / len(non_null), 2),
             details={"unparseable_values": bad},
+        )
+
+    if kind == "temporal_values_in_set":
+        # Datetime set-membership compared on normalized (tz-naive) datetimes —
+        # a pandas Timestamp never equals the ISO string in the declared set.
+        import pandas as pd
+
+        allowed = pd.to_datetime(
+            pd.Series(list(kwargs.get("value_set", [])), dtype="object"),
+            errors="coerce",
+        ).dropna()
+        if getattr(allowed.dt, "tz", None) is not None:
+            allowed = allowed.dt.tz_localize(None)
+        allowed_set = set(allowed)
+
+        series = pd.to_datetime(df[column], errors="coerce")
+        non_null = series.dropna()
+        if getattr(non_null.dt, "tz", None) is not None:
+            non_null = non_null.dt.tz_localize(None)
+
+        if not allowed_set or len(non_null) == 0:
+            return ExpectationResult(
+                expectation_type=kind, column=column, success=True,
+            )
+        bad = int((~non_null.isin(allowed_set)).sum())
+        return ExpectationResult(
+            expectation_type=kind, column=column, success=(bad == 0),
+            unexpected_count=bad,
+            unexpected_percent=round(100.0 * bad / len(non_null), 2),
+            details={"out_of_set_values": bad},
         )
 
     expectation = _build_gx_expectation(kind, column, kwargs)

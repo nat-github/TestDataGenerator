@@ -1296,6 +1296,56 @@ class DataGenerator:
         # Enforce relationships in sample data
         return self._enforce_relationships_in_sample(sample_data)
 
+    def _is_one_to_one_fk(
+        self,
+        exemplar: RelationshipConfig,
+        child_table: str,
+        source_columns: List[str],
+    ) -> bool:
+        """True when the FK must hold *unique* values — a one-to-one relationship.
+
+        That happens when the child FK column(s) are exactly the child table's
+        primary key (so the FK value cannot repeat), or when the relationship
+        explicitly declares ``relationship_type`` one_to_one.
+        """
+        declared = str(getattr(exemplar, "relationship_type", "") or "").strip().lower()
+        if declared in ("one_to_one", "one-to-one", "1:1"):
+            return True
+        cfg = self.tables_config.get(child_table)
+        if cfg is None:
+            return False
+        pk_cols = {c.column_name for c in cfg.columns if getattr(c, "is_pk", False)}
+        # One-to-one only when the FK columns *are* the whole primary key.
+        return bool(pk_cols) and pk_cols == set(source_columns)
+
+    def _sample_fk_values(
+        self,
+        parent_values: List[Any],
+        n: int,
+        one_to_one: bool,
+        label: str,
+    ) -> List[Any]:
+        """Pick ``n`` FK values from the parent key pool.
+
+        ``one_to_one`` → sample *without* replacement, so each child row gets a
+        distinct parent key and the child primary key stays unique. Otherwise
+        sample *with* replacement (one parent row, many child rows).
+        """
+        if not one_to_one:
+            return random.choices(parent_values, k=n)
+        distinct = list(dict.fromkeys(parent_values))   # unique, order-preserving
+        if len(distinct) >= n:
+            return random.sample(distinct, k=n)
+        # Not enough distinct parent keys for a true 1:1 — a config-size mismatch.
+        # Use every distinct key, top up with repeats, and warn loudly.
+        self.logger.warning(
+            f"⚠️ One-to-one FK {label}: parent has only {len(distinct)} distinct "
+            f"key(s) for {n} child rows — {n - len(distinct)} row(s) cannot be unique."
+        )
+        pool = distinct + random.choices(distinct, k=n - len(distinct))
+        random.shuffle(pool)
+        return pool
+
     def _apply_relationship_group(
         self,
         data: Dict[str, pd.DataFrame],
@@ -1318,10 +1368,15 @@ class DataGenerator:
         if any(column not in child_df.columns for column in source_columns):
             return
 
+        one_to_one = self._is_one_to_one_fk(exemplar, child_table, source_columns)
+
         if len(relationship_group) == 1:
             valid_parent_values = parent_df[target_columns[0]].dropna().tolist()
             if valid_parent_values:
-                child_df[source_columns[0]] = random.choices(valid_parent_values, k=len(child_df))
+                child_df[source_columns[0]] = self._sample_fk_values(
+                    valid_parent_values, len(child_df), one_to_one,
+                    f"{child_table}.{source_columns[0]}",
+                )
                 data[child_table] = child_df
             return
 
@@ -1329,7 +1384,18 @@ class DataGenerator:
         if parent_pairs.empty:
             return
 
-        sampled_parent_rows = parent_pairs.sample(n=len(child_df), replace=True).reset_index(drop=True)
+        # One-to-one composite FK: each child row needs a distinct parent
+        # key-combination — sample without replacement when there are enough.
+        replace = True
+        if one_to_one and len(parent_pairs) >= len(child_df):
+            replace = False
+        elif one_to_one:
+            self.logger.warning(
+                f"⚠️ One-to-one FK {child_table}.{tuple(source_columns)}: parent has "
+                f"only {len(parent_pairs)} distinct key combinations for "
+                f"{len(child_df)} child rows — uniqueness cannot be fully honoured."
+            )
+        sampled_parent_rows = parent_pairs.sample(n=len(child_df), replace=replace).reset_index(drop=True)
         child_df = child_df.copy()
         for source_column, target_column in zip(source_columns, target_columns):
             child_df[source_column] = sampled_parent_rows[target_column].tolist()
