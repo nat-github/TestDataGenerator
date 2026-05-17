@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 KNOWN_COMMANDS = {"generate", "delta", "scd2", "lint", "enrich", "collibra-import",
                   "infer-config", "pii-scan", "infer-relationships", "record-feedback",
                   "mock-init", "mock-render", "mock-lint", "mock-enrich",
-                  "validate-data", "quality-report"}
+                  "validate-data", "quality-report", "contract-test", "contract-diff"}
 
 
 def _normalize_argv(argv: Sequence[str]) -> List[str]:
@@ -299,6 +299,36 @@ def build_parser() -> argparse.ArgumentParser:
     qr_parser.add_argument("--privacy-threshold", type=float, default=0.0,
                            help="Distance below which a synthetic row is flagged as too close to source (0.0 = exact duplicates)")
     qr_parser.add_argument("--verbose", action="store_true", help="Print full markdown report")
+
+    # --- contract-test ---
+    ct_parser = subparsers.add_parser(
+        "contract-test",
+        help="Verify a dataset against a data contract (the config) using Great Expectations",
+    )
+    ct_parser.add_argument("--contract", required=True,
+                           help="Path to the contract config (.xlsx | .yaml | .json)")
+    ct_parser.add_argument("--data", required=True,
+                           help="Directory of <table>.parquet files to verify")
+    ct_parser.add_argument("--tolerance", type=float, default=0.5,
+                           help="Permitted row-count deviation from the contract (default 0.5 = ±50%%)")
+    ct_parser.add_argument("--report-json", default=None,
+                           help="Optional path to write the contract report as JSON")
+    ct_parser.add_argument("--fail-on", choices=["error", "warning", "none"], default="error",
+                           help="Exit non-zero when failures reach this severity (default: error)")
+    ct_parser.add_argument("--verbose", action="store_true", help="Show passing checks too")
+
+    # --- contract-diff ---
+    cd_parser = subparsers.add_parser(
+        "contract-diff",
+        help="Detect breaking changes between two contract versions",
+    )
+    cd_parser.add_argument("--old", required=True, help="Path to the previous contract config")
+    cd_parser.add_argument("--new", required=True, help="Path to the new contract config")
+    cd_parser.add_argument("--report-json", default=None,
+                           help="Optional path to write the diff report as JSON")
+    cd_parser.add_argument("--fail-on-breaking", action="store_true",
+                           help="Exit non-zero when any breaking change is detected")
+    cd_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
 
     return parser
 
@@ -1446,7 +1476,7 @@ def run_validate_data(args) -> int:
         return 1
 
     parser = load_config_context(args.config)
-    tables = parser.tables_config
+    tables = parser.tables
 
     report = validate_tables(
         tables,
@@ -1584,6 +1614,91 @@ def run_mock_lint(args) -> int:
         return 1
 
 
+def run_contract_test_cmd(args) -> int:
+    """Verify a directory of Parquet data against a data contract (the config)."""
+    configure_logging(getattr(args, "verbose", False))
+    if not validate_config_file(args.contract):
+        return 1
+    data_dir = Path(args.data)
+    if not data_dir.is_dir():
+        logger.error(f"Data directory not found: {data_dir}")
+        return 1
+    try:
+        from sdp.contracts import ContractError, run_contract_test
+        from sdp.contracts.checker import format_contract_report
+    except Exception as exc:
+        logger.error(f"Could not import the contract checker: {exc}")
+        return 1
+    try:
+        parser = load_config_context(args.contract)
+    except Exception as exc:
+        logger.error(f"Failed to load contract: {exc}")
+        return 1
+    try:
+        report = run_contract_test(
+            parser.tables,
+            data_dir=data_dir,
+            contract_name=Path(args.contract).name,
+            row_count_tolerance=args.tolerance,
+        )
+    except ContractError as exc:
+        logger.error(str(exc))
+        return 1
+
+    print(format_contract_report(report, verbose=getattr(args, "verbose", False)))
+
+    if getattr(args, "report_json", None):
+        import json
+        out_path = Path(args.report_json)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(report.to_dict(), indent=2, default=str), encoding="utf-8")
+        logger.info(f"Wrote contract report to {out_path}")
+
+    fail_on = getattr(args, "fail_on", "error")
+    verdict = report.verdict.value
+    if fail_on == "error" and verdict == "fail":
+        return 2
+    if fail_on == "warning" and verdict in ("fail", "warn"):
+        return 2
+    return 0
+
+
+def run_contract_diff_cmd(args) -> int:
+    """Detect breaking changes between two contract versions."""
+    configure_logging(getattr(args, "verbose", False))
+    if not validate_config_file(args.old) or not validate_config_file(args.new):
+        return 1
+    try:
+        from sdp.contracts import diff_contracts
+        from sdp.contracts.diff import format_contract_diff
+    except Exception as exc:
+        logger.error(f"Could not import the contract differ: {exc}")
+        return 1
+    try:
+        old_parser = load_config_context(args.old)
+        new_parser = load_config_context(args.new)
+    except Exception as exc:
+        logger.error(f"Failed to load a contract: {exc}")
+        return 1
+
+    diff = diff_contracts(
+        old_parser.tables, new_parser.tables,
+        old_name=Path(args.old).name, new_name=Path(args.new).name,
+    )
+    print(format_contract_diff(diff))
+
+    if getattr(args, "report_json", None):
+        import json
+        out_path = Path(args.report_json)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(json.dumps(diff.to_dict(), indent=2, default=str), encoding="utf-8")
+        logger.info(f"Wrote diff report to {out_path}")
+
+    if getattr(args, "fail_on_breaking", False) and diff.has_breaking:
+        return 2
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_arguments(argv)
     configure_logging(getattr(args, "verbose", False))
@@ -1621,6 +1736,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return run_validate_data(args)
         if args.command == "quality-report":
             return run_quality_report(args)
+        if args.command == "contract-test":
+            return run_contract_test_cmd(args)
+        if args.command == "contract-diff":
+            return run_contract_diff_cmd(args)
         logger.error(f"Unknown command: {args.command}")
         return 1
     except FileNotFoundError as exc:

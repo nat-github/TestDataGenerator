@@ -71,6 +71,7 @@ Interactive docs at `http://localhost:8000/docs`. See `SDK_and_API.md`.
 - `SDK_and_API.md` — Python SDK and REST API reference
 - `Yaml_Config_Schema.md` / `Json_Config_Schema.md` — config formats
 - `ML_Relationship_Inference.md` — relationship inference
+- `Data_Contract_Testing.md` — verify data against a contract; detect breaking changes
 - `Packaging.md` — building and distributing the wheel
 
 ## Tests

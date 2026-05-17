@@ -83,6 +83,28 @@ def _parse_records(records: Optional[str]) -> Optional[Dict[str, int]]:
     return parsed or None
 
 
+def _extract_data_zip(upload: "UploadFile", contents: bytes, workdir: Path) -> Path:
+    """Extract an uploaded ZIP of Parquet files; return the dir that holds them."""
+    if not (upload.filename or "").lower().endswith(".zip"):
+        raise HTTPException(
+            status_code=415, detail="data must be a .zip of <table>.parquet files"
+        )
+    zip_path = workdir / "data.zip"
+    zip_path.write_bytes(contents)
+    extract_dir = workdir / "data"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(extract_dir)
+    except zipfile.BadZipFile:
+        raise HTTPException(status_code=422, detail="data zip is corrupt or not a ZIP file")
+    if list(extract_dir.glob("*.parquet")):
+        return extract_dir
+    for nested in sorted(extract_dir.rglob("*.parquet")):
+        return nested.parent          # parquet files nested one level down
+    raise HTTPException(status_code=422, detail="no .parquet files found in the data zip")
+
+
 def create_app() -> "FastAPI":
     """Build and return the FastAPI application."""
     app = FastAPI(
@@ -253,6 +275,57 @@ def create_app() -> "FastAPI":
                     detail=f"Inference failed (exit code {result.exit_code}).",
                 )
             return {"config_yaml": out_yaml.read_text(encoding="utf-8")}
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    @app.post("/contract-test", tags=["contracts"], summary="Verify data against a contract")
+    async def contract_test(
+        contract: UploadFile = File(..., description="Contract config (Excel/YAML/JSON)"),
+        data: UploadFile = File(..., description="ZIP of <table>.parquet files to verify"),
+        tolerance: float = Form(0.5, description="Permitted row-count deviation (0.5 = ±50%)"),
+    ):
+        """Verify a dataset against a data contract — severity-tagged checks + verdict."""
+        contract_bytes = await contract.read()
+        data_bytes = await data.read()
+        workdir = Path(tempfile.mkdtemp(prefix="sdp_api_contract_"))
+        try:
+            cfg_path = _save_upload(contract, contract_bytes, workdir)
+            data_dir = _extract_data_zip(data, data_bytes, workdir)
+            try:
+                report = await run_in_threadpool(
+                    platform.contract_test,
+                    contract=cfg_path,
+                    data=data_dir,
+                    tolerance=tolerance,
+                    contract_name=contract.filename or "data-contract",
+                )
+            except SDPError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            return report.to_dict()
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    @app.post("/contract-diff", tags=["contracts"], summary="Detect breaking contract changes")
+    async def contract_diff(
+        old: UploadFile = File(..., description="Previous contract config"),
+        new: UploadFile = File(..., description="New contract config"),
+    ):
+        """Compare two contract versions — returns breaking / additive / review changes."""
+        old_bytes = await old.read()
+        new_bytes = await new.read()
+        workdir = Path(tempfile.mkdtemp(prefix="sdp_api_cdiff_"))
+        try:
+            old_dir = workdir / "old"
+            new_dir = workdir / "new"
+            old_dir.mkdir()
+            new_dir.mkdir()
+            old_path = _save_upload(old, old_bytes, old_dir)
+            new_path = _save_upload(new, new_bytes, new_dir)
+            try:
+                diff = await run_in_threadpool(platform.contract_diff, old_path, new_path)
+            except SDPError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            return diff.to_dict()
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
 

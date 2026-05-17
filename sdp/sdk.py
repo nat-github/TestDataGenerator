@@ -28,6 +28,8 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import pandas as pd
 
+    from sdp.contracts.model import ContractDiff, ContractTestReport
+
 logger = logging.getLogger(__name__)
 
 PathLike = Union[str, Path]
@@ -417,3 +419,50 @@ class SyntheticDataPlatform:
         if verbose:
             argv.append("--verbose")
         return self.run(*argv)
+
+    # -- data contracts -----------------------------------------------------
+
+    def contract_test(
+        self,
+        contract: PathLike,
+        data: PathLike,
+        *,
+        tolerance: float = 0.5,
+        contract_name: Optional[str] = None,
+    ) -> "ContractTestReport":
+        """Verify a directory of Parquet data against a data contract.
+
+        The contract is an ordinary platform config; the report carries a
+        per-check severity and an overall PASS/WARN/FAIL verdict.
+        """
+        from sdp.cli import load_config_context
+        from sdp.contracts import ContractError, run_contract_test
+
+        try:
+            parser = load_config_context(str(contract))
+        except Exception as exc:
+            raise SDPError(f"Failed to load contract {contract!r}: {exc}") from exc
+        try:
+            return run_contract_test(
+                parser.tables,
+                data_dir=str(data),
+                contract_name=contract_name or Path(contract).name,
+                row_count_tolerance=tolerance,
+            )
+        except ContractError as exc:
+            raise SDPError(str(exc)) from exc
+
+    def contract_diff(self, old: PathLike, new: PathLike) -> "ContractDiff":
+        """Detect breaking changes between two contract versions."""
+        from sdp.cli import load_config_context
+        from sdp.contracts import diff_contracts
+
+        try:
+            old_parser = load_config_context(str(old))
+            new_parser = load_config_context(str(new))
+        except Exception as exc:
+            raise SDPError(f"Failed to load a contract: {exc}") from exc
+        return diff_contracts(
+            old_parser.tables, new_parser.tables,
+            old_name=Path(old).name, new_name=Path(new).name,
+        )

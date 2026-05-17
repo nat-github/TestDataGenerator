@@ -65,6 +65,11 @@ python main.py lint --config config/Acct_bkng.xlsx
 # Enrich a bare config with Claude-suggested business_values and special_rules
 python main.py enrich --config config/bare.xlsx --output config/enriched.yaml --confidence 0.7
 
+# Data contract testing — verify real data against the config-as-contract
+python main.py contract-test --contract config/Acct_bkng.xlsx --data data/incoming/ --fail-on error
+# Detect breaking changes between two contract versions
+python main.py contract-diff --old config/acct_v1.yaml --new config/acct_v2.yaml --fail-on-breaking
+
 # Legacy mode (backward compatible, treated as generate)
 python main.py --config config/Acct_bkng.xlsx --output output/run_01
 
@@ -221,6 +226,9 @@ Excel / YAML Config
 | `sdp/mcp_server/server.py` | MCP server exposing `generate_data`, `lint_config`, `validate_data`, `infer_relationships`, `mock_init`, `mock_render`, `mock_enrich`, `list_examples`, `llm_diagnose` as tools so Claude Desktop / Claude Code / **LM Studio** / Cursor can drive the platform. LLM-using tools accept `llm_provider`/`llm_model`/`llm_base_url` for full provider portability. |
 | `validators/gx_validator.py` | Great Expectations 1.x adapter — auto-derives an expectation suite from each table's `ColumnConfig` (PK→unique+not-null, business_values→in_set, min/max→between, REGEX:→matches_regex, EMAIL/UUID/IBAN/IPV4 etc.→regex with canonical shape, length→value_lengths_to_be_between, num_rows→row_count_between with tolerance). |
 | `validators/quality_report.py` | Statistical quality reports — univariate stats + correlation matrix (always); KS test (numeric), TV-distance + chi-square (categorical), correlation-matrix delta, NN-distance privacy proxy (when source data is provided). JSON / HTML / Markdown outputs. Used by `quality-report` CLI, Streamlit UI, and MCP tool. |
+| `contracts/checker.py` | Data contract testing — verifies data against the config-as-contract by reusing `gx_validator`, re-framing each GX result with a severity (error/warning) and an overall PASS/WARN/FAIL verdict. |
+| `contracts/diff.py` | Breaking-change detection between two contract versions — pure structural diff classifying each change breaking / additive / review. |
+| `contracts/model.py` | Dataclasses for the contract reports (`ContractTestReport`, `ContractDiff`) — JSON-serialisable, no GX dependency. |
 
 ### Generation Strategy (Hybrid)
 
@@ -303,6 +311,7 @@ Tests live in `tests/`:
 - `test_ui_streamlit.py` — Streamlit AppTest smoke tests (no-exception load, widget presence, 10k cap).
 - `test_mcp_server.py` — MCP tool registry + per-tool behaviour (no real MCP transport spun up).
 - `test_sdk_and_api.py` — Python SDK facade (`generate`/`lint`/`run`, seed reproducibility) and REST API endpoints (`/healthz`, `/generate`, `/lint`); API tests skip without the `api` extra.
+- `test_contracts.py` — data contract testing: `contract-test` verdict/severity and `contract-diff` breaking-change classification; checker tests skip without the `gx` extra.
 
 No linting is configured (pending item in `Pending_Items.md`).
 
@@ -349,6 +358,7 @@ Both modules use a stable system prompt with `cache_control: ephemeral` for Anth
 - `Bruno_Workflow.md` — end-to-end recipe: OpenAPI spec → `mock-init` → `mock-render` → WireMock standalone → Bruno API client
 - `Data_Validation.md` — Great Expectations integration: auto-derived suites from `ColumnConfig`, the `validate-data` subcommand, and how to extend
 - `Quality_Reports.md` — Statistical fidelity / privacy reports: univariate, KS / TV-distance, correlation delta, NN privacy proxy, CLI + UI + MCP entry points
+- `Data_Contract_Testing.md` — data contracts: what/why, `contract-test` (verdict + severity), `contract-diff` (breaking-change detection), CLI / SDK / API / Streamlit
 - `Docker_Quickstart.md` — Run with or without Docker (additive); CLI / Streamlit / MCP run modes inside the image
 - `MCP_Integration.md` — what MCP is, why it matters, how the server is implemented, and how to wire it into LM Studio / Claude Desktop / Claude Code / Cursor / Zed (with multi-provider LLM passthrough)
 - `Examples_Walkthrough.md` — demo playbook: 11 example configs (YAML/JSON/XLSX) covering every feature, with copy-pasteable commands and a 10-minute stakeholder demo arc

@@ -73,7 +73,12 @@ report.report           # formatted text report
 | `quality_report(generated, source=, ...)` | `sdp quality-report` |
 | `mock_init(source, output, ...)` | `sdp mock-init` |
 | `mock_render(config, output, formats=, ...)` | `sdp mock-render` |
+| `contract_test(contract, data, ...) -> ContractTestReport` | `sdp contract-test` |
+| `contract_diff(old, new) -> ContractDiff` | `sdp contract-diff` |
 | `run(*argv) -> CommandResult` | **any** CLI command (escape hatch) |
+
+`contract_test` / `contract_diff` return rich report objects (verdict, severity-tagged
+checks, classified changes) — see `Data_Contract_Testing.md`.
 
 ```python
 # Escape hatch — run any CLI command verbatim, in-process:
@@ -110,6 +115,8 @@ in an isolated temp directory, and nothing is persisted between requests.
 | `POST` | `/generate` | Generate synthetic data from an uploaded config |
 | `POST` | `/lint` | Validate a config, return structured issues |
 | `POST` | `/infer-relationships` | Infer FK relationships, return reviewable YAML |
+| `POST` | `/contract-test` | Verify uploaded data (ZIP of Parquet) against a contract |
+| `POST` | `/contract-diff` | Detect breaking changes between two contract versions |
 
 #### `POST /generate`
 
