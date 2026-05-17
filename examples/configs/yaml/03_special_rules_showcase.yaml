@@ -119,6 +119,7 @@ tables:
         special_rules: ETH_ADDRESS
 
       # ---- Custom regex ----
+      # VA13: "CASE-" (5) + 4 digits + "-" (1) + 3 letters = 13 chars
       - name: case_id
-        data_type: VA12
+        data_type: VA13
         special_rules: REGEX:CASE-[0-9]{4}-[A-Z]{3}

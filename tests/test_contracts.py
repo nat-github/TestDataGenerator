@@ -6,6 +6,7 @@ The diff tests are pure (no Great Expectations). The checker tests need the
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
@@ -19,6 +20,8 @@ from sdp.models.config_models import ColumnConfig, TableConfig
 from sdp.validators.gx_validator import HAS_GX
 
 requires_gx = pytest.mark.skipif(not HAS_GX, reason="contract testing needs the 'gx' extra")
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _col(name: str, dtype: str = "N38", *, is_pk: bool = False, nullable: bool = True,
@@ -182,3 +185,85 @@ def test_diff_range_narrowed_is_breaking():
     diff = diff_contracts(old, new)
     assert diff.has_breaking
     assert any(c.kind == "range_narrowed" for c in diff.breaking)
+
+
+# ---------------------------------------------------------------------------
+# Composite primary keys — members are unique only in combination
+# ---------------------------------------------------------------------------
+
+def _composite_pk_tables():
+    cols = [
+        _col("order_id", "N38", is_pk=True, table="lines"),
+        _col("line_no", "N38", is_pk=True, table="lines"),
+    ]
+    return {"lines": _table("lines", cols, num_rows=4)}
+
+
+@requires_gx
+def test_composite_pk_does_not_false_fail_on_member_uniqueness():
+    # order_id repeats across rows — correct for a composite-PK member.
+    frames = {"lines": pd.DataFrame({"order_id": [1, 1, 2, 2], "line_no": [1, 2, 1, 2]})}
+    report = run_contract_test(_composite_pk_tables(), dataframes=frames)
+    assert report.verdict is Verdict.PASS, [c.detail for c in report.error_failures]
+
+
+@requires_gx
+def test_composite_pk_detects_a_duplicate_combination():
+    # (1, 1) appears twice — the compound key is violated.
+    frames = {"lines": pd.DataFrame({"order_id": [1, 1, 2, 1], "line_no": [1, 2, 1, 1]})}
+    report = run_contract_test(_composite_pk_tables(), dataframes=frames)
+    assert report.verdict is Verdict.FAIL
+    assert any(c.check == "compound_columns_to_be_unique" for c in report.error_failures)
+
+
+# ---------------------------------------------------------------------------
+# Temporal columns — robust date/datetime check
+# ---------------------------------------------------------------------------
+
+def _event_tables():
+    cols = [
+        _col("id", "N38", is_pk=True, table="ev"),
+        _col("occurred", "D", nullable=False, table="ev"),
+    ]
+    return {"ev": _table("ev", cols, num_rows=3)}
+
+
+@requires_gx
+def test_temporal_column_accepts_date_strings():
+    frames = {"ev": pd.DataFrame({"id": [1, 2, 3],
+                                  "occurred": ["2024-01-01", "2024-06-15", "2025-12-31"]})}
+    report = run_contract_test(_event_tables(), dataframes=frames)
+    assert report.verdict is Verdict.PASS, [c.detail for c in report.error_failures]
+
+
+@requires_gx
+def test_temporal_column_accepts_native_datetimes():
+    frames = {"ev": pd.DataFrame({"id": [1, 2, 3],
+                                  "occurred": pd.to_datetime(["2024-01-01", "2024-06-15", "2025-12-31"])})}
+    report = run_contract_test(_event_tables(), dataframes=frames)
+    assert report.verdict is Verdict.PASS, [c.detail for c in report.error_failures]
+
+
+@requires_gx
+def test_temporal_column_flags_non_dates():
+    frames = {"ev": pd.DataFrame({"id": [1, 2, 3], "occurred": ["not-a-date", "xyz", "???"]})}
+    report = run_contract_test(_event_tables(), dataframes=frames)
+    assert report.verdict is Verdict.FAIL
+    assert any(c.check == "column_is_temporal" for c in report.error_failures)
+
+
+# ---------------------------------------------------------------------------
+# Shipped example configs must be internally valid
+# ---------------------------------------------------------------------------
+
+def test_special_rules_showcase_example_config_is_lint_clean():
+    """Regression: 03_special_rules_showcase had a regex/length mismatch."""
+    from sdp.utils.config_parser import ConfigParser
+
+    cfg = REPO_ROOT / "examples" / "configs" / "yaml" / "03_special_rules_showcase.yaml"
+    parser = ConfigParser(str(cfg))
+    assert parser.load_config()
+    parser.parse_tables()
+    parser.parse_relationships()
+    errors = [i for i in parser.lint_config() if i.level == "error"]
+    assert errors == [], f"example config has lint errors: {[i.message for i in errors]}"

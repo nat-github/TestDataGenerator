@@ -268,26 +268,45 @@ def derive_expectations_for_table(
     elif expected_rows > 0:
         out.append(("row_count_equal", None, {"value": expected_rows}))
 
-    # Per-column
-    for col in getattr(table_cfg, "columns", []):
-        out.extend(derive_expectations_for_column(col))
+    # Per-column. A composite primary key (more than one is_pk column) must NOT
+    # assert uniqueness on each member individually — only the *combination* is
+    # unique. Members still get a not-null check; the compound key gets one
+    # table-level uniqueness check.
+    columns = list(getattr(table_cfg, "columns", []))
+    pk_names = [c.column_name for c in columns if getattr(c, "is_pk", False)]
+    composite_pk = len(pk_names) > 1
+
+    for col in columns:
+        out.extend(derive_expectations_for_column(
+            col, emit_pk_uniqueness=not composite_pk,
+        ))
+
+    if composite_pk:
+        out.append(("compound_columns_to_be_unique", None, {"column_list": pk_names}))
 
     return out
 
 
 def derive_expectations_for_column(
     col: Any,
+    *,
+    emit_pk_uniqueness: bool = True,
 ) -> List[Tuple[str, Optional[str], Dict[str, Any]]]:
-    """Produce expectations for a single ColumnConfig."""
+    """Produce expectations for a single ColumnConfig.
+
+    ``emit_pk_uniqueness`` is set False for members of a *composite* primary
+    key — those are unique only in combination, not individually.
+    """
     out: List[Tuple[str, Optional[str], Dict[str, Any]]] = []
     name = col.column_name
 
     # Column existence — every table is expected to contain its declared columns
     out.append(("column_exists", name, {}))
 
-    # PK ⇒ unique + not null
+    # PK ⇒ (individually unique, unless composite) + not null
     if getattr(col, "is_pk", False):
-        out.append(("values_to_be_unique", name, {}))
+        if emit_pk_uniqueness:
+            out.append(("values_to_be_unique", name, {}))
         out.append(("values_to_not_be_null", name, {}))
     elif getattr(col, "nullable", True) is False:
         out.append(("values_to_not_be_null", name, {}))
@@ -334,9 +353,13 @@ def derive_expectations_for_column(
 
     # Type expectation from data_type
     dtype = getattr(col, "data_type", None)
-    type_list = _gx_type_list(dtype)
-    if type_list:
-        out.append(("values_to_be_in_type_list", name, {"type_list": type_list}))
+    if (dtype or "").strip().upper() in ("D", "DT", "TS"):
+        # Datetime columns get a dedicated, reliable temporal check.
+        out.append(("column_is_temporal", name, {}))
+    else:
+        type_list = _gx_type_list(dtype)
+        if type_list:
+            out.append(("values_to_be_in_type_list", name, {"type_list": type_list}))
 
     return out
 
@@ -385,7 +408,10 @@ def _gx_type_list(data_type: Optional[str]) -> List[str]:
     if dt == "NS":
         return ["str", "object", "string"]
     if dt in ("D", "DT", "TS"):
-        return ["datetime64[ns]", "object", "datetime64[ns, UTC]"]
+        # Date/datetime columns are checked by the dedicated `column_is_temporal`
+        # expectation — GX's values_to_be_in_type_list is unreliable for datetime
+        # dtypes (e.g. it reports datetime64[us, UTC] as 'Timestamp' and fails).
+        return []
     return []
 
 
@@ -464,11 +490,59 @@ def _evaluate_expectation(
             details=dict(kwargs, observed=actual),
         )
 
+    if kind == "compound_columns_to_be_unique":
+        # Table-level: the *combination* of the composite-PK columns is unique.
+        col_list = kwargs.get("column_list", [])
+        missing = [c for c in col_list if c not in df.columns]
+        if missing:
+            return ExpectationResult(
+                expectation_type=kind, column=None, success=False,
+                details={"error": f"columns missing: {missing}"},
+            )
+        expectation = _build_gx_expectation(kind, "", kwargs)
+        raw = batch.validate(expectation)
+        summary = _summarise_gx_result(raw)
+        return ExpectationResult(
+            expectation_type=kind, column=None, success=bool(raw.success),
+            observed_value=summary.get("observed_value"),
+            unexpected_count=summary.get("unexpected_count", 0),
+            unexpected_percent=summary.get("unexpected_percent", 0.0),
+            details=summary,
+        )
+
     # Column-level: route through GX's expectation classes
     if column is None or column not in df.columns:
         return ExpectationResult(
             expectation_type=kind, column=column, success=False,
             details={"error": f"column {column!r} missing"},
+        )
+
+    if kind == "column_is_temporal":
+        # Direct temporal check — robust where GX's type-list check is not.
+        # A native datetime dtype passes; an object/string column passes only
+        # when every non-null value parses as a date/datetime.
+        import pandas as pd
+
+        series = df[column]
+        if pd.api.types.is_datetime64_any_dtype(series):
+            return ExpectationResult(
+                expectation_type=kind, column=column, success=True,
+                observed_value=str(series.dtype),
+            )
+        non_null = series.dropna()
+        if len(non_null) == 0:
+            return ExpectationResult(
+                expectation_type=kind, column=column, success=True,
+                observed_value=str(series.dtype),
+            )
+        parsed = pd.to_datetime(non_null, errors="coerce")
+        bad = int(parsed.isna().sum())
+        return ExpectationResult(
+            expectation_type=kind, column=column, success=(bad == 0),
+            observed_value=str(series.dtype),
+            unexpected_count=bad,
+            unexpected_percent=round(100.0 * bad / len(non_null), 2),
+            details={"unparseable_values": bad},
         )
 
     expectation = _build_gx_expectation(kind, column, kwargs)
@@ -519,6 +593,8 @@ def _build_gx_expectation(kind: str, column: str, kwargs: Dict[str, Any]):
         return gxe.ExpectColumnValuesToBeInTypeList(
             column=column, type_list=kwargs["type_list"],
         )
+    if kind == "compound_columns_to_be_unique":
+        return gxe.ExpectCompoundColumnsToBeUnique(column_list=kwargs["column_list"])
     return None
 
 

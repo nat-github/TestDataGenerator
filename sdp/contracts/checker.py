@@ -44,6 +44,9 @@ _ERROR_KINDS = frozenset({
     "expect_column_values_to_not_be_null",
     "values_to_be_in_type_list",
     "expect_column_values_to_be_in_type_list",
+    "compound_columns_to_be_unique",
+    "expect_compound_columns_to_be_unique",
+    "column_is_temporal",
 })
 
 
