@@ -55,7 +55,7 @@ def test_enrich_cli_passes_confidence_threshold(monkeypatch, tmp_path: Path):
         def get_suggestions(self, tables):
             return []
 
-    monkeypatch.setattr("llm.schema_enricher.SchemaEnricher", DummyEnricher)
+    monkeypatch.setattr("sdp.llm.schema_enricher.SchemaEnricher", DummyEnricher)
 
     rc = main([
         "enrich",

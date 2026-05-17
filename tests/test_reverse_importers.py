@@ -7,8 +7,8 @@ from typing import Any, Dict, List
 
 import pytest
 
-from mocks.har_importer import HARImportError, import_har_str
-from mocks.postman_importer import PostmanImportError, import_postman_str
+from sdp.mocks.har_importer import HARImportError, import_har_str
+from sdp.mocks.postman_importer import PostmanImportError, import_postman_str
 
 
 # ---------------------------------------------------------------------------

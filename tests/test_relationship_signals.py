@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from ml.relationship_signals import (
+from sdp.ml.relationship_signals import (
     DEFAULT_WEIGHTS,
     combine,
     name_similarity,

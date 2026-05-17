@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from validators.quality_report import (
+from sdp.validators.quality_report import (
     ColumnQualityMetrics,
     QualityReport,
     TableQualityMetrics,

@@ -8,8 +8,8 @@ import argparse
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
-from generators.data_generator import DataGenerator
-from utils.data_validator import DataValidator
+from sdp.generators.data_generator import DataGenerator
+from sdp.utils.data_validator import DataValidator
 import pandas as pd
 
 

@@ -18,14 +18,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from mocks.config_parser import (
+from sdp.mocks.config_parser import (
     MockConfigError,
     dump_mock_config,
     lint_mock_config,
     load_mock_config,
     load_mock_config_str,
 )
-from models.mock_models import (
+from sdp.models.mock_models import (
     EndpointConfig,
     FieldSpec,
     MockConfig,

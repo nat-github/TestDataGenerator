@@ -12,6 +12,10 @@ Synthetic Data Platform — generates realistic, relationship-aware Parquet data
 # Install dependencies
 poetry install
 
+# After `poetry install` (or installing the wheel) the CLI is also available as
+# the `sdp` console script — `sdp generate ...` == `python main.py generate ...`.
+# The examples below use `python main.py`; both forms are equivalent.
+
 # Generate a snapshot
 python main.py generate --config config/Acct_bkng.xlsx --output output/run_01 --default-records 1000
 
@@ -84,6 +88,17 @@ python main.py collibra-import --dataset "Customer" --domain "Finance" --output 
 # Inspect parquet output
 poetry run python readParquet.py output/run_01
 
+# Build the installable wheel (→ dist/synthetic_data_platform-<ver>-py3-none-any.whl)
+poetry build
+
+# Python SDK (in-process; ships with the core install)
+python -c "from sdp import SyntheticDataPlatform; \
+  SyntheticDataPlatform().generate(config='config/Acct_bkng.xlsx', output='output/run_01', seed=42)"
+
+# REST API (needs the api extra)
+poetry install --extras api
+poetry run sdp-api --host 0.0.0.0 --port 8000      # docs at http://localhost:8000/docs
+
 # Run all tests
 poetry run pytest tests/ -v
 
@@ -118,9 +133,25 @@ poetry install --extras mimesis      # MIMESIS_* special rules
 
 ## Architecture
 
+### Package layout
+
+All code lives under a single installable package, **`sdp/`**. In the module
+tables below, a path like `utils/config_parser.py` means `sdp/utils/config_parser.py`.
+The package builds to a wheel (`poetry build`) and installs two console scripts:
+`sdp` (CLI) and `sdp-api` (REST API). See `Packaging.md`.
+
+Four entry surfaces share the same code paths: `sdp/cli.py` (CLI),
+`sdp/sdk.py` (Python SDK — `SyntheticDataPlatform`), `sdp/api/` (REST API,
+FastAPI), `sdp/mcp_server/` (MCP). See `SDK_and_API.md`.
+
 ### Entry Point
 
-`main.py` — CLI with four subcommands (`generate`, `delta`, `scd2`, `collibra-import`). Dispatches to `DataGenerator`, `ParquetPostProcessor`, `ERDiagramGenerator`, cloud uploaders, and `CollibraImporter`.
+`sdp/cli.py` — the CLI, with subcommands `generate`, `delta`, `scd2`, `lint`,
+`enrich`, `collibra-import`, `infer-config`, `pii-scan`, `infer-relationships`,
+`record-feedback`, `mock-*`, `validate-data`, `quality-report`. Dispatches to
+`DataGenerator`, `ParquetPostProcessor`, `ERDiagramGenerator`, cloud uploaders,
+and `CollibraImporter`. A root `main.py` shim re-exports it, so
+`python main.py ...` and `from main import ...` keep working.
 
 ### Core Data Flow
 
@@ -270,7 +301,8 @@ Tests live in `tests/`:
 - `test_reverse_importers.py` — Postman + HAR importers (path templating, variable substitution, header filtering, body type inference).
 - `test_cli_mocks.py` + `test_cli_mocks_phase_e_h_i.py` — `mock-*` argparse plumbing and dispatch end-to-end.
 - `test_ui_streamlit.py` — Streamlit AppTest smoke tests (no-exception load, widget presence, 10k cap).
-- `test_mcp_server.py` — MCP tool registry + per-tool behaviour (12 tests, no real MCP transport spun up).
+- `test_mcp_server.py` — MCP tool registry + per-tool behaviour (no real MCP transport spun up).
+- `test_sdk_and_api.py` — Python SDK facade (`generate`/`lint`/`run`, seed reproducibility) and REST API endpoints (`/healthz`, `/generate`, `/lint`); API tests skip without the `api` extra.
 
 No linting is configured (pending item in `Pending_Items.md`).
 
@@ -304,6 +336,8 @@ Both modules use a stable system prompt with `cache_control: ephemeral` for Anth
 ## Docs
 
 - `Usage.md` — full user guide for all three CLI commands and config formats
+- `SDK_and_API.md` — Python SDK facade (`SyntheticDataPlatform`) and REST API (FastAPI) reference
+- `Packaging.md` — building the wheel, package layout, extras, console scripts
 - `Yaml_Config_Schema.md` — canonical YAML schema reference
 - `Json_Config_Schema.md` — JSON schema reference (sdp-json-v1)
 - `Rules_and_Workflows.md` — Layer A (when/then rules), Layer B (derived columns), Layer C (planned workflows)

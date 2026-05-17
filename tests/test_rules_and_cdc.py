@@ -18,9 +18,9 @@ import pandas as pd
 import pytest
 import yaml
 
-from models.config_models import CDCConfig, ColumnConfig, RuleAction, RuleConfig, TableConfig
-from utils.config_parser import ConfigParser
-from utils.rule_evaluator import (
+from sdp.models.config_models import CDCConfig, ColumnConfig, RuleAction, RuleConfig, TableConfig
+from sdp.utils.config_parser import ConfigParser
+from sdp.utils.rule_evaluator import (
     apply_to_dataframe,
     apply_when_then,
     evaluate_derived,

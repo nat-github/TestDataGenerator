@@ -255,7 +255,7 @@ def test_mock_enrich_runs_dispatch_with_mocked_llm(tmp_path: Path, monkeypatch):
         {"status": 500, "body": {"code": "INTERNAL", "message": "Server error"}},
     ])
 
-    from mocks import llm_enricher
+    from sdp.mocks import llm_enricher
     responses = [suggestion, error_suggestion, error_suggestion]
 
     def fake_chat(**kwargs):
@@ -273,7 +273,7 @@ def test_mock_enrich_runs_dispatch_with_mocked_llm(tmp_path: Path, monkeypatch):
 def test_mock_enrich_no_fill_examples_skips_first_pass(tmp_path: Path, monkeypatch):
     cfg = _init_mocks(tmp_path)
 
-    from mocks import llm_enricher
+    from sdp.mocks import llm_enricher
     calls = []
 
     def fake_chat(**kwargs):
@@ -297,7 +297,7 @@ def test_mock_enrich_no_fill_examples_skips_first_pass(tmp_path: Path, monkeypat
 def test_mock_enrich_no_draft_errors_skips_second_pass(tmp_path: Path, monkeypatch):
     cfg = _init_mocks(tmp_path)
 
-    from mocks import llm_enricher
+    from sdp.mocks import llm_enricher
     calls = []
 
     def fake_chat(**kwargs):

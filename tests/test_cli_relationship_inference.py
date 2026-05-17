@@ -13,7 +13,7 @@ import pytest
 import yaml
 
 from main import main, parse_arguments
-from ml.relationship_feedback_store import FeedbackStore
+from sdp.ml.relationship_feedback_store import FeedbackStore
 
 
 def _two_table_yaml(path: Path) -> Path:

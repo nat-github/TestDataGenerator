@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from utils import mimesis_provider as mp
-from utils.helpers import DataHelpers
+from sdp.utils import mimesis_provider as mp
+from sdp.utils.helpers import DataHelpers
 
 mimesis_available = pytest.mark.skipif(
     not mp.is_available(),
@@ -35,7 +35,7 @@ def test_locale_suffix_changes_locale() -> None:
 
 @mimesis_available
 def test_unknown_rule_returns_none_with_warning(caplog: pytest.LogCaptureFixture) -> None:
-    with caplog.at_level("WARNING", logger="utils.mimesis_provider"):
+    with caplog.at_level("WARNING", logger="sdp.utils.mimesis_provider"):
         result = mp.generate("DEFINITELY_NOT_A_RULE")
     assert result is None
     assert any("unknown rule" in rec.message.lower() for rec in caplog.records)

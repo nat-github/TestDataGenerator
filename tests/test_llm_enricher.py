@@ -11,9 +11,9 @@ from typing import Any, Dict, List
 
 import pytest
 
-from mocks import llm_enricher
-from mocks.llm_enricher import enrich
-from models.mock_models import (
+from sdp.mocks import llm_enricher
+from sdp.mocks.llm_enricher import enrich
+from sdp.models.mock_models import (
     EndpointConfig,
     FieldSpec,
     MockConfig,

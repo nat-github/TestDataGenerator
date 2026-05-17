@@ -16,7 +16,7 @@ import pytest
 # Skip the whole module if the MCP SDK isn't installed
 pytest.importorskip("mcp")
 
-from mcp_server import server as srv
+from sdp.mcp_server import server as srv
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES_YAML = REPO_ROOT / "examples" / "configs" / "yaml"
@@ -178,7 +178,7 @@ def test_generate_data_caps_at_max_rows(tmp_path: Path, monkeypatch):
     captured = {}
 
     # Stub out heavy SDV calls so the test is fast
-    from generators.data_generator import DataGenerator
+    from sdp.generators.data_generator import DataGenerator
 
     def fake_train(self, sample_size=None, seed=None):
         return None
@@ -226,7 +226,7 @@ def test_infer_relationships_threads_provider_to_llm(monkeypatch):
         def infer(self, tables, existing_relationships=None):
             return FakeResult()
 
-    import llm.relationship_inferrer as rli
+    import sdp.llm.relationship_inferrer as rli
     monkeypatch.setattr(rli, "RelationshipInferrer", FakeInferrer)
 
     out = _call(
@@ -248,7 +248,7 @@ def test_llm_diagnose_returns_resolved_config(monkeypatch):
     """The diagnose tool reports the resolved provider + a brief reply."""
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
 
-    import llm.multi_provider as mp
+    import sdp.llm.multi_provider as mp
 
     def fake_chat(messages, **kwargs):
         return "ready"
@@ -283,7 +283,7 @@ def test_llm_diagnose_reports_failure_gracefully(monkeypatch):
 
 def test_validate_data_reports_missing_gx_dependency(monkeypatch):
     """When GX isn't installed, the tool returns a useful error rather than raising."""
-    import validators.gx_validator as gxv
+    import sdp.validators.gx_validator as gxv
     monkeypatch.setattr(gxv, "HAS_GX", False)
 
     out = _call(
@@ -343,7 +343,7 @@ def test_quality_report_handles_missing_dir():
 def test_validate_data_runs_against_real_data(tmp_path: Path):
     """End-to-end: write a tiny Parquet file, validate it through the MCP tool."""
     import pandas as pd
-    import validators.gx_validator as gxv
+    import sdp.validators.gx_validator as gxv
     if not gxv.HAS_GX:
         pytest.skip("great-expectations not installed")
 

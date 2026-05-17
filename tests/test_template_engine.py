@@ -6,10 +6,10 @@ from pathlib import Path
 
 import pytest
 
-from mocks.config_parser import load_mock_config_str
-from mocks.openapi_importer import import_openapi
-from mocks.template_engine import TemplateEngine
-from models.mock_models import (
+from sdp.mocks.config_parser import load_mock_config_str
+from sdp.mocks.openapi_importer import import_openapi
+from sdp.mocks.template_engine import TemplateEngine
+from sdp.models.mock_models import (
     EndpointConfig,
     FieldSpec,
     MockConfig,

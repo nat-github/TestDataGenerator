@@ -7,9 +7,9 @@ from pathlib import Path
 
 import pytest
 
-from mocks.openapi_importer import import_openapi
-from mocks.renderers.json_fixture import render_json_fixtures
-from mocks.renderers.wiremock import render_wiremock
+from sdp.mocks.openapi_importer import import_openapi
+from sdp.mocks.renderers.json_fixture import render_json_fixtures
+from sdp.mocks.renderers.wiremock import render_wiremock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO_ROOT / "examples" / "openapi"

@@ -6,14 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from mocks.renderers.wiremock import render_wiremock
-from mocks.scenario_engine import (
+from sdp.mocks.renderers.wiremock import render_wiremock
+from sdp.mocks.scenario_engine import (
     STARTED_STATE,
     ScenarioPlan,
     ScenarioStep,
     compile_scenarios,
 )
-from models.mock_models import (
+from sdp.models.mock_models import (
     EndpointConfig,
     FieldSpec,
     MockConfig,

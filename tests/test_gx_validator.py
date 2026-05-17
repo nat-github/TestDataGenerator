@@ -8,8 +8,8 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from models.config_models import ColumnConfig, TableConfig
-from validators.gx_validator import (
+from sdp.models.config_models import ColumnConfig, TableConfig
+from sdp.validators.gx_validator import (
     HAS_GX,
     derive_expectations_for_column,
     derive_expectations_for_table,

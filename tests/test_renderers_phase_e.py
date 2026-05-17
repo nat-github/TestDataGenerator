@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 import yaml
 
-from mocks.openapi_importer import import_openapi
-from mocks.renderers.openapi_examples import enrich_in_place, render_openapi_examples
-from mocks.renderers.pact import render_pact
-from mocks.renderers.postman import render_postman
+from sdp.mocks.openapi_importer import import_openapi
+from sdp.mocks.renderers.openapi_examples import enrich_in_place, render_openapi_examples
+from sdp.mocks.renderers.pact import render_pact
+from sdp.mocks.renderers.postman import render_postman
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO_ROOT / "examples" / "openapi"

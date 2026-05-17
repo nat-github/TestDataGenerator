@@ -16,13 +16,13 @@ from pathlib import Path
 
 import pytest
 
-from ml.relationship_classifier import (
+from sdp.ml.relationship_classifier import (
     FEATURE_ORDER,
     MIN_PER_CLASS,
     MIN_TRAINING_EXAMPLES,
     RelationshipClassifier,
 )
-from ml.relationship_feedback_store import FeedbackEntry, FeedbackStore
+from sdp.ml.relationship_feedback_store import FeedbackEntry, FeedbackStore
 
 
 # ---------------------------------------------------------------------------

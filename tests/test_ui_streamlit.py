@@ -18,7 +18,7 @@ streamlit = pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-APP_PATH = REPO_ROOT / "ui" / "streamlit_app.py"
+APP_PATH = REPO_ROOT / "sdp" / "ui" / "streamlit_app.py"
 
 
 def _new_app(timeout: int = 30) -> AppTest:

@@ -1,10 +1,10 @@
 [tool.poetry]
-name = "testdatageneration"
-version = "0.2.0"
-description = "Synthetic Data Platform — relationship-aware parquet generation with GenAI support"
+name = "synthetic-data-platform"
+version = "0.3.0"
+description = "Synthetic Data Platform — relationship-aware synthetic data generation with GenAI, a REST API and a Python SDK"
 authors = ["Your Name <you@example.com>"]
 readme = "README.md"
-package-mode = false
+packages = [{ include = "sdp" }]
 
 
 
@@ -56,6 +56,11 @@ mcp = { version = ">=1.0.0", optional = true }
 
 # --- Optional: Great Expectations data validation (install via `--extras gx`) ---
 great-expectations = { version = ">=1.0.0", optional = true }
+
+# --- Optional: REST API (install via `--extras api`) ---
+fastapi = { version = ">=0.110,<1.0", optional = true }
+uvicorn = { version = ">=0.27,<1.0", optional = true }
+python-multipart = { version = ">=0.0.9", optional = true }
 
 # --- Optional: cloud upload (install as needed) ---
 # pip install azure-storage-blob   → enables --upload-to azure://...
@@ -129,6 +134,11 @@ mimesis = ["mimesis"]
 ui = ["streamlit"]
 mcp = ["mcp"]
 gx = ["great-expectations"]
+api = ["fastapi", "uvicorn", "python-multipart"]
+
+[tool.poetry.scripts]
+sdp = "sdp.cli:main"
+sdp-api = "sdp.api.__main__:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -136,7 +146,7 @@ addopts = "--tb=short"
 pythonpath = ["."]
 
 [tool.coverage.run]
-source = ["generators", "utils", "models", "llm"]
+source = ["sdp"]
 omit = ["tests/*", ".venv/*"]
 
 [build-system]

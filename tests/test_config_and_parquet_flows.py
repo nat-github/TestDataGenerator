@@ -8,11 +8,11 @@ import pandas as pd
 import yaml
 from deltalake import DeltaTable
 
-from generators.data_generator import DataGenerator
+from sdp.generators.data_generator import DataGenerator
 from main import parse_arguments, validate_config_file
-from utils.config_parser import ConfigParser
-from utils.helpers import DataHelpers
-from utils.parquet_post_processor import ParquetPostProcessor
+from sdp.utils.config_parser import ConfigParser
+from sdp.utils.helpers import DataHelpers
+from sdp.utils.parquet_post_processor import ParquetPostProcessor
 
 
 def _write_workbook(path: Path, with_optional_sheets: bool = True) -> None:

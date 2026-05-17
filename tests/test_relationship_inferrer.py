@@ -17,9 +17,9 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from models.config_models import ColumnConfig, RelationshipConfig, TableConfig
-from ml.relationship_feedback_store import FeedbackEntry, FeedbackStore
-from ml.relationship_inferrer import MLRelationshipInferrer
+from sdp.models.config_models import ColumnConfig, RelationshipConfig, TableConfig
+from sdp.ml.relationship_feedback_store import FeedbackEntry, FeedbackStore
+from sdp.ml.relationship_inferrer import MLRelationshipInferrer
 
 
 def _col(name: str, dtype: str = "N10", *, is_pk=False, table="t") -> ColumnConfig:
@@ -274,7 +274,7 @@ def test_pattern_memory_rejection_drops_below_threshold(tmp_path: Path):
 def test_classifier_activates_after_enough_feedback(tmp_path: Path):
     """Once the feedback store has enough labelled examples, the classifier
     should mark itself as fitted in the result metadata."""
-    from ml.relationship_classifier import MIN_PER_CLASS, MIN_TRAINING_EXAMPLES
+    from sdp.ml.relationship_classifier import MIN_PER_CLASS, MIN_TRAINING_EXAMPLES
 
     store = FeedbackStore(tmp_path / "fb.jsonl")
     # Stuff the store with enough balanced labelled examples

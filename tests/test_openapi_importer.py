@@ -10,12 +10,12 @@ from pathlib import Path
 
 import pytest
 
-from mocks.openapi_importer import (
+from sdp.mocks.openapi_importer import (
     OpenAPIImportError,
     import_openapi,
     import_openapi_str,
 )
-from models.mock_models import MockConfig
+from sdp.models.mock_models import MockConfig
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EXAMPLES = REPO_ROOT / "examples" / "openapi"
@@ -472,7 +472,7 @@ def test_complex_payments_imports_cleanly():
 
 def test_complex_spec_round_trips_through_dump(tmp_path: Path):
     """Import → dump → re-load yields the same number of endpoints/schemas."""
-    from mocks.config_parser import dump_mock_config, load_mock_config
+    from sdp.mocks.config_parser import dump_mock_config, load_mock_config
     cfg = import_openapi(EXAMPLES / "complex_payments.yaml")
     out = tmp_path / "complex.yaml"
     dump_mock_config(cfg, out)

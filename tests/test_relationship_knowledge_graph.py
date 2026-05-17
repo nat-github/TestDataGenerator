@@ -6,16 +6,16 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from ml.relationship_feedback_store import FeedbackStore
-from ml.relationship_knowledge_graph import KnowledgeGraphRelationshipInferrer
-from ml.semantic_profile import (
+from sdp.ml.relationship_feedback_store import FeedbackStore
+from sdp.ml.relationship_knowledge_graph import KnowledgeGraphRelationshipInferrer
+from sdp.ml.semantic_profile import (
     BANKING_PROFILE,
     GENERIC_PROFILE,
     SemanticProfile,
     default_profile,
 )
-from models.config_models import ColumnConfig, TableConfig
-from utils.config_parser import ConfigParser
+from sdp.models.config_models import ColumnConfig, TableConfig
+from sdp.utils.config_parser import ConfigParser
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

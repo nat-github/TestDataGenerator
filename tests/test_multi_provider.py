@@ -17,8 +17,8 @@ from typing import Any, Dict, List
 
 import pytest
 
-from llm import multi_provider
-from llm.multi_provider import (
+from sdp.llm import multi_provider
+from sdp.llm.multi_provider import (
     PROVIDERS,
     ResolvedConfig,
     chat,

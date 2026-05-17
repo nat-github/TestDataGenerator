@@ -48,7 +48,7 @@ import sys
 # Make this script runnable from the project root without `pip install -e .`
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from llm.multi_provider import chat, list_providers, resolve_config  # noqa: E402
+from sdp.llm.multi_provider import chat, list_providers, resolve_config  # noqa: E402
 
 
 SYSTEM_PROMPT = (
