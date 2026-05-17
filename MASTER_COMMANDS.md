@@ -203,24 +203,39 @@ python main.py mock-init --from examples/mocks/sample_session.har --output mocks
 
 | What | Command |
 |---|---|
-| Run UI | `poetry run streamlit run ui/streamlit_app.py` |
+| Run UI | `poetry run streamlit run sdp/ui/streamlit_app.py` |
 | UI tests | `poetry run pytest tests/test_ui_streamlit.py -v` |
 
 ## 12) MCP server
 
 | What | Command |
 |---|---|
-| Run MCP server (stdio) | `poetry run python -m mcp_server.server` |
+| Run MCP server (stdio) | `poetry run python -m sdp.mcp_server.server` |
 | MCP tests | `poetry run pytest tests/test_mcp_server.py -v` |
 
-## 13) Test commands
+## 13) Python SDK, REST API & wheel
+
+| What | Command |
+|---|---|
+| Build the wheel | `poetry build` → `dist/synthetic_data_platform-<ver>-py3-none-any.whl` |
+| Install the wheel | `pip install dist/synthetic_data_platform-*.whl` |
+| CLI console script | `sdp generate --config config/Acct_bkng.xlsx --output output/run_01` |
+| Python SDK | `python -c "from sdp import SyntheticDataPlatform; SyntheticDataPlatform().generate(config='config/Acct_bkng.xlsx', output='output/run_01', seed=42)"` |
+| Install REST API extra | `poetry install --extras api` |
+| Run REST API | `poetry run sdp-api --host 0.0.0.0 --port 8000` (interactive docs at `/docs`) |
+| Run REST API (alt) | `poetry run uvicorn sdp.api:app --port 8000` |
+| SDK/API tests | `poetry run pytest tests/test_sdk_and_api.py -v` |
+
+`sdp ...` is equivalent to `python main.py ...`. Full reference: `SDK_and_API.md`, `Packaging.md`.
+
+## 14) Test commands
 
 | What | Command |
 |---|---|
 | Run all tests | `poetry run pytest tests/ -v` |
 | Single test example | `poetry run pytest tests/test_config_and_parquet_flows.py::test_name -v` |
 
-## 14) Useful env vars (execution time)
+## 15) Useful env vars (execution time)
 
 LLM provider selection:
 
@@ -247,7 +262,7 @@ export AWS_ACCESS_KEY_ID=...
 export AWS_SECRET_ACCESS_KEY=...
 ```
 
-## 15) Suggested daily command sequence (quickstart)
+## 16) Suggested daily command sequence (quickstart)
 
 ```bash
 # 1) Validate input config

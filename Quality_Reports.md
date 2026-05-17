@@ -66,7 +66,7 @@ per-table metrics. Agents can summarise the result in natural language.
 ### From Python
 
 ```python
-from validators.quality_report import quality_report, quality_report_from_paths
+from sdp.validators.quality_report import quality_report, quality_report_from_paths
 
 # In-memory
 report = quality_report({"users": users_df}, source={"users": real_df})

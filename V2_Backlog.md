@@ -41,7 +41,7 @@ shipped and reviewed.
   `[project.scripts]` entries to `pyproject.toml` so `pip install sdp` creates:
   - `sdp` → `main:main` (CLI: `sdp generate ...` instead of `python main.py ...`)
   - `sdp-ui` → tiny `ui/cli.py` that spawns Streamlit on the bundled UI
-  - `sdp-mcp` → `mcp_server.server:main`
+  - `sdp-mcp` → `sdp.mcp_server.server:main`
 
   Effort: **1 day**. Dependencies: none. **Highest leverage item in this doc.**
 

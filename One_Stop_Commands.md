@@ -25,10 +25,11 @@ Every command for every feature, using the bundled examples under
 - [12. Cloud upload (Azure / S3)](#12-cloud-upload-azure--s3)
 - [13. Streamlit UI](#13-streamlit-ui)
 - [14. MCP server](#14-mcp-server)
-- [15. Docker — every command above, in a container](#15-docker--every-command-above-in-a-container)
-- [16. Inspect outputs](#16-inspect-outputs)
-- [17. ER diagrams + Collibra](#17-er-diagrams--collibra)
-- [18. End-to-end demo arc (10 minutes)](#18-end-to-end-demo-arc-10-minutes)
+- [15. Python SDK, REST API & wheel](#15-python-sdk-rest-api--wheel)
+- [16. Docker — every command above, in a container](#16-docker--every-command-above-in-a-container)
+- [17. Inspect outputs](#17-inspect-outputs)
+- [18. ER diagrams + Collibra](#18-er-diagrams--collibra)
+- [19. End-to-end demo arc (10 minutes)](#19-end-to-end-demo-arc-10-minutes)
 
 ---
 
@@ -711,7 +712,7 @@ For the CLI, generate into the target dir then re-run with the same output
 
 ```bash
 poetry install --extras ui     # one-time
-poetry run streamlit run ui/streamlit_app.py
+poetry run streamlit run sdp/ui/streamlit_app.py
 # Opens http://localhost:8501
 ```
 
@@ -724,7 +725,7 @@ poetry run streamlit run ui/streamlit_app.py
 
 ```bash
 export AZURE_STORAGE_CONNECTION_STRING="..."
-poetry run streamlit run ui/streamlit_app.py
+poetry run streamlit run sdp/ui/streamlit_app.py
 ```
 
 Then in the UI, generate as usual and use Section 7's "Upload to cloud."
@@ -737,7 +738,7 @@ Then in the UI, generate as usual and use Section 7's "Upload to cloud."
 
 ```bash
 poetry install --extras mcp                 # one-time
-poetry run python -m mcp_server.server
+poetry run python -m sdp.mcp_server.server
 ```
 
 ### 14.2 With LM Studio routing (so MCP tools that use an LLM also use LM Studio)
@@ -745,7 +746,7 @@ poetry run python -m mcp_server.server
 ```bash
 export SDP_LLM_PROVIDER=lm-studio
 export SDP_LLM_MODEL="meta-llama-3.1-8b-instruct"
-poetry run python -m mcp_server.server
+poetry run python -m sdp.mcp_server.server
 ```
 
 ### 14.3 Wire into LM Studio (`mcp.json`)
@@ -755,7 +756,7 @@ poetry run python -m mcp_server.server
   "mcpServers": {
     "synthetic-data-platform": {
       "command": "C:/Users/natar/TestDataGeneration/.venv/Scripts/python.exe",
-      "args": ["-m", "mcp_server.server"],
+      "args": ["-m", "sdp.mcp_server.server"],
       "cwd": "C:/Users/natar/TestDataGeneration",
       "env": {
         "SDP_LLM_PROVIDER": "lm-studio",
@@ -783,7 +784,51 @@ Same JSON, in `claude_desktop_config.json` (path varies by OS — see
 
 ---
 
-## 15. Docker — every command above, in a container
+## 15. Python SDK, REST API & wheel
+
+The platform installs as a wheel and exposes a programmatic SDK and a REST API
+in addition to the CLI — all four surfaces run the same code paths.
+
+### 15.1 Build & install the wheel
+
+```bash
+poetry build                                   # → dist/synthetic_data_platform-<ver>-py3-none-any.whl
+pip install dist/synthetic_data_platform-*.whl  # installs the `sdp` + `sdp-api` console scripts
+```
+
+### 15.2 CLI console script
+
+```bash
+# `sdp ...` is equivalent to `python main.py ...`
+sdp generate --config config/Acct_bkng.xlsx --output output/run_01 --seed 42
+```
+
+### 15.3 Python SDK (in-process — ships with the core install)
+
+```python
+from sdp import SyntheticDataPlatform
+
+sdp = SyntheticDataPlatform()
+result = sdp.generate(config="config/Acct_bkng.xlsx", output="output/run_01", seed=42)
+print(result.tables, result.total_records)     # result.frames → dict[str, DataFrame]
+sdp.lint("config/Acct_bkng.xlsx")
+```
+
+### 15.4 REST API (needs the `api` extra)
+
+```bash
+poetry install --extras api
+poetry run sdp-api --host 0.0.0.0 --port 8000   # interactive docs at http://localhost:8000/docs
+
+# Generate via HTTP — upload a config, download a ZIP of Parquet
+curl -X POST http://localhost:8000/generate \
+  -F "config=@config/Acct_bkng.xlsx" -F "default_records=1000" -F "seed=42" \
+  -o generated.zip
+```
+
+Full reference: `SDK_and_API.md` and `Packaging.md`.
+
+## 16. Docker — every command above, in a container
 
 Build once:
 
@@ -867,7 +912,7 @@ docker run --rm -it -v "$PWD:/work" sdp:latest shell
 
 ---
 
-## 16. Inspect outputs
+## 17. Inspect outputs
 
 ### 16.1 Read a Parquet directory
 
@@ -911,7 +956,7 @@ print(df.iloc[0].to_string())
 
 ---
 
-## 17. ER diagrams + Collibra
+## 18. ER diagrams + Collibra
 
 ### 17.1 Mermaid ER diagram (no extra deps)
 
@@ -962,7 +1007,7 @@ poetry run python main.py collibra-import \
 
 ---
 
-## 18. End-to-end demo arc (10 minutes)
+## 19. End-to-end demo arc (10 minutes)
 
 Run these in order; each takes < 2 minutes.
 

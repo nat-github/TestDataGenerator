@@ -149,7 +149,7 @@ Example from this machine:
   "mcpServers": {
     "synthetic-data-platform": {
       "command": "/Users/natarajankanakasabapathy/Library/Caches/pypoetry/virtualenvs/testdatageneration-J7SL6p4o-py3.13/bin/python",
-      "args": ["-m", "mcp_server.server"],
+      "args": ["-m", "sdp.mcp_server.server"],
       "cwd": "/Users/natarajankanakasabapathy/FECTECH/TestDataGenerator",
       "env": {
         "SDP_LLM_PROVIDER": "lm-studio",

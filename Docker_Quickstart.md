@@ -297,7 +297,7 @@ on the host (or stand up another container) to actually serve the stubs.
 |---|---|---|
 | **Install** | `docker build -t sdp:latest .` (one-time, ~5–10 min) | `poetry install --extras "gx ui mcp mimesis"` (one-time, ~3–5 min) |
 | **Generate data** | `docker run --rm -v "$PWD:/work" sdp:latest generate ...` | `python main.py generate ...` |
-| **Streamlit UI** | `docker run --rm -p 8501:8501 -v "$PWD:/work" sdp:latest streamlit` | `streamlit run ui/streamlit_app.py` |
+| **Streamlit UI** | `docker run --rm -p 8501:8501 -v "$PWD:/work" sdp:latest streamlit` | `streamlit run sdp/ui/streamlit_app.py` |
 | **MCP wiring** | Reference the docker run command in your AI-client's MCP config | Reference your venv's Python in your AI-client's MCP config |
 | **Disk footprint** | ~1 GB image + your data | ~1.5 GB venv + your data |
 | **Iteration speed** | Slower (rebuild on dep changes) | Fastest |

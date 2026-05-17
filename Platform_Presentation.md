@@ -281,7 +281,7 @@ python main.py infer-relationships --config bare.yaml \
 
 ```python
 # llm/multi_provider.py — chat() routes to whichever backend is configured
-from llm.multi_provider import chat
+from sdp.llm.multi_provider import chat
 
 text = chat(
     messages=[...],
@@ -484,7 +484,7 @@ Single page, ≤ 10,000 rows per table cap (the right tool for that volume; CLI 
 
 ```bash
 poetry install --extras ui
-poetry run streamlit run ui/streamlit_app.py
+poetry run streamlit run sdp/ui/streamlit_app.py
 ```
 
 Same generator the CLI uses — runs in-process, no subprocess. Tested with Streamlit's AppTest harness.
@@ -668,7 +668,7 @@ openapi_importer  postman_importer    har_importer
                           │
                           │ JSON-RPC (stdio or HTTP)
                           ▼
-              mcp_server/server.py (FastMCP)
+              sdp/mcp_server/server.py (FastMCP)
               9 tools + 1 resource template
                           │
         ┌─────────────────┼──────────────────┬──────────────────┐
@@ -768,7 +768,7 @@ Plus 3 OpenAPI specs (simple_books / medium_tasks / complex_payments) and 3 mock
 
 ```bash
 poetry install --extras ui
-poetry run streamlit run ui/streamlit_app.py
+poetry run streamlit run sdp/ui/streamlit_app.py
 # Opens http://localhost:8501
 ```
 
@@ -825,7 +825,7 @@ Full guide: `Docker_Quickstart.md`.
   "mcpServers": {
     "synthetic-data-platform": {
       "command": "C:/path/to/.venv/Scripts/python.exe",
-      "args": ["-m", "mcp_server.server"],
+      "args": ["-m", "sdp.mcp_server.server"],
       "cwd": "C:/path/to/TestDataGeneration",
       "env": {
         "SDP_LLM_PROVIDER": "lm-studio",
@@ -1198,8 +1198,8 @@ In LM Studio chat (with the MCP server wired up):
 ```
 TestDataGeneration/
 ├── main.py                              # CLI entry (15+ subcommands)
-├── ui/streamlit_app.py                  # Streamlit UI
-├── mcp_server/server.py                 # MCP server (9 tools)
+├── sdp/ui/streamlit_app.py                  # Streamlit UI
+├── sdp/mcp_server/server.py                 # MCP server (9 tools)
 │
 ├── models/
 │   ├── config_models.py                 # TableConfig / ColumnConfig / RelationshipConfig

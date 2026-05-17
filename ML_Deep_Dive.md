@@ -576,7 +576,7 @@ def generate_column_batch(self, config: Dict, n: int) -> List[Any]:
 
     distribution = config.get("distribution")
     if distribution:
-        from ml.distribution_fitter import DistributionFitter
+        from sdp.ml.distribution_fitter import DistributionFitter
         arr = DistributionFitter().sample(distribution, n)
         return arr.tolist()                          # numpy vectorised
 

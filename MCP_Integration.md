@@ -169,7 +169,7 @@ it everywhere — no duplication.
                                         │ (stdio by default)
                                         ▼
        ┌─────────────────────────────────────────────────────┐
-       │   mcp_server/server.py  (FastMCP)                   │
+       │   sdp/mcp_server/server.py  (FastMCP)                   │
        │                                                       │
        │   @mcp.tool() generate_data(...)                     │
        │   @mcp.tool() validate_data(...)                     │
@@ -244,7 +244,7 @@ poetry install --extras mcp
 poetry install --extras "mcp gx"
 
 # Run the server (stdio transport)
-poetry run python -m mcp_server.server
+poetry run python -m sdp.mcp_server.server
 ```
 
 Stdio is the default. The server runs as a long-lived subprocess; clients
@@ -287,7 +287,7 @@ Add this entry:
   "mcpServers": {
     "synthetic-data-platform": {
       "command": "C:/Users/natar/TestDataGeneration/.venv/Scripts/python.exe",
-      "args": ["-m", "mcp_server.server"],
+      "args": ["-m", "sdp.mcp_server.server"],
       "cwd": "C:/Users/natar/TestDataGeneration",
       "env": {
         "SDP_LLM_PROVIDER": "lm-studio",
@@ -343,7 +343,7 @@ Add the same `mcpServers` block:
   "mcpServers": {
     "synthetic-data-platform": {
       "command": "C:/Users/natar/TestDataGeneration/.venv/Scripts/python.exe",
-      "args": ["-m", "mcp_server.server"],
+      "args": ["-m", "sdp.mcp_server.server"],
       "cwd": "C:/Users/natar/TestDataGeneration"
     }
   }
@@ -364,7 +364,7 @@ Claude Code reads `~/.claude.json` (or the project-local `.claude/mcp.json`):
   "mcpServers": {
     "synthetic-data-platform": {
       "command": "C:/Users/natar/TestDataGeneration/.venv/Scripts/python.exe",
-      "args": ["-m", "mcp_server.server"],
+      "args": ["-m", "sdp.mcp_server.server"],
       "cwd": "C:/Users/natar/TestDataGeneration"
     }
   }
@@ -530,7 +530,7 @@ before launch. Most clients prefer stdio for local servers, so this is
 rarely needed.
 
 **Can I add a new tool?**
-Yes. Open `mcp_server/server.py`, decorate a function with `@mcp.tool()`,
+Yes. Open `sdp/mcp_server/server.py`, decorate a function with `@mcp.tool()`,
 write a docstring aimed at the *agent* (when to call it, what it
 returns), and add a smoke test under `tests/test_mcp_server.py`. The
 docstring becomes the tool's description that clients show to the model.
@@ -570,7 +570,7 @@ larger jobs; the cap doesn't apply there.
 
 For developers who want to understand or extend the server.
 
-### `mcp_server/server.py` — the FastMCP setup
+### `sdp/mcp_server/server.py` — the FastMCP setup
 
 ```python
 from mcp.server.fastmcp import FastMCP
@@ -645,7 +645,7 @@ works, every other LLM-using tool will too. If it returns
 
 ### Adding a new tool — the recipe
 
-1. Add a function in `mcp_server/server.py`, decorate with `@mcp.tool()`.
+1. Add a function in `sdp/mcp_server/server.py`, decorate with `@mcp.tool()`.
 2. Write the docstring **for the agent**: when to call it, what to
    expect back, any side effects.
 3. Wrap the body in `try/except`; return `{"ok": False, "error": ...}` on
@@ -667,7 +667,7 @@ MCP is the agent-driven counterpart to the CLI and Streamlit UI:
 | Audience | Surface |
 |---|---|
 | Hands-on developer | CLI (`python main.py ...`) |
-| SME / non-technical reviewer | Streamlit UI (`streamlit run ui/streamlit_app.py`) |
+| SME / non-technical reviewer | Streamlit UI (`streamlit run sdp/ui/streamlit_app.py`) |
 | AI-mediated user | **MCP server** (any MCP-aware client) |
 
 All three surfaces share the same engine. Adding a feature once exposes

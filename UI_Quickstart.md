@@ -16,7 +16,7 @@ poetry install --extras ui
 ## Run
 
 ```bash
-poetry run streamlit run ui/streamlit_app.py
+poetry run streamlit run sdp/ui/streamlit_app.py
 ```
 
 Streamlit will print a local URL (typically `http://localhost:8501`).

@@ -103,8 +103,8 @@ result as JSON for downstream dashboards.
 ### 3. From Python
 
 ```python
-from utils.config_parser import ConfigParser
-from validators.gx_validator import validate_tables, format_report
+from sdp.utils.config_parser import ConfigParser
+from sdp.validators.gx_validator import validate_tables, format_report
 
 parser = ConfigParser("config/my.yaml")
 parser.load_config()
