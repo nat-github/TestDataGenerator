@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from sdp.generators.data_generator import DataGenerator
 
@@ -105,3 +106,155 @@ def test_one_to_one_fk_keeps_child_primary_key_unique(tmp_path: Path):
         "child PK is also the FK — it must stay unique (one-to-one)"
     assert set(child_pk).issubset(parent_ids), \
         "every child FK value must reference an existing parent key"
+
+
+# ---------------------------------------------------------------------------
+# Composite primary keys — only the COMBINATION of members must be unique.
+# The uniqueness fixer must never rewrite a foreign-key member (that would
+# break referential integrity), and members may legitimately repeat.
+# ---------------------------------------------------------------------------
+_COMPOSITE_PK_YAML = """\
+config_format: sdp-yaml-v1
+run_settings:
+  default_records_per_table: 20
+tables:
+  - name: orders
+    rows: 20
+    primary_key_columns: [order_id]
+    columns:
+      - name: order_id
+        data_type: N10
+        is_pk: true
+        nullable: false
+  - name: order_lines
+    rows: 20
+    primary_key_columns: [order_id, line_no]
+    columns:
+      - name: order_id
+        data_type: N10
+        is_pk: true
+        is_fk: true
+        ref_table: orders
+        ref_column: order_id
+        nullable: false
+      - name: line_no
+        data_type: N10
+        is_pk: true
+        nullable: false
+      - name: note
+        data_type: VA64
+        special_rules: NAME
+"""
+
+
+def _load_generator(tmp_path: Path, yaml_text: str) -> DataGenerator:
+    cfg = tmp_path / "cfg.yaml"
+    cfg.write_text(yaml_text, encoding="utf-8")
+    gen = DataGenerator(str(cfg), seed=7)
+    assert gen.load_configuration()
+    return gen
+
+
+def test_composite_pk_fixer_dedups_combination_not_members(tmp_path: Path):
+    """A duplicate composite-PK *combination* is fixed; the FK member is kept."""
+    gen = _load_generator(tmp_path, _COMPOSITE_PK_YAML)
+    tc = gen.tables_config["order_lines"]
+
+    # (10, 1) appears twice — the composite key is violated. order_id repeats
+    # legitimately (one order, many lines) and must NOT be rewritten.
+    df = pd.DataFrame({
+        "order_id": [10, 10, 10, 20, 20],
+        "line_no":  [1,  1,  2,  1,  2],
+        "note": list("abcde"),
+    })
+    original_order_id = list(df["order_id"])
+
+    fixed = gen._validate_and_fix_pk_uniqueness(df, tc)
+
+    assert list(fixed["order_id"]) == original_order_id, \
+        "composite-PK fix must not rewrite the foreign-key member"
+    combos = fixed[["order_id", "line_no"]]
+    assert len(combos) == len(combos.drop_duplicates()), \
+        "composite PK combination must be unique after the fix"
+
+
+def test_composite_pk_fixer_is_noop_when_already_unique(tmp_path: Path):
+    """A valid composite PK (members repeat, combinations unique) is untouched."""
+    gen = _load_generator(tmp_path, _COMPOSITE_PK_YAML)
+    tc = gen.tables_config["order_lines"]
+
+    df = pd.DataFrame({
+        "order_id": [10, 10, 20, 20, 30],
+        "line_no":  [1,  2,  1,  2,  1],
+        "note": list("abcde"),
+    })
+    before = df.copy()
+    fixed = gen._validate_and_fix_pk_uniqueness(df, tc)
+    pd.testing.assert_frame_equal(fixed[["order_id", "line_no"]],
+                                  before[["order_id", "line_no"]])
+
+
+def test_composite_pk_generation_end_to_end_keeps_fk_integrity(tmp_path: Path):
+    """Full generate: composite-PK combinations unique, FK member valid."""
+    gen = _load_generator(tmp_path, _COMPOSITE_PK_YAML)
+    gen.create_sdv_metadata()
+    gen.train_synthesizer()
+    data = gen.generate_data({"orders": 20, "order_lines": 40})
+
+    lines = data["order_lines"]
+    combos = lines[["order_id", "line_no"]]
+    assert len(combos) == len(combos.drop_duplicates()), \
+        "generated composite PK must be unique as a combination"
+    parent_ids = set(data["orders"]["order_id"])
+    assert set(lines["order_id"]).issubset(parent_ids), \
+        "composite-PK FK member must reference an existing parent key"
+
+
+# ---------------------------------------------------------------------------
+# NOT NULL precedence — a `nullable: false` column never receives nulls, even
+# when a contradicting NULL_PCT special rule is also declared on it.
+# ---------------------------------------------------------------------------
+_NULL_PRECEDENCE_YAML = """\
+config_format: sdp-yaml-v1
+run_settings:
+  default_records_per_table: 200
+tables:
+  - name: events
+    rows: 200
+    primary_key_columns: [event_id]
+    columns:
+      - name: event_id
+        data_type: N10
+        is_pk: true
+        nullable: false
+      - name: required_code
+        data_type: VA8
+        nullable: false
+        special_rules: "NULL_PCT=50"
+      - name: optional_code
+        data_type: VA8
+        nullable: true
+        special_rules: "NULL_PCT=50"
+"""
+
+
+def test_not_null_column_ignores_null_pct_rule(tmp_path: Path):
+    """`nullable: false` must override a contradicting NULL_PCT special rule."""
+    gen = _load_generator(tmp_path, _NULL_PRECEDENCE_YAML)
+    by_name = {c.column_name: c for c in gen.tables_config["events"].columns}
+
+    # The hard NOT NULL constraint forces a 0 null probability...
+    assert gen._get_null_probability(by_name["required_code"]) == 0.0
+    # ...while a nullable column still honours the NULL_PCT rule.
+    assert gen._get_null_probability(by_name["optional_code"]) == pytest.approx(0.5)
+
+
+def test_not_null_column_has_no_nulls_despite_null_pct(tmp_path: Path):
+    """End-to-end: a NOT NULL column with a NULL_PCT rule generates zero nulls."""
+    gen = _load_generator(tmp_path, _NULL_PRECEDENCE_YAML)
+    gen.create_sdv_metadata()
+    gen.train_synthesizer()
+    df = gen.generate_data({"events": 200})["events"]
+
+    assert df["required_code"].isna().sum() == 0, \
+        "NOT NULL column must have no nulls even with a NULL_PCT rule"

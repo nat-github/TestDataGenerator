@@ -760,50 +760,117 @@ class DataGenerator:
         return df
 
     def _validate_and_fix_pk_uniqueness(self, df: pd.DataFrame, table_config: TableConfig) -> pd.DataFrame:
+        """Validate and guarantee PRIMARY KEY uniqueness in the generated data.
+
+        Single primary key  → the column itself must be unique.
+        Composite primary key → only the *combination* of members must be
+        unique; individual members may (and routinely do) repeat — e.g. one
+        ``order_id`` shared across many ``line_no`` rows. Members are never
+        validated individually, and a foreign-key member is never rewritten.
         """
-        Validate and guarantee PRIMARY KEY uniqueness in the generated data
+        pk_columns = [c for c in table_config.columns
+                      if c.is_pk and c.column_name in df.columns]
+        if not pk_columns:
+            return df
+        if len(pk_columns) == 1:
+            return self._fix_single_pk(df, table_config, pk_columns[0])
+        return self._fix_composite_pk(df, table_config, pk_columns)
+
+    def _fix_single_pk(self, df: pd.DataFrame, table_config: TableConfig, pk_col) -> pd.DataFrame:
+        """Guarantee a single-column primary key holds unique values."""
+        column_name = pk_col.column_name
+        duplicate_mask = df.duplicated(subset=[column_name], keep=False)
+        duplicate_count = int(duplicate_mask.sum())
+
+        if duplicate_count == 0:
+            unique_count = df[column_name].nunique()
+            self.logger.info(
+                f"✅ PK uniqueness verified for {table_config.name}.{column_name} "
+                f"({unique_count}/{len(df)} unique)")
+            return df
+
+        self.logger.warning(
+            f"⚠️ Found {duplicate_count} duplicate PK values in "
+            f"{table_config.name}.{column_name}, fixing...")
+
+        unique_values: Set[Any] = set()
+        new_values: List[Any] = []
+        for idx, value in enumerate(df[column_name]):
+            if value in unique_values or duplicate_mask.iloc[idx]:
+                new_value = self._generate_unique_pk_value(
+                    pk_col, table_config.name, idx, len(df), existing_values=unique_values)
+                new_values.append(new_value)
+                unique_values.add(new_value)
+            else:
+                new_values.append(value)
+                unique_values.add(value)
+        df[column_name] = new_values
+
+        final_duplicates = int(df.duplicated(subset=[column_name], keep=False).sum())
+        if final_duplicates == 0:
+            self.logger.info(f"✅ Fixed all PK duplicates for {table_config.name}.{column_name}")
+        else:
+            self.logger.error(f"❌ Still have {final_duplicates} PK duplicates after fix!")
+        return df
+
+    def _fix_composite_pk(self, df: pd.DataFrame, table_config: TableConfig, pk_cols: List) -> pd.DataFrame:
+        """Guarantee a composite primary key is unique *as a combination*.
+
+        Only the tuple of members is deduplicated. To preserve referential
+        integrity a foreign-key member is never rewritten — a non-FK member is
+        perturbed instead (falling back to the last member only if every member
+        is itself a foreign key).
         """
-        pk_columns = [col for col in table_config.columns if col.is_pk]
+        pk_names = [c.column_name for c in pk_cols]
+        label = f"{table_config.name}.({','.join(pk_names)})"
 
-        for pk_col in pk_columns:
-            if pk_col.column_name in df.columns:
-                # Check for duplicates
-                duplicate_mask = df.duplicated(subset=[pk_col.column_name], keep=False)
-                duplicate_count = duplicate_mask.sum()
+        dup_rows = int(df.duplicated(subset=pk_names, keep=False).sum())
+        if dup_rows == 0:
+            unique_combos = len(df.drop_duplicates(subset=pk_names))
+            self.logger.info(
+                f"✅ Composite PK uniqueness verified for {label} "
+                f"({unique_combos}/{len(df)} unique combinations)")
+            return df
 
-                if duplicate_count > 0:
-                    self.logger.warning(
-                        f"⚠️ Found {duplicate_count} duplicate PK values in {table_config.name}.{pk_col.column_name}, fixing...")
+        self.logger.warning(
+            f"⚠️ Found {dup_rows} row(s) with duplicate composite-PK "
+            f"combinations in {label}, fixing...")
 
-                    # Fix duplicates by generating new unique values
-                    unique_values = set()
-                    new_values = []
+        # Perturb a non-FK member so foreign keys are never rewritten.
+        non_fk = [c for c in pk_cols if not c.is_fk]
+        perturb = (non_fk or pk_cols)[-1]
+        p_pos = pk_names.index(perturb.column_name)
 
-                    for idx, value in enumerate(df[pk_col.column_name]):
-                        if value in unique_values or duplicate_mask.iloc[idx]:
-                            # Generate new unique value for duplicate
-                            new_value = self._generate_unique_pk_value(pk_col, table_config.name, idx, len(df),
-                                                                       existing_values=unique_values)
-                            new_values.append(new_value)
-                            unique_values.add(new_value)
-                        else:
-                            new_values.append(value)
-                            unique_values.add(value)
+        rows = df[pk_names].values.tolist()
+        seen: Set[tuple] = set()
+        used_member: Set[Any] = set(df[perturb.column_name].tolist())
+        for idx, row in enumerate(rows):
+            key = tuple(row)
+            if key not in seen:
+                seen.add(key)
+                continue
+            # Duplicate combination — regenerate the perturb member until the
+            # full tuple is unique.
+            for _ in range(2000):
+                candidate = self._generate_unique_pk_value(
+                    perturb, table_config.name, idx, len(df), existing_values=used_member)
+                new_row = list(row)
+                new_row[p_pos] = candidate
+                new_key = tuple(new_row)
+                if new_key not in seen:
+                    rows[idx] = new_row
+                    seen.add(new_key)
+                    used_member.add(candidate)
+                    break
 
-                    df[pk_col.column_name] = new_values
+        for col_pos, name in enumerate(pk_names):
+            df[name] = [r[col_pos] for r in rows]
 
-                    # Verify fix
-                    final_duplicates = df.duplicated(subset=[pk_col.column_name], keep=False).sum()
-                    if final_duplicates == 0:
-                        self.logger.info(f"✅ Fixed all PK duplicates for {table_config.name}.{pk_col.column_name}")
-                    else:
-                        self.logger.error(f"❌ Still have {final_duplicates} PK duplicates after fix!")
-
-                else:
-                    unique_count = df[pk_col.column_name].nunique()
-                    self.logger.info(
-                        f"✅ PK uniqueness verified for {table_config.name}.{pk_col.column_name} ({unique_count}/{len(df)} unique)")
-
+        final = int(df.duplicated(subset=pk_names, keep=False).sum())
+        if final == 0:
+            self.logger.info(f"✅ Fixed all composite-PK duplicates for {label}")
+        else:
+            self.logger.error(f"❌ Still have {final} composite-PK duplicates after fix!")
         return df
 
     def _generate_unique_pk_value(self, column, table_name: str, index: int, num_records: int,
@@ -975,6 +1042,11 @@ class DataGenerator:
             return None
 
     def _get_null_probability(self, column) -> float:
+        # A NOT NULL column never receives nulls: the hard `nullable: false`
+        # constraint overrides any NULL_PCT / NULL_RATE special rule that might
+        # contradict it (the stronger constraint always wins).
+        if getattr(column, "nullable", True) is False:
+            return 0.0
         explicit = getattr(column, "null_rate", None)
         if explicit is not None and not pd.isna(explicit):
             try:
