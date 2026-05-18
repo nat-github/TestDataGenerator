@@ -87,6 +87,33 @@ The project builds SDV metadata from the workbook using SDV's newer `Metadata` A
 ### Synthesizer training
 During `generate`, the solution attempts to train `HMASynthesizer` using internally generated sample data.
 
+### Anchored generation
+A table can declare `source: <path>` to be loaded verbatim from a real
+`.parquet`/`.csv` dataset instead of being generated. The other tables generate
+*around* it — their foreign keys resolve against the anchor's real key values,
+and the real rows train the SDV synthesizer so the generated tables mimic its
+distributions. Use this to extend a real dataset, or to generate test data that
+joins to a fixed reference table.
+
+```yaml
+tables:
+  - name: customer
+    source: data/real/customer.parquet   # loaded as-is — not generated
+    primary_key_columns: [customer_id]
+    columns:
+      - { name: customer_id, data_type: N10, is_pk: true }
+      - { name: full_name,   data_type: VA64 }
+  - name: account
+    rows: 5000                            # generated; FK points at REAL customer keys
+    columns:
+      - { name: account_id,  data_type: N10, is_pk: true }
+      - { name: customer_id, data_type: N10, is_fk: true,
+          ref_table: customer, ref_column: customer_id }
+```
+
+The source file must contain every configured column. Supported formats:
+`.parquet`, `.csv`. See `Yaml_Config_Schema.md` → *Anchored generation*.
+
 ### Delta generation
 Compares two parquet snapshot folders and writes only inserted, updated, and deleted rows.
 

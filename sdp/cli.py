@@ -474,6 +474,10 @@ def run_generate(args) -> int:
     for table_name in table_names:
         logger.info(f"  {table_name}")
 
+    anchored = sorted(getattr(generator, "anchor_data", {}).keys())
+    if anchored:
+        logger.info(f"Anchored tables (loaded from real source data): {', '.join(anchored)}")
+
     records_config = get_record_counts(generator, args)
     logger.info("\nGeneration settings:")
     logger.info(f"  Config file: {args.config}")

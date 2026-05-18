@@ -148,13 +148,49 @@ Each item under `tables` may contain:
 | `name` | yes | Equivalent to Excel `table_name` |
 | `table_kind` | no | e.g. `transactional`, `dimension`, `reference` |
 | `description` | no | Optional description |
-| `rows` (alias `row_count`) | no | Equivalent to Excel `row_count` |
+| `rows` (alias `row_count`) | no | Equivalent to Excel `row_count`. Ignored for anchor tables (see `source`). |
 | `business_key_columns` | no | List or semicolon-separated string |
 | `primary_key_columns` | no | List or semicolon-separated string |
 | `cdc` | no | Unified change-data-capture block — see below |
+| `source` | no | Path to an existing `.parquet`/`.csv` dataset — see *Anchored generation* below |
 | `active` | no | Boolean, defaults to `true` |
 | `notes` | no | Optional notes |
 | `columns` | yes | Column definitions |
+
+### Anchored generation (`source:`)
+
+When a table declares `source:`, it is **loaded verbatim** from a real dataset
+instead of being generated. The other tables generate *around* it: their foreign
+keys resolve against the anchor's real key values, and the anchor's real rows
+also train the SDV synthesizer so generated tables mimic its distributions.
+
+```yaml
+tables:
+  - name: customer
+    source: data/real/customer.parquet   # loaded as-is — not generated
+    primary_key_columns: [customer_id]
+    columns:
+      - { name: customer_id, data_type: N10, is_pk: true }
+      - { name: full_name,   data_type: VA64 }
+  - name: account
+    rows: 5000
+    columns:
+      - { name: account_id,  data_type: N10, is_pk: true }
+      - name: customer_id            # FK resolves against the REAL customer keys
+        data_type: N10
+        is_fk: true
+        ref_table: customer
+        ref_column: customer_id
+```
+
+Rules:
+- Supported formats: `.parquet`, `.csv`. The path resolves as given, then
+  relative to the config file's directory, then to the working directory.
+- The source dataset **must contain every column** declared for the table;
+  extra columns are dropped with a warning.
+- An anchor table's `rows:` is ignored — its row count equals the source file's.
+- An anchor table is exported alongside the generated tables, so the output
+  folder is a complete, join-consistent set.
 
 ### `cdc:` block (recommended — replaces six legacy fields)
 

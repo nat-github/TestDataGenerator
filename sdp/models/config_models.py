@@ -186,6 +186,10 @@ class TableConfig(BaseModel):
     # Output format for this table. "parquet" (default) | "json" | "wiremock"
     # Wire-mock serialiser is a future extension; field is present for forward compat.
     output_format: Optional[str] = None
+    # Anchored generation: path to an existing dataset (.parquet / .csv) to load
+    # verbatim instead of generating. The real rows are used to train SDV and to
+    # anchor foreign keys — other tables generate around this fixed table.
+    source: Optional[str] = None
     # Unified CDC config. When provided, the parser also back-fills the legacy
     # flat fields (delta_eligible, scd2_enabled, scd2_tracked_columns, etc.)
     # so downstream code keeps working unchanged.

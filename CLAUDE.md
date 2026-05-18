@@ -257,6 +257,18 @@ cdc:
 
 Legacy flat fields (`delta_eligible`, `scd2_enabled`, `scd2_tracked_columns`, `partition_columns`, `event_time_column`, `generation_mode`) still parse — the parser back-fills both legacy and `cdc` views so downstream code keeps working.
 
+### Anchored generation (`source:`)
+
+A table may declare `source: <path>` (per-table — Excel `Tables` sheet column or
+YAML `source:` field). That table is loaded verbatim from a real `.parquet`/`.csv`
+dataset instead of being generated; the loaded rows live in
+`DataGenerator.anchor_data`. Other tables generate around it —
+`_inject_anchor_tables()` substitutes the real data before FK resolution so child
+FKs reference the anchor's real keys, and the real rows feed `HMASynthesizer`
+training so generated tables mimic its distributions. `_apply_relationship_group`
+never rewrites an anchor table's own FK columns. The source dataset must contain
+every configured column. See `Yaml_Config_Schema.md` → *Anchored generation*.
+
 ### Rules and derived columns (Layer A + B)
 
 Per-column `rules:` list applies when/then logic at row evaluation time; per-column `derived:` produces values computed from other columns. Both run after FK resolution. Engine lives at `utils/rule_evaluator.py` and operates on plain dicts so it can be reused by the future stub/mock track. See `Rules_and_Workflows.md`.

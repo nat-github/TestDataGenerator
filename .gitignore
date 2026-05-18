@@ -289,8 +289,8 @@ $RECYCLE.BIN/
 *.ipynb
 .ipynb_checkpoints/
 
-# Model files
-models/
+# Model files (trained ML/SDV artifacts — NOT the sdp/models source package)
+/models/
 *.pkl
 *.pickle
 *.h5

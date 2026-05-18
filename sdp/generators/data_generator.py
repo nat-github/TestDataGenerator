@@ -44,6 +44,10 @@ class DataGenerator:
         self.synthesizer: Optional[HMASynthesizer] = None
 
         self.generated_data: Dict[str, pd.DataFrame] = {}
+        # Anchored generation: real datasets loaded verbatim from `source:` files,
+        # keyed by table name. These tables are not generated — other tables
+        # generate around them and resolve foreign keys against their real keys.
+        self.anchor_data: Dict[str, pd.DataFrame] = {}
         self.tables_config: Dict[str, TableConfig] = {}
         self.relationships: List[RelationshipConfig] = []
         self.sdv_relationship_groups: List[List[RelationshipConfig]] = []
@@ -104,6 +108,9 @@ class DataGenerator:
                 return False
             self.logger.info("✅ Configuration loaded successfully")
 
+            # Anchored generation: load any `source:` datasets verbatim.
+            self._load_anchor_tables()
+
             # Initialize PK sequences and tracking
             self._initialize_pk_tracking()
             return True
@@ -118,6 +125,89 @@ class DataGenerator:
             for pk_col in pk_columns:
                 self.pk_sequences[(table_name, pk_col.column_name)] = 1
                 self.used_pk_values[(table_name, pk_col.column_name)] = set()
+
+    # ---------------------------------------------------------------------
+    # Anchored generation — load real datasets declared via `source:`
+    # ---------------------------------------------------------------------
+    def _resolve_source_path(self, source: str) -> Path:
+        """Resolve a table's `source:` path — as given, then relative to the
+        config file's directory, then relative to the working directory."""
+        candidates = [Path(source)]
+        config_dir = Path(self.config_file).resolve().parent
+        candidates.append(config_dir / source)
+        candidates.append(Path.cwd() / source)
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        # Nothing matched — return the most informative candidate for the error.
+        return candidates[0]
+
+    def _load_anchor_tables(self) -> None:
+        """Load every table that declares a `source:` dataset into ``anchor_data``.
+
+        Supported formats: ``.parquet`` and ``.csv``. The loaded data must
+        contain all columns declared for the table in the config; extra columns
+        are dropped with a warning. Anchor tables are never generated — they are
+        used verbatim and also feed SDV training.
+        """
+        self.anchor_data = {}
+        for table_name, table_config in self.tables_config.items():
+            source = getattr(table_config, "source", None)
+            if not source:
+                continue
+
+            path = self._resolve_source_path(str(source))
+            if not path.is_file():
+                raise FileNotFoundError(
+                    f"Anchor table '{table_name}': source dataset not found — '{source}'"
+                )
+
+            suffix = path.suffix.lower()
+            if suffix == ".parquet":
+                df = pd.read_parquet(path)
+            elif suffix == ".csv":
+                df = pd.read_csv(path)
+            else:
+                raise ValueError(
+                    f"Anchor table '{table_name}': unsupported source format '{suffix}' "
+                    f"— use .parquet or .csv"
+                )
+
+            if df.empty:
+                raise ValueError(f"Anchor table '{table_name}': source dataset '{path}' has no rows")
+
+            configured = [c.column_name for c in table_config.columns]
+            missing = [c for c in configured if c not in df.columns]
+            if missing:
+                raise ValueError(
+                    f"Anchor table '{table_name}': source dataset is missing configured "
+                    f"column(s) {missing}. The source file must contain every configured column."
+                )
+            extra = [c for c in df.columns if c not in configured]
+            if extra:
+                self.logger.warning(
+                    f"⚠️ Anchor table '{table_name}': dropping {len(extra)} unconfigured "
+                    f"column(s) from source data: {extra}"
+                )
+            # Keep configured columns, in configured order.
+            self.anchor_data[table_name] = df[configured].reset_index(drop=True)
+            self.logger.info(
+                f"📌 Anchor table '{table_name}': loaded {len(df)} real row(s) from {path}"
+            )
+
+    def _is_anchor_table(self, table_name: str) -> bool:
+        """True when the table's data comes from a real `source:` dataset."""
+        return table_name in self.anchor_data
+
+    def _inject_anchor_tables(self, data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+        """Replace any anchor tables in ``data`` with their real (verbatim) rows.
+
+        Called before foreign-key resolution so generated child tables resolve
+        their FKs against the anchor's real key values.
+        """
+        for table_name, anchor_df in self.anchor_data.items():
+            data[table_name] = anchor_df.copy()
+        return data
 
     @staticmethod
     def _to_arrow_dc(series: pd.Series, precision: int, scale: int) -> pa.Array:
@@ -1280,13 +1370,28 @@ class DataGenerator:
             self.logger.warning(f"⚠️ Could not save synthesizer artifact: {exc}")
             return artifact_dir if metadata_file.exists() else None
 
+    # Real-data rows fed into SDV training for an anchor table are capped at
+    # this size to keep HMASynthesizer.fit fast while still learning distributions.
+    _ANCHOR_TRAIN_CAP = 500
+
     def _generate_high_quality_sample_data(self, sample_sizes: Dict[str, int]) -> Dict[str, pd.DataFrame]:
-        """Generate high-quality sample data for SDV training"""
+        """Generate high-quality sample data for SDV training.
+
+        Anchor tables (declared via ``source:``) contribute their *real* rows so
+        the synthesizer learns the actual distributions, not synthetic ones.
+        """
         sample_data = {}
 
         # Generate all tables first
         for table_name, num_records in sample_sizes.items():
             if table_name not in self.tables_config:
+                continue
+
+            if self._is_anchor_table(table_name):
+                # Train SDV on the real anchor rows (capped for fit speed).
+                sample_data[table_name] = (
+                    self.anchor_data[table_name].head(self._ANCHOR_TRAIN_CAP).reset_index(drop=True)
+                )
                 continue
 
             table_config = self.tables_config[table_name]
@@ -1356,6 +1461,10 @@ class DataGenerator:
         child_table = exemplar.source_table
 
         if parent_table not in data or child_table not in data:
+            return
+
+        # Anchor tables hold real data — never rewrite their foreign keys.
+        if self._is_anchor_table(child_table):
             return
 
         parent_df = data[parent_table]
@@ -1453,8 +1562,15 @@ class DataGenerator:
             if self.is_fitted and self.synthesizer:
                 self.logger.info("🎲 Generating data using trained SDV synthesizer...")
                 try:
-                    synthetic_data = self._sample_from_synthesizer(records_per_table)
+                    # Anchor tables are replaced verbatim afterwards — ask SDV
+                    # for just one throwaway row so it never blocks generation.
+                    sdv_counts = {
+                        t: (1 if self._is_anchor_table(t) else n)
+                        for t, n in records_per_table.items()
+                    }
+                    synthetic_data = self._sample_from_synthesizer(sdv_counts)
                     synthetic_data = self._reconcile_sdv_constraints(synthetic_data)
+                    synthetic_data = self._inject_anchor_tables(synthetic_data)
 
                     # Validate and enforce relationships in SDV data
                     if self._validate_sdv_data(synthetic_data):
@@ -1501,24 +1617,31 @@ class DataGenerator:
         synthetic_data: Dict[str, pd.DataFrame] = {}
         self._initialize_pk_tracking()
 
+        # Anchor tables are loaded verbatim — never generated.
+        gen_counts = {
+            t: n for t, n in records_per_table.items() if not self._is_anchor_table(t)
+        }
+
         reference_tables = self._identify_reference_tables()
-        ref_in_config = [t for t in reference_tables if t in records_per_table]
+        ref_in_config = [t for t in reference_tables if t in gen_counts]
 
         # Parallel generation for independent reference tables
         if len(ref_in_config) > 1:
-            parallel_results = self._generate_tables_parallel(ref_in_config, records_per_table)
+            parallel_results = self._generate_tables_parallel(ref_in_config, gen_counts)
             synthetic_data.update(parallel_results)
         elif ref_in_config:
             t = ref_in_config[0]
             synthetic_data[t] = self._generate_table_data(
-                self.tables_config[t], records_per_table[t], for_training=False)
+                self.tables_config[t], gen_counts[t], for_training=False)
 
         # Sequential generation for child tables (depend on parent data)
-        for table_name, num_records in records_per_table.items():
+        for table_name, num_records in gen_counts.items():
             if table_name not in reference_tables:
                 synthetic_data[table_name] = self._generate_table_data(
                     self.tables_config[table_name], num_records, for_training=False)
 
+        # Inject real anchor data before FK resolution so children reference it.
+        synthetic_data = self._inject_anchor_tables(synthetic_data)
         synthetic_data = self._enforce_all_relationships(synthetic_data)
         return synthetic_data
 

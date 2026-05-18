@@ -387,6 +387,7 @@ class ConfigParser:
                 'delta_eligible': delta_eligible,
                 'active': raw_table.get('active', True),
                 'notes': raw_table.get('notes'),
+                'source': raw_table.get('source'),
                 '_cdc_object': cdc_object,
             })
 
@@ -643,7 +644,9 @@ class ConfigParser:
 
             generation_mode = str(table_meta.get('generation_mode') or 'snapshot').strip().lower()
             row_count = table_meta.get('row_count', table_meta.get('initial_row_count', None))
-            if row_count is None:
+            # row_count may be None, or NaN when an anchor table omits `rows:`
+            # and pandas widened a mixed column to float.
+            if row_count is None or (isinstance(row_count, float) and np.isnan(row_count)):
                 row_count = self.get_setting('default_records_per_table', 1000)
 
             self.tables[table_name] = TableConfig(
@@ -666,6 +669,7 @@ class ConfigParser:
                 ),
                 active=True,
                 notes=self._optional_string(table_meta.get('notes')),
+                source=self._optional_string(table_meta.get('source')),
             )
 
             # Build the CDCConfig object so downstream consumers (and stub/mock
