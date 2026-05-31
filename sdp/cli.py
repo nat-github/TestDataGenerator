@@ -73,6 +73,18 @@ def build_parser() -> argparse.ArgumentParser:
                                  help="Row-count tolerance for GX validation (0.5 = ±50%%; default 0.5)")
     generate_parser.add_argument("--gx-fail-on-error", action="store_true",
                                  help="Exit non-zero when GX validation fails (default: report and continue)")
+    # --- Delta Lake direct write (one command, no separate `delta` step) ---
+    generate_parser.add_argument("--write-delta", action="store_true",
+                                 help="Write each table as a Delta Lake table at <output>/<table>/ "
+                                      "instead of (or alongside) a flat parquet snapshot. Each run "
+                                      "appends a new partition under the same _delta_log.")
+    generate_parser.add_argument("--delta-partition-col", default="BOOKING_TM",
+                                 help="Partition column name added to the Delta output (default: BOOKING_TM).")
+    generate_parser.add_argument("--delta-partition-value", default=None,
+                                 help="Partition value for THIS run (e.g. 20260531). Default: today's date as YYYYMMDD.")
+    generate_parser.add_argument("--delta-tables", nargs="+", default=None,
+                                 help="Override which tables go to Delta. If omitted, tables with "
+                                      "`write_delta: true` in the config are used. If neither is set, all tables.")
 
     delta_parser = subparsers.add_parser("delta", help="Generate parquet deltas from two snapshot folders")
     delta_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
@@ -85,14 +97,31 @@ def build_parser() -> argparse.ArgumentParser:
     delta_parser.add_argument("--partition-start-date", help="Override the synthetic delta partition start date (YYYYMMDD or timestamp)")
     delta_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
 
-    scd2_parser = subparsers.add_parser("scd2", help="Build SCD2 parquet outputs from snapshot folders")
+    scd2_parser = subparsers.add_parser("scd2", help="Build SCD2 parquet outputs from snapshot folders (or generate them with --simulate)")
     scd2_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
-    scd2_parser.add_argument("--previous", required=True, help="Previous snapshot or SCD2 parquet directory")
-    scd2_parser.add_argument("--current", required=True, help="Current snapshot parquet directory")
+    scd2_parser.add_argument("--previous", help="Previous snapshot or SCD2 parquet directory (omit when using --simulate)")
+    scd2_parser.add_argument("--current", help="Current snapshot parquet directory (omit when using --simulate)")
     scd2_parser.add_argument("--output", required=True, help="Output directory for SCD2 parquet files")
     scd2_parser.add_argument("--tables", nargs="+", help="Optional list of table names to process")
     scd2_parser.add_argument("--effective-ts", help="Effective timestamp for the current snapshot rows")
     scd2_parser.add_argument("--previous-effective-ts", help="Bootstrap effective timestamp for previous snapshot rows")
+    # --- self-contained mode: generate v1 + v2 internally, then diff ---
+    scd2_parser.add_argument("--simulate", action="store_true",
+                             help="Generate the previous+current snapshots from --config internally and diff them "
+                                  "(no --previous/--current needed). Produces real version history in one command.")
+    scd2_parser.add_argument("--change-fraction", type=float, default=0.3,
+                             help="With --simulate: fraction of rows whose tracked column changes between v1 and v2 (default 0.3)")
+    scd2_parser.add_argument("--change-columns", nargs="+", default=None,
+                             help="With --simulate: specific tracked column(s) to change (default: per-table scd2_tracked_columns from config)")
+    scd2_parser.add_argument("--default-records", type=int, default=None,
+                             help="With --simulate: rows per table for the generated baseline snapshot")
+    scd2_parser.add_argument("--seed", type=int, default=None,
+                             help="With --simulate: random seed for the generated baseline + which rows change")
+    scd2_parser.add_argument("--keep-snapshots", action="store_true",
+                             help="With --simulate: keep the intermediate v1/v2 snapshot folders instead of deleting them")
+    scd2_parser.add_argument("--no-effective-dates", action="store_true",
+                             help="Drop the effective_from_ts/effective_to_ts columns from the output. The differing "
+                                  "version dates stay in the data's own *_crt_dts column(s).")
     scd2_parser.add_argument("--verbose", action="store_true", help="Enable detailed logging")
 
     lint_parser = subparsers.add_parser("lint", help="Validate config and report issues with exact sheet/row/column location")
@@ -441,6 +470,296 @@ def _run_relationship_inference(generator: DataGenerator, confidence: float) -> 
         logger.warning(f"LLM relationship inference skipped: {exc}")
 
 
+# ---------------------------------------------------------------------------
+# SCD2 / Delta / versions_per_key — ported from the patched old generator.
+# All of these are opt-in and have no effect on existing configs/commands.
+# ---------------------------------------------------------------------------
+def _looks_like_date_column(name: str) -> bool:
+    n = (name or "").lower()
+    return n.endswith("_dts") or "dts" in n or "date" in n
+
+
+def _apply_change(df: pd.DataFrame, col: str, idx) -> None:
+    """Write a clearly-different value into df.loc[idx, col], matching dtype."""
+    n = len(idx)
+    if pd.api.types.is_datetime64_any_dtype(df[col]) or _looks_like_date_column(col):
+        s = pd.to_datetime(df[col], errors="coerce")
+        tz = getattr(getattr(s, "dt", None), "tz", None)
+        fill = pd.Timestamp("2026-01-01", tz=tz) if tz is not None else pd.Timestamp("2026-01-01")
+        base = s.loc[idx].fillna(fill)
+        s.loc[idx] = base + pd.to_timedelta(range(1, n + 1), unit="D")
+        df[col] = s
+    elif pd.api.types.is_numeric_dtype(df[col]):
+        df.loc[idx, col] = list(range(1, n + 1))
+    else:
+        df.loc[idx, col] = [f"SCD2_CHANGED_{i}" for i in range(n)]
+
+
+def _read_versions_per_key(config_path: str) -> Dict[str, int]:
+    """Read per-table `versions_per_key` from YAML/JSON. config_parser ignores it."""
+    p = Path(config_path)
+    suffix = p.suffix.lower()
+    specs: Dict[str, int] = {}
+    try:
+        if suffix in (".yaml", ".yml"):
+            import yaml
+            raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        elif suffix == ".json":
+            import json
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        else:
+            return {}
+        for t in raw.get("tables", []) or []:
+            name = t.get("name") or t.get("table_name")
+            vpk = t.get("versions_per_key")
+            if name and vpk:
+                try:
+                    specs[name] = int(vpk)
+                except (TypeError, ValueError):
+                    pass
+    except Exception as exc:
+        logger.warning(f"Could not read versions_per_key from {config_path}: {exc}")
+    return specs
+
+
+def _expand_versions_from_config(config_path: str, output_dir: str, generator, seed) -> None:
+    """Config-driven, schema-preserving versioning: repeat each business key
+    1..N times (N = versions_per_key) and vary every column listed in
+    scd2_tracked_columns. No columns are added or removed; FK integrity holds."""
+    specs = _read_versions_per_key(config_path)
+    if not specs:
+        return
+    import numpy as np
+    rng = np.random.default_rng(seed if seed is not None else 7)
+    out = Path(output_dir)
+    logger.info("\nApplying config-driven versions_per_key (schema unchanged)...")
+    for table, vmax in specs.items():
+        if not vmax or vmax < 2:
+            continue
+        pq = out / f"{table}.parquet"
+        if not pq.exists():
+            continue
+        tc = generator.tables_config.get(table)
+        if tc is None:
+            continue
+        tracked = list(getattr(tc, "scd2_tracked_columns", []) or [])
+        df = pd.read_parquet(pq)
+        if df.empty or not tracked:
+            logger.info(f"  versions: {table} skipped (no scd2_tracked_columns)")
+            continue
+        date_cols = [c for c in tracked
+                     if c in df.columns and (pd.api.types.is_datetime64_any_dtype(df[c])
+                                             or _looks_like_date_column(c))]
+        attr_cols = [c for c in tracked if c in df.columns and c not in date_cols]
+        if not date_cols and not attr_cols:
+            logger.info(f"  versions: {table} skipped (tracked columns not in data)")
+            continue
+        counts = rng.integers(1, vmax + 1, size=len(df))
+        rep_index = np.repeat(np.arange(len(df)), counts)
+        expanded = df.iloc[rep_index].reset_index(drop=True)
+        version_no = np.concatenate([np.arange(c) for c in counts])
+        # Date columns: vectorised shift.
+        if date_cols:
+            jitter = rng.integers(0, 30, size=len(expanded))
+            offset_days = np.where(version_no == 0, 0, version_no * 90 + jitter)
+            offset = pd.to_timedelta(offset_days, unit="D")
+            for dc in date_cols:
+                base = pd.to_datetime(expanded[dc], errors="coerce")
+                tz = getattr(getattr(base, "dt", None), "tz", None)
+                fill = pd.Timestamp("2026-01-01", tz=tz) if tz is not None else pd.Timestamp("2026-01-01")
+                expanded[dc] = base.fillna(fill) + offset
+        # Attribute columns: per-key cycling.
+        if attr_cols:
+            col_cfg = {c.column_name: c for c in tc.columns}
+            for ac in attr_cols:
+                cc = col_cfg.get(ac)
+                if cc is None:
+                    continue
+                try:
+                    bv_list = generator.helpers.parse_business_values(getattr(cc, "business_values", None)) or []
+                except Exception:
+                    bv_list = []
+                special = getattr(cc, "special_rules", None)
+                data_type = getattr(cc, "data_type", None)
+                col_pos = expanded.columns.get_loc(ac)
+                seen_for_key: set = set()
+                shortfalls = 0
+                for i in range(len(expanded)):
+                    if version_no[i] == 0:
+                        seen_for_key = {expanded.iat[i, col_pos]}
+                        continue
+                    new_val = None
+                    if bv_list:
+                        new_val = next((v for v in bv_list if v not in seen_for_key), None)
+                        if new_val is None:
+                            new_val = bv_list[(int(version_no[i]) - 1) % len(bv_list)]
+                            shortfalls += 1
+                    elif special:
+                        for _ in range(10):
+                            try:
+                                cand = generator.helpers.generate_special_value(special, data_type, column_name=ac)
+                            except Exception:
+                                cand = None
+                                break
+                            if cand is not None and cand not in seen_for_key:
+                                new_val = cand
+                                break
+                        if new_val is None:
+                            new_val = cand
+                    if new_val is None:
+                        new_val = int(version_no[i]) if pd.api.types.is_numeric_dtype(expanded[ac]) \
+                                  else f"V{int(version_no[i])}"
+                    seen_for_key.add(new_val)
+                    expanded.iat[i, col_pos] = new_val
+                if shortfalls:
+                    logger.warning(f"  versions: {table}.{ac} has fewer business_values "
+                                   f"({len(bv_list)}) than versions_per_key={vmax}; "
+                                   f"{shortfalls} version(s) had to repeat a value")
+        expanded.to_parquet(pq, index=False)
+        repeats = int((counts > 1).sum())
+        parts = []
+        if date_cols:
+            parts.append(f"dates vary in {date_cols}")
+        if attr_cols:
+            parts.append(f"attrs vary in {attr_cols}")
+        logger.info(f"  versions: {table} {len(df)} -> {len(expanded)} rows "
+                    f"({repeats} keys repeated, up to {vmax} each; " + "; ".join(parts) + ")")
+
+
+def _read_delta_table_selection(config_path: str) -> Optional[List[str]]:
+    """Read per-table `write_delta: true` flags from YAML/JSON. Returns list or
+    None (None => caller falls back to converting all tables)."""
+    p = Path(config_path)
+    suffix = p.suffix.lower()
+    selected: List[str] = []
+    try:
+        if suffix in (".yaml", ".yml"):
+            import yaml
+            raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        elif suffix == ".json":
+            import json
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        else:
+            return None
+        for t in raw.get("tables", []) or []:
+            name = t.get("name") or t.get("table_name")
+            if name and t.get("write_delta"):
+                selected.append(name)
+    except Exception as exc:
+        logger.warning(f"Could not read write_delta flags from {config_path}: {exc}")
+        return None
+    return selected if selected else None
+
+
+def _write_delta_outputs(output_dir: str, partition_col: str, partition_value,
+                         selected_tables: Optional[List[str]] = None) -> None:
+    """Convert selected <output>/<table>.parquet files into Delta tables at
+    <output>/<table>/ partitioned by partition_col=partition_value (append mode)."""
+    try:
+        from deltalake import write_deltalake
+    except ImportError:
+        raise ImportError("deltalake is required for --write-delta. Install: pip install deltalake")
+    from datetime import date
+
+    out = Path(output_dir)
+    if not partition_value:
+        partition_value = date.today().strftime("%Y%m%d")
+    flat_parquets = sorted(p for p in out.glob("*.parquet") if p.is_file())
+    if not flat_parquets:
+        logger.warning("No parquet files to convert to Delta")
+        return
+    selection_msg = f" for {len(selected_tables)} selected table(s)" if selected_tables else " (all tables)"
+    logger.info(f"\nWriting Delta Lake tables ({partition_col}={partition_value}){selection_msg} -> {out}/")
+    converted = 0
+    for pq in flat_parquets:
+        table = pq.stem
+        if selected_tables is not None and table not in selected_tables:
+            logger.info(f"  Skip:  {table:30s} (no write_delta flag -> kept as flat parquet)")
+            continue
+        df = pd.read_parquet(pq)
+        pq.unlink()
+        if partition_col in df.columns:
+            logger.warning(f"  {table}: existing column '{partition_col}' will be overwritten with the run's partition value")
+        df[partition_col] = str(partition_value)
+        delta_path = out / table
+        write_deltalake(str(delta_path), df, mode="append", partition_by=[partition_col])
+        converted += 1
+        logger.info(f"  Delta: {table:30s} {len(df):6d} rows -> "
+                    f"{delta_path}/{partition_col}={partition_value}/  (+commit in _delta_log/)")
+    if selected_tables and converted == 0:
+        logger.warning(f"  --write-delta requested but none of {selected_tables} matched any output parquet")
+
+
+def _generate_snapshot(config_path: str, output_dir: str, default_records, seed) -> None:
+    """Generate one full snapshot (all active tables) into output_dir. Used by scd2 --simulate."""
+    generator = DataGenerator(config_path, seed=seed)
+    if not generator.load_configuration():
+        raise ValueError("Failed to load configuration for snapshot generation")
+    generator.create_sdv_metadata()
+    workbook_default = generator.config_parser.get_setting("default_records_per_table", 1000)
+    base = default_records if default_records is not None else int(workbook_default)
+    records_config = {
+        name: max(1, int(base if default_records is not None else (cfg.num_rows or base)))
+        for name, cfg in generator.tables_config.items() if cfg.active
+    }
+    if not generator.train_synthesizer():
+        logger.warning("SDV training failed for snapshot - using fallback generation")
+    data = generator.generate_data(records_config)
+    if not data:
+        raise ValueError("Snapshot generation produced no data")
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    generator.export_to_parquet(output_dir)
+
+
+def _derive_changed_snapshot(processor: ParquetPostProcessor, previous_dir: str, current_dir: str,
+                             fraction: float, seed, selected_tables, change_columns) -> None:
+    """Copy previous_dir -> current_dir, changing tracked columns on a fraction of rows."""
+    import random as _random
+    rng = _random.Random(seed if seed is not None else 7)
+    prev = Path(previous_dir)
+    cur = Path(current_dir)
+    cur.mkdir(parents=True, exist_ok=True)
+    for pq in sorted(prev.glob("*.parquet")):
+        table = pq.stem
+        df = pd.read_parquet(pq)
+        tc = processor.tables_config.get(table)
+        do_table = (not selected_tables) or (table in selected_tables)
+        changed_cols = None
+        if tc is not None and do_table and not df.empty:
+            keys = set(processor._resolve_business_keys(tc))
+            if change_columns:
+                wanted = list(change_columns)
+            elif getattr(tc, "scd2_tracked_columns", None):
+                wanted = list(tc.scd2_tracked_columns)
+            else:
+                wanted = processor._resolve_scd2_tracked_columns(tc)[:1]
+            targets = [c for c in wanted if c in df.columns and c not in keys]
+            if targets:
+                n = max(1, int(len(df) * fraction))
+                idx = rng.sample(list(df.index), min(n, len(df)))
+                for col in targets:
+                    _apply_change(df, col, idx)
+                changed_cols = ", ".join(targets)
+                logger.info(f"  simulate: changed [{changed_cols}] on {len(idx)}/{len(df)} rows of {table}")
+        if changed_cols is None:
+            logger.info(f"  simulate: {table} copied unchanged (no change column resolved)")
+        df.to_parquet(cur / pq.name, index=False)
+
+
+def _strip_effective_date_columns(output_dir: str, selected_tables) -> None:
+    """Remove effective_from_ts / effective_to_ts from the SCD2 output parquets."""
+    drop = ["effective_from_ts", "effective_to_ts"]
+    out = Path(output_dir)
+    for pq in sorted(out.glob("*.parquet")):
+        if selected_tables and pq.stem not in selected_tables:
+            continue
+        df = pd.read_parquet(pq)
+        present = [c for c in drop if c in df.columns]
+        if present:
+            df.drop(columns=present).to_parquet(pq, index=False)
+            logger.info(f"  dropped {present} from {pq.name}")
+
+
 def run_generate(args) -> int:
     logger.info("SDV Test Data Generator")
     logger.info("=" * 50)
@@ -519,6 +838,7 @@ def run_generate(args) -> int:
     logger.info(f"\nExporting to {args.output}...")
     generator.export_to_parquet(args.output)
     generator.save_model_artifacts(generator.config_parser.get_setting("model_artifact_path", None))
+    _expand_versions_from_config(args.config, args.output, generator, seed)
     total_file_records = verify_export(args.output)
 
     report = generator.get_generation_report()
@@ -561,6 +881,16 @@ def run_generate(args) -> int:
         )
         if gx_rc != 0 and getattr(args, "gx_fail_on_error", False):
             return gx_rc
+
+    # --- Delta Lake direct write (kept LAST so GX/upload see flat parquet) ---
+    if getattr(args, "write_delta", False):
+        selected = args.delta_tables or _read_delta_table_selection(args.config)
+        _write_delta_outputs(
+            args.output,
+            partition_col=args.delta_partition_col,
+            partition_value=args.delta_partition_value,
+            selected_tables=selected,
+        )
 
     logger.info(f"\nAll files saved to: {Path(args.output).absolute()}")
     return 0
@@ -625,14 +955,42 @@ def run_scd2(args) -> int:
 
     parser = load_config_context(args.config)
     processor = ParquetPostProcessor(parser.tables, parser.run_settings)
-    summary = processor.generate_scd2(
-        previous_dir=args.previous,
-        current_dir=args.current,
-        output_dir=args.output,
-        selected_tables=args.tables,
-        effective_timestamp=args.effective_ts,
-        previous_effective_timestamp=args.previous_effective_ts,
-    )
+
+    previous_dir = args.previous
+    current_dir = args.current
+    temp_dirs: List[Path] = []
+
+    if getattr(args, "simulate", False):
+        out = Path(args.output)
+        previous_dir = str(out.parent / f"{out.name}_sim_v1")
+        current_dir = str(out.parent / f"{out.name}_sim_v2")
+        temp_dirs = [Path(previous_dir), Path(current_dir)]
+        logger.info("Simulate mode: generating baseline snapshot (v1)...")
+        _generate_snapshot(args.config, previous_dir, args.default_records, args.seed)
+        logger.info("Simulate mode: deriving changed snapshot (v2)...")
+        _derive_changed_snapshot(processor, previous_dir, current_dir,
+                                 args.change_fraction, args.seed, args.tables, args.change_columns)
+    else:
+        if not previous_dir or not current_dir:
+            logger.error("scd2 needs --previous and --current snapshot directories "
+                         "(or use --simulate to generate them from --config).")
+            return 1
+
+    try:
+        summary = processor.generate_scd2(
+            previous_dir=previous_dir,
+            current_dir=current_dir,
+            output_dir=args.output,
+            selected_tables=args.tables,
+            effective_timestamp=args.effective_ts,
+            previous_effective_timestamp=args.previous_effective_ts,
+        )
+    finally:
+        if getattr(args, "simulate", False) and not getattr(args, "keep_snapshots", False):
+            import shutil
+            for d in temp_dirs:
+                shutil.rmtree(d, ignore_errors=True)
+
     if not summary:
         logger.warning("No SCD2 output was generated")
         return 0
@@ -640,6 +998,11 @@ def run_scd2(args) -> int:
     logger.info("\nSCD2 generation summary:")
     for table_name, metrics in summary.items():
         logger.info(f"  {table_name}: {metrics}")
+    if getattr(args, "simulate", False) and getattr(args, "keep_snapshots", False):
+        logger.info(f"  (kept intermediate snapshots: {previous_dir}, {current_dir})")
+    if getattr(args, "no_effective_dates", False):
+        logger.info("\nRemoving effective_from_ts/effective_to_ts (version dates kept in *_crt_dts columns)...")
+        _strip_effective_date_columns(args.output, args.tables)
     return 0
 
 

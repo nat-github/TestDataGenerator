@@ -176,6 +176,11 @@ class SyntheticDataPlatform:
         validate_with_gx: bool = False,
         gx_tolerance: Optional[float] = None,
         verbose: bool = False,
+        # --- Delta Lake direct write (additive; default = off) ---
+        write_delta: bool = False,
+        delta_partition_col: Optional[str] = None,
+        delta_partition_value: Optional[str] = None,
+        delta_tables: Optional[Sequence[str]] = None,
         extra_args: Optional[Sequence[str]] = None,
     ) -> GenerationResult:
         """Generate synthetic Parquet data from a config.
@@ -225,6 +230,15 @@ class SyntheticDataPlatform:
             argv += ["--gx-tolerance", str(gx_tolerance)]
         if verbose:
             argv.append("--verbose")
+        # --- Delta Lake direct write ---
+        if write_delta:
+            argv.append("--write-delta")
+        if delta_partition_col is not None:
+            argv += ["--delta-partition-col", str(delta_partition_col)]
+        if delta_partition_value is not None:
+            argv += ["--delta-partition-value", str(delta_partition_value)]
+        if delta_tables:
+            argv += ["--delta-tables", *[str(t) for t in delta_tables]]
         if extra_args:
             argv += [str(a) for a in extra_args]
 
@@ -262,13 +276,28 @@ class SyntheticDataPlatform:
         output: PathLike,
         *,
         tables: Optional[Sequence[str]] = None,
+        partition_column: Optional[str] = None,
+        partition_columns: Optional[Sequence[str]] = None,
+        partition_start_date: Optional[str] = None,
         verbose: bool = False,
     ) -> CommandResult:
-        """Compute a CDC delta between two snapshot directories."""
+        """Compute a CDC delta between two snapshot directories.
+
+        Optional partition controls mirror the CLI flags of the same name:
+        ``partition_column`` / ``partition_columns`` override the table-level
+        delta partition columns; ``partition_start_date`` sets the synthetic
+        partition start date (YYYYMMDD or timestamp).
+        """
         argv = ["delta", "--config", str(config), "--previous", str(previous),
                 "--current", str(current), "--output", str(output)]
         if tables:
             argv += ["--tables", *[str(t) for t in tables]]
+        if partition_columns:
+            argv += ["--partition-columns", *[str(c) for c in partition_columns]]
+        elif partition_column is not None:
+            argv += ["--partition-column", str(partition_column)]
+        if partition_start_date is not None:
+            argv += ["--partition-start-date", str(partition_start_date)]
         if verbose:
             argv.append("--verbose")
         return self.run(*argv)
@@ -276,18 +305,66 @@ class SyntheticDataPlatform:
     def scd2(
         self,
         config: PathLike,
-        previous: PathLike,
-        current: PathLike,
-        output: PathLike,
+        previous: Optional[PathLike] = None,
+        current: Optional[PathLike] = None,
+        output: Optional[PathLike] = None,
         *,
         tables: Optional[Sequence[str]] = None,
         verbose: bool = False,
+        # --- self-contained mode (additive; default = off) ---
+        simulate: bool = False,
+        default_records: Optional[int] = None,
+        seed: Optional[int] = None,
+        change_fraction: Optional[float] = None,
+        change_columns: Optional[Sequence[str]] = None,
+        keep_snapshots: bool = False,
+        no_effective_dates: bool = False,
+        effective_ts: Optional[str] = None,
+        previous_effective_ts: Optional[str] = None,
     ) -> CommandResult:
-        """Build SCD2 history from two snapshot directories."""
-        argv = ["scd2", "--config", str(config), "--previous", str(previous),
-                "--current", str(current), "--output", str(output)]
+        """Build SCD2 history.
+
+        Classic mode (unchanged): pass ``previous`` and ``current`` snapshot
+        directories — diffs them and writes versioned history.
+
+        Self-contained mode (new): pass ``simulate=True`` instead and the
+        command generates the baseline + a changed current snapshot internally
+        from ``config``, diffs them, and writes the result. ``previous`` and
+        ``current`` are not needed in this mode.
+        """
+        if output is None:
+            raise SDPError("scd2 requires `output`")
+        if not simulate and (previous is None or current is None):
+            raise SDPError(
+                "scd2 needs `previous` and `current` snapshot directories "
+                "(or pass `simulate=True` to generate them from the config)."
+            )
+
+        argv: List[str] = ["scd2", "--config", str(config), "--output", str(output)]
+        if previous is not None:
+            argv += ["--previous", str(previous)]
+        if current is not None:
+            argv += ["--current", str(current)]
         if tables:
             argv += ["--tables", *[str(t) for t in tables]]
+        if effective_ts is not None:
+            argv += ["--effective-ts", str(effective_ts)]
+        if previous_effective_ts is not None:
+            argv += ["--previous-effective-ts", str(previous_effective_ts)]
+        if simulate:
+            argv.append("--simulate")
+        if default_records is not None:
+            argv += ["--default-records", str(default_records)]
+        if seed is not None:
+            argv += ["--seed", str(seed)]
+        if change_fraction is not None:
+            argv += ["--change-fraction", str(change_fraction)]
+        if change_columns:
+            argv += ["--change-columns", *[str(c) for c in change_columns]]
+        if keep_snapshots:
+            argv.append("--keep-snapshots")
+        if no_effective_dates:
+            argv.append("--no-effective-dates")
         if verbose:
             argv.append("--verbose")
         return self.run(*argv)

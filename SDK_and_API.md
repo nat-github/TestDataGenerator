@@ -62,12 +62,57 @@ report.warnings
 report.report           # formatted text report
 ```
 
+#### SCD2 & Delta extras
+
+The `generate`, `scd2`, and `delta` methods accept additional **opt-in keyword
+arguments** that mirror the CLI flags of the same name. Default values
+preserve the previous behaviour, so existing calls are unaffected.
+
+```python
+# 1) generate writes each table as a Delta Lake table (partitioned, per-run append)
+sdp.generate(
+    config="cfg.yaml", output="out/", seed=42,
+    write_delta=True,
+    delta_partition_col="BOOKING_TM",
+    delta_partition_value="20260531",
+    delta_tables=["customers", "orders"],     # optional; else `write_delta: true` flags in YAML
+)
+
+# 2) scd2 self-contained mode — generates baseline + changed snapshot internally
+sdp.scd2(
+    config="cfg.yaml", output="hist/",
+    simulate=True, default_records=1000, seed=42,
+    change_fraction=0.3,
+    no_effective_dates=True,                  # drop effective_from/to; keep dates in *_crt_dts
+    previous_effective_ts="2026-01-01 00:00:00",
+    effective_ts="2026-05-28 00:00:00",
+)
+# Classic two-snapshot mode is unchanged:
+sdp.scd2("cfg.yaml", "v1/", "v2/", "hist/")
+
+# 3) delta with optional partition overrides
+sdp.delta(
+    config="cfg.yaml", previous="v1/", current="v2/", output="delta/",
+    partition_column="LOAD_DATE",             # or partition_columns=["A","B"]
+    partition_start_date="20260101",
+)
+```
+
+Two YAML fields drive the new generate-side features (read directly by
+`main.py`/`sdp.cli`; the schema parser ignores them, so adding them to a
+config never breaks anything):
+
+| Field | Purpose |
+|---|---|
+| `versions_per_key: N` | repeat each business key 1..N times, varying every column in `scd2_tracked_columns` (dates shifted ~90 d; `business_values` cycle uniquely per key; `special_rules` regenerate). Output schema is unchanged — no extra columns. |
+| `write_delta: true` | per-table marker — when `generate` is called with `--write-delta`, only flagged tables become Delta, the rest stay as flat parquet. Override per call with `--delta-tables` / `delta_tables=`. |
+
 #### Other operations
 
 | Method | Wraps |
 |---|---|
-| `delta(config, previous, current, output, ...)` | `sdp delta` |
-| `scd2(config, previous, current, output, ...)` | `sdp scd2` |
+| `delta(config, previous, current, output, partition_column=, partition_columns=, partition_start_date=, ...)` | `sdp delta` |
+| `scd2(config, previous=, current=, output=, simulate=, default_records=, seed=, change_fraction=, change_columns=, keep_snapshots=, no_effective_dates=, effective_ts=, previous_effective_ts=, ...)` | `sdp scd2` |
 | `infer_relationships(config, config_output, method=, ml_mode=, ...)` | `sdp infer-relationships` |
 | `validate_data(config, input_dir, ...)` | `sdp validate-data` |
 | `quality_report(generated, source=, ...)` | `sdp quality-report` |
@@ -112,7 +157,9 @@ in an isolated temp directory, and nothing is persisted between requests.
 | Method | Path | Purpose |
 |---|---|---|
 | `GET`  | `/healthz` | Liveness + version probe |
-| `POST` | `/generate` | Generate synthetic data from an uploaded config |
+| `POST` | `/generate` | Generate synthetic data from an uploaded config (optionally as Delta Lake) |
+| `POST` | `/scd2` | Build SCD2 history — with `simulate=true`, prior snapshots aren't needed |
+| `POST` | `/delta` | Compute a CDC delta between two uploaded snapshot ZIPs |
 | `POST` | `/lint` | Validate a config, return structured issues |
 | `POST` | `/infer-relationships` | Infer FK relationships, return reviewable YAML |
 | `POST` | `/contract-test` | Verify uploaded data (ZIP of Parquet) against a contract |
@@ -132,6 +179,10 @@ Multipart form upload.
 | `infer_relationships` | bool | `false` | Infer missing FKs first |
 | `method` | str | `ml` | `ml` / `llm` / `both` |
 | `response_format` | str | `zip` | `zip` (Parquet download) or `json` (row preview) |
+| `write_delta` | bool | `false` | Write each table as a Delta Lake table at `<output>/<table>/` (with per-run partition append) |
+| `delta_partition_col` | str | `BOOKING_TM` | Partition column name when `write_delta=true` |
+| `delta_partition_value` | str | today YYYYMMDD | Partition value for this run |
+| `delta_tables` | str | — | Comma-separated table list to convert to Delta (overrides per-table `write_delta: true` flags) |
 
 ```bash
 # Download generated Parquet as a ZIP
@@ -144,6 +195,67 @@ curl -X POST http://localhost:8000/generate \
 curl -X POST http://localhost:8000/generate \
   -F "config=@examples/configs/yaml/01_simple_users.yaml" \
   -F "default_records=20" -F "response_format=json"
+
+# Write Delta tables (returned in the ZIP, with _delta_log + BOOKING_TM=…/ partitions)
+curl -X POST http://localhost:8000/generate \
+  -F "config=@config/Natural_Person_template_versioned.yaml" \
+  -F "default_records=1000" -F "seed=42" \
+  -F "write_delta=true" \
+  -F "delta_partition_col=BOOKING_TM" \
+  -F "delta_partition_value=20260531" \
+  -o generated.zip
+```
+
+#### `POST /scd2`
+
+Build SCD2 history from a config. With `simulate=true` the endpoint generates
+the baseline + changed snapshot internally so the caller only uploads a config.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `config` | file | — | `.xlsx` / `.yaml` / `.yml` / `.json` |
+| `simulate` | bool | `false` | Generate baseline + changed snapshot internally |
+| `default_records` | int | — | With simulate: rows per table for the baseline |
+| `seed` | int | — | With simulate: random seed |
+| `change_fraction` | float | `0.3` | With simulate: fraction of rows that change between v1 and v2 |
+| `change_columns` | str | — | With simulate: comma-separated tracked columns to change (default: per-table `scd2_tracked_columns` in config) |
+| `no_effective_dates` | bool | `false` | Drop `effective_from_ts` / `effective_to_ts` from output |
+| `effective_ts` | str | — | Effective timestamp for the current snapshot rows |
+| `previous_effective_ts` | str | — | Bootstrap effective timestamp for previous snapshot rows |
+| `tables` | str | — | Comma-separated list of tables to process |
+
+```bash
+curl -X POST http://localhost:8000/scd2 \
+  -F "config=@config/Natural_Person_template_versioned.yaml" \
+  -F "simulate=true" -F "default_records=1000" -F "seed=42" \
+  -F "previous_effective_ts=2026-01-01 00:00:00" \
+  -F "effective_ts=2026-05-28 00:00:00" \
+  -o scd2.zip
+```
+
+#### `POST /delta`
+
+Compute a CDC delta between two uploaded snapshot ZIPs and return the Delta
+Lake output as a ZIP. Each snapshot ZIP is the ZIP you get back from
+`/generate` — drop-in input.
+
+| Field | Type | Default | Notes |
+|---|---|---|---|
+| `config` | file | — | `.xlsx` / `.yaml` / `.yml` / `.json` |
+| `previous` | file | — | ZIP of the previous snapshot's parquet files |
+| `current` | file | — | ZIP of the current snapshot's parquet files |
+| `tables` | str | — | Comma-separated list of tables to process |
+| `partition_column` | str | — | Override delta partition column for all tables |
+| `partition_columns` | str | — | Comma-separated override of delta partition columns |
+| `partition_start_date` | str | — | Override synthetic delta partition start date (YYYYMMDD or timestamp) |
+
+```bash
+curl -X POST http://localhost:8000/delta \
+  -F "config=@config/Acct_bkng.xlsx" \
+  -F "previous=@v1.zip" \
+  -F "current=@v2.zip" \
+  -F "partition_column=LOAD_DATE" \
+  -o delta.zip
 ```
 
 #### `POST /lint`

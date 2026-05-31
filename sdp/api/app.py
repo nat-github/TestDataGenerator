@@ -47,6 +47,28 @@ def _save_upload(upload: "UploadFile", contents: bytes, workdir: Path) -> Path:
     return cfg_path
 
 
+def _unzip_upload(upload: "UploadFile", contents: bytes, target_dir: Path) -> Path:
+    """Extract an uploaded ZIP (typically a snapshot from /generate) into target_dir.
+
+    Returns the directory the caller should pass to delta/scd2 — if the ZIP
+    contains a single top-level folder, the extracted folder itself is returned;
+    otherwise target_dir is returned (parquets sit directly inside it).
+    """
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(io.BytesIO(contents)) as zf:
+            zf.extractall(target_dir)
+    except zipfile.BadZipFile as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{upload.filename or 'upload'} is not a valid ZIP: {exc}",
+        )
+    children = [p for p in target_dir.iterdir()]
+    if len(children) == 1 and children[0].is_dir():
+        return children[0]
+    return target_dir
+
+
 def _zip_directory(directory: Path) -> io.BytesIO:
     """Zip every file under ``directory`` into an in-memory buffer."""
     buffer = io.BytesIO()
@@ -147,6 +169,11 @@ def create_app() -> "FastAPI":
         response_format: str = Form(
             "zip", description="'zip' (Parquet download) or 'json' (row preview)"
         ),
+        # --- Delta Lake direct write (additive; default = off) ---
+        write_delta: bool = Form(False, description="Write each table as a Delta Lake table at <output>/<table>/"),
+        delta_partition_col: Optional[str] = Form(None, description="Partition column name (default: BOOKING_TM)"),
+        delta_partition_value: Optional[str] = Form(None, description="Partition value for THIS run (default: today YYYYMMDD)"),
+        delta_tables: Optional[str] = Form(None, description="Comma-separated list of tables to write as Delta (overrides per-table `write_delta: true` flags in the config)"),
     ):
         """Generate synthetic Parquet data from an uploaded config.
 
@@ -170,6 +197,10 @@ def create_app() -> "FastAPI":
                     validate=validate_relationships,
                     infer_relationships=infer_relationships,
                     method=method,
+                    write_delta=write_delta,
+                    delta_partition_col=delta_partition_col,
+                    delta_partition_value=delta_partition_value,
+                    delta_tables=[t.strip() for t in delta_tables.split(",") if t.strip()] if delta_tables else None,
                 )
             except SDPError as exc:
                 raise HTTPException(status_code=422, detail=str(exc))
@@ -215,6 +246,108 @@ def create_app() -> "FastAPI":
                 buffer,
                 media_type="application/zip",
                 headers={"Content-Disposition": 'attachment; filename="generated.zip"'},
+            )
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    @app.post("/scd2", tags=["data"], summary="Build SCD2 history (with --simulate, no prior snapshots needed)")
+    async def scd2(
+        config: UploadFile = File(..., description="Excel/YAML/JSON config file"),
+        simulate: bool = Form(False, description="Generate baseline + changed snapshot internally and diff (no previous/current needed)"),
+        default_records: Optional[int] = Form(None, description="With simulate: rows per table for the baseline"),
+        seed: Optional[int] = Form(None, description="With simulate: random seed"),
+        change_fraction: Optional[float] = Form(None, description="With simulate: fraction of rows that change between v1 and v2 (default 0.3)"),
+        change_columns: Optional[str] = Form(None, description="With simulate: comma-separated tracked columns to change (default: scd2_tracked_columns from config)"),
+        no_effective_dates: bool = Form(False, description="Drop effective_from_ts/effective_to_ts from output (version dates stay in *_crt_dts columns)"),
+        effective_ts: Optional[str] = Form(None, description="Effective timestamp for current snapshot rows"),
+        previous_effective_ts: Optional[str] = Form(None, description="Bootstrap effective timestamp for previous snapshot rows"),
+        tables: Optional[str] = Form(None, description="Comma-separated list of tables to process"),
+    ):
+        """Build SCD Type 2 history from a config — supports `simulate` mode where
+        the two snapshots are generated internally so the caller only needs to
+        upload the config."""
+        contents = await config.read()
+        workdir = Path(tempfile.mkdtemp(prefix="sdp_api_scd2_"))
+        try:
+            cfg_path = _save_upload(config, contents, workdir)
+            out_dir = workdir / "output"
+            try:
+                result = await run_in_threadpool(
+                    platform.scd2,
+                    config=cfg_path,
+                    output=out_dir,
+                    simulate=simulate,
+                    default_records=default_records,
+                    seed=seed,
+                    change_fraction=change_fraction,
+                    change_columns=[c.strip() for c in change_columns.split(",") if c.strip()] if change_columns else None,
+                    no_effective_dates=no_effective_dates,
+                    effective_ts=effective_ts,
+                    previous_effective_ts=previous_effective_ts,
+                    tables=[t.strip() for t in tables.split(",") if t.strip()] if tables else None,
+                )
+            except SDPError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            if not result.success:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"SCD2 generation failed (exit code {result.exit_code}).",
+                )
+            buffer = _zip_directory(out_dir)
+            return StreamingResponse(
+                buffer,
+                media_type="application/zip",
+                headers={"Content-Disposition": 'attachment; filename="scd2.zip"'},
+            )
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+
+    @app.post("/delta", tags=["data"], summary="Compute a CDC delta between two snapshots")
+    async def delta(
+        config: UploadFile = File(..., description="Excel/YAML/JSON config file"),
+        previous: UploadFile = File(..., description="ZIP of the previous snapshot's parquet files"),
+        current: UploadFile = File(..., description="ZIP of the current snapshot's parquet files"),
+        tables: Optional[str] = Form(None, description="Comma-separated list of tables to process"),
+        partition_column: Optional[str] = Form(None, description="Override delta partition column for all tables"),
+        partition_columns: Optional[str] = Form(None, description="Comma-separated override of delta partition columns"),
+        partition_start_date: Optional[str] = Form(None, description="Override synthetic delta partition start date (YYYYMMDD or timestamp)"),
+    ):
+        """Compute a CDC delta between two uploaded snapshot ZIPs and return the
+        Delta Lake output as a ZIP. Snapshot ZIPs typically come from /generate
+        (its zip response is a drop-in input here)."""
+        cfg_contents = await config.read()
+        prev_contents = await previous.read()
+        cur_contents = await current.read()
+        workdir = Path(tempfile.mkdtemp(prefix="sdp_api_delta_"))
+        try:
+            cfg_path = _save_upload(config, cfg_contents, workdir)
+            prev_dir = _unzip_upload(previous, prev_contents, workdir / "previous")
+            cur_dir = _unzip_upload(current, cur_contents, workdir / "current")
+            out_dir = workdir / "output"
+            try:
+                result = await run_in_threadpool(
+                    platform.delta,
+                    config=cfg_path,
+                    previous=prev_dir,
+                    current=cur_dir,
+                    output=out_dir,
+                    tables=[t.strip() for t in tables.split(",") if t.strip()] if tables else None,
+                    partition_column=partition_column,
+                    partition_columns=[c.strip() for c in partition_columns.split(",") if c.strip()] if partition_columns else None,
+                    partition_start_date=partition_start_date,
+                )
+            except SDPError as exc:
+                raise HTTPException(status_code=422, detail=str(exc))
+            if not result.success:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Delta generation failed (exit code {result.exit_code}).",
+                )
+            buffer = _zip_directory(out_dir)
+            return StreamingResponse(
+                buffer,
+                media_type="application/zip",
+                headers={"Content-Disposition": 'attachment; filename="delta.zip"'},
             )
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
