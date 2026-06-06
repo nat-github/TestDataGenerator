@@ -98,7 +98,7 @@ sdp.delta(
 )
 ```
 
-Two YAML fields drive the new generate-side features (read directly by
+Three YAML fields drive the new generate-side features (read directly by
 `main.py`/`sdp.cli`; the schema parser ignores them, so adding them to a
 config never breaks anything):
 
@@ -106,6 +106,12 @@ config never breaks anything):
 |---|---|
 | `versions_per_key: N` | repeat each business key 1..N times, varying every column in `scd2_tracked_columns` (dates shifted ~90 d; `business_values` cycle uniquely per key; `special_rules` regenerate). Output schema is unchanged — no extra columns. |
 | `write_delta: true` | per-table marker — when `generate` is called with `--write-delta`, only flagged tables become Delta, the rest stay as flat parquet. Override per call with `--delta-tables` / `delta_tables=`. |
+| `delta_partition_col: <COL>` | per-table override of the Delta partition column. Default for tables without it is the CLI flag `--delta-partition-col` / SDK `delta_partition_col=`. Use when different sources in the same run need different partition columns (e.g. one `BOOKING_TM`, one `LOAD_DT`). |
+
+Because `delta_partition_col` is read from the YAML, **SDK and API callers
+don't need any new arguments** — pass the same config file and the per-table
+overrides apply automatically. The SDK/API `delta_partition_col` argument
+remains the run-wide default for tables that don't set it themselves.
 
 #### Other operations
 

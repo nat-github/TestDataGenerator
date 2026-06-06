@@ -79,7 +79,9 @@ def build_parser() -> argparse.ArgumentParser:
                                       "instead of (or alongside) a flat parquet snapshot. Each run "
                                       "appends a new partition under the same _delta_log.")
     generate_parser.add_argument("--delta-partition-col", default="BOOKING_TM",
-                                 help="Partition column name added to the Delta output (default: BOOKING_TM).")
+                                 help="Default partition column for tables converted to Delta (default: BOOKING_TM). "
+                                      "Per-table overrides via YAML `delta_partition_col: <COLNAME>` — useful when "
+                                      "different sources partition by different columns in the same run.")
     generate_parser.add_argument("--delta-partition-value", default=None,
                                  help="Partition value for THIS run (e.g. 20260531). Default: today's date as YYYYMMDD.")
     generate_parser.add_argument("--delta-tables", nargs="+", default=None,
@@ -651,10 +653,49 @@ def _read_delta_table_selection(config_path: str) -> Optional[List[str]]:
     return selected if selected else None
 
 
+def _read_delta_partition_overrides(config_path: str) -> Dict[str, str]:
+    """Read per-table `delta_partition_col` overrides from YAML/JSON.
+
+    Bypasses config_parser / config_models (same pattern as `write_delta` /
+    `versions_per_key`). Returns `{table_name: partition_col}` for tables that
+    specify it; tables without it fall back to the CLI default
+    `--delta-partition-col`. Used when different source tables need different
+    partition columns in the same run (e.g. BOOKING_TM for one, LOAD_DT for
+    another).
+    """
+    p = Path(config_path)
+    suffix = p.suffix.lower()
+    overrides: Dict[str, str] = {}
+    try:
+        if suffix in (".yaml", ".yml"):
+            import yaml
+            raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        elif suffix == ".json":
+            import json
+            raw = json.loads(p.read_text(encoding="utf-8"))
+        else:
+            return overrides
+        for t in raw.get("tables", []) or []:
+            name = t.get("name") or t.get("table_name")
+            col = t.get("delta_partition_col")
+            if name and col:
+                overrides[name] = str(col)
+    except Exception as exc:
+        logger.warning(f"Could not read delta_partition_col overrides from {config_path}: {exc}")
+        return {}
+    return overrides
+
+
 def _write_delta_outputs(output_dir: str, partition_col: str, partition_value,
-                         selected_tables: Optional[List[str]] = None) -> None:
+                         selected_tables: Optional[List[str]] = None,
+                         partition_overrides: Optional[Dict[str, str]] = None) -> None:
     """Convert selected <output>/<table>.parquet files into Delta tables at
-    <output>/<table>/ partitioned by partition_col=partition_value (append mode)."""
+    <output>/<table>/ partitioned by partition_col=partition_value (append mode).
+
+    `partition_overrides` (optional): per-table `{name: col}` mapping for tables
+    that need a different partition column than the global default. Tables
+    absent from the mapping use `partition_col`.
+    """
     try:
         from deltalake import write_deltalake
     except ImportError:
@@ -668,8 +709,11 @@ def _write_delta_outputs(output_dir: str, partition_col: str, partition_value,
     if not flat_parquets:
         logger.warning("No parquet files to convert to Delta")
         return
+    overrides = partition_overrides or {}
     selection_msg = f" for {len(selected_tables)} selected table(s)" if selected_tables else " (all tables)"
-    logger.info(f"\nWriting Delta Lake tables ({partition_col}={partition_value}){selection_msg} -> {out}/")
+    logger.info(f"\nWriting Delta Lake tables (default partition {partition_col}={partition_value}"
+                f"{', overrides for ' + str(len(overrides)) + ' table(s)' if overrides else ''})"
+                f"{selection_msg} -> {out}/")
     converted = 0
     for pq in flat_parquets:
         table = pq.stem
@@ -678,14 +722,15 @@ def _write_delta_outputs(output_dir: str, partition_col: str, partition_value,
             continue
         df = pd.read_parquet(pq)
         pq.unlink()
-        if partition_col in df.columns:
-            logger.warning(f"  {table}: existing column '{partition_col}' will be overwritten with the run's partition value")
-        df[partition_col] = str(partition_value)
+        col = overrides.get(table, partition_col)
+        if col in df.columns:
+            logger.warning(f"  {table}: existing column '{col}' will be overwritten with the run's partition value")
+        df[col] = str(partition_value)
         delta_path = out / table
-        write_deltalake(str(delta_path), df, mode="append", partition_by=[partition_col])
+        write_deltalake(str(delta_path), df, mode="append", partition_by=[col])
         converted += 1
         logger.info(f"  Delta: {table:30s} {len(df):6d} rows -> "
-                    f"{delta_path}/{partition_col}={partition_value}/  (+commit in _delta_log/)")
+                    f"{delta_path}/{col}={partition_value}/  (+commit in _delta_log/)")
     if selected_tables and converted == 0:
         logger.warning(f"  --write-delta requested but none of {selected_tables} matched any output parquet")
 
@@ -885,11 +930,13 @@ def run_generate(args) -> int:
     # --- Delta Lake direct write (kept LAST so GX/upload see flat parquet) ---
     if getattr(args, "write_delta", False):
         selected = args.delta_tables or _read_delta_table_selection(args.config)
+        partition_overrides = _read_delta_partition_overrides(args.config)
         _write_delta_outputs(
             args.output,
             partition_col=args.delta_partition_col,
             partition_value=args.delta_partition_value,
             selected_tables=selected,
+            partition_overrides=partition_overrides,
         )
 
     logger.info(f"\nAll files saved to: {Path(args.output).absolute()}")

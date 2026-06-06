@@ -155,6 +155,8 @@ Each item under `tables` may contain:
 | `source` | no | Path to an existing `.parquet`/`.csv` dataset — see *Anchored generation* below |
 | `active` | no | Boolean, defaults to `true` |
 | `notes` | no | Optional notes |
+| `write_delta` | no | Boolean — when `generate --write-delta` runs, write **this table** as a Delta Lake table at `<output>/<table>/`. Tables without it stay as flat parquet. Read directly by the CLI; bypasses `config_parser`. |
+| `delta_partition_col` | no | Override the Delta partition column for **this table only** (default: CLI flag `--delta-partition-col`, falls back to `BOOKING_TM`). Useful when different sources partition by different columns in the same run. Only meaningful with `write_delta: true`. |
 | `columns` | yes | Column definitions |
 
 ### Anchored generation (`source:`)
