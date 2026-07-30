@@ -47,6 +47,74 @@ class RuleConfig(BaseModel):
     note: Optional[str] = None
 
 
+class WorkflowTransition(BaseModel):
+    """One edge of a lifecycle state machine.
+
+    ``from`` is a Python keyword, so the field is ``from_state`` with an
+    alias — configs keep the natural ``{from: PLACED, to: SHIPPED}`` shape.
+    """
+    from_state: str = Field(alias="from")
+    to_state: str = Field(alias="to")
+
+    #: Chance of taking this edge, given the row is in ``from_state``.
+    probability: float = Field(default=1.0, ge=0.0, le=1.0)
+
+    model_config = {"populate_by_name": True}
+
+
+class WorkflowConfig(BaseModel):
+    """Layer C — a state machine describing a row's lifecycle.
+
+    Random generation draws each column independently, which happily
+    produces a CANCELLED order carrying a delivery timestamp. A workflow
+    instead walks the row through legal transitions and back-fills only the
+    timestamps for states actually visited, in increasing order.
+
+    ``timestamps`` maps *column name → state*: the column receives a value
+    when that state is visited, and NULL when it is not.
+    """
+    name: str
+    table: str
+    state_column: str
+
+    #: column → state that produces it
+    timestamps: Dict[str, str] = Field(default_factory=dict)
+
+    transitions: List[WorkflowTransition] = Field(default_factory=list)
+
+    #: Where every row starts. Inferred when exactly one state is never a
+    #: transition target; required otherwise.
+    start_state: Optional[str] = None
+
+    #: Window for the first timestamp, as ``[min, max]`` dates. Defaults to
+    #: the last year when omitted.
+    start_between: Optional[List[str]] = None
+
+    #: Gap between consecutive state timestamps, ``[min_hours, max_hours]``.
+    step_hours: List[float] = Field(default_factory=lambda: [1.0, 72.0])
+
+    note: Optional[str] = None
+
+    @property
+    def states(self) -> List[str]:
+        """Every state named by a transition, in first-seen order."""
+        seen: List[str] = []
+        for transition in self.transitions:
+            for state in (transition.from_state, transition.to_state):
+                if state not in seen:
+                    seen.append(state)
+        return seen
+
+    def resolve_start_state(self) -> Optional[str]:
+        """The declared start state, or the only state nothing transitions to."""
+        if self.start_state:
+            return self.start_state
+        targets = {t.to_state for t in self.transitions}
+        sources = [t.from_state for t in self.transitions]
+        roots = [s for s in dict.fromkeys(sources) if s not in targets]
+        return roots[0] if len(roots) == 1 else None
+
+
 class CDCConfig(BaseModel):
     """Unified change-data-capture config, replacing the spread of
     delta_eligible / scd2_enabled / scd2_tracked_columns / partition_*

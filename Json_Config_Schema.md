@@ -4,7 +4,7 @@ The Synthetic Data Platform accepts the same configuration in three authoring fo
 
 JSON is a strict subset of YAML — every YAML config that uses simple values (no anchors, no multi-document streams) maps cleanly to JSON. The runtime treats both identically once parsed.
 
-> **For a hands-on example see `config/sample_workflow.json`.**
+> **For a hands-on example see `config/sample_rules_and_cdc.json`.**
 > **For IDE validation, point your editor at `schemas/sdp_config.schema.json`** (JSON Schema 2020-12).
 
 ---
@@ -271,7 +271,7 @@ If `relationships` is omitted, the parser auto-derives them from any `is_fk: tru
 Run it with the same CLI as YAML / Excel:
 
 ```bash
-python main.py generate --config config/sample_workflow.json --output output/run_01
+python main.py generate --config config/sample_rules_and_cdc.json --output output/run_01
 ```
 
 ---

@@ -26,8 +26,8 @@ poetry install --extras mimesis
 | What | Command |
 |---|---|
 | Basic snapshot from Excel | `python main.py generate --config config/Acct_bkng.xlsx --output output/run_01 --default-records 1000` |
-| Snapshot from JSON config | `python main.py generate --config config/sample_workflow.json --output output/sample_run --seed 42` |
-| Snapshot from YAML workflow | `python main.py generate --config config/sample_workflow.yaml --output output/sample_run --seed 42` |
+| Snapshot from JSON config | `python main.py generate --config config/sample_rules_and_cdc.json --output output/sample_run --seed 42` |
+| Snapshot from YAML workflow | `python main.py generate --config config/sample_rules_and_cdc.yaml --output output/sample_run --seed 42` |
 | Reproducible run (seeded) | `python main.py generate --config config/Acct_bkng.xlsx --output output/run_01 --seed 42` |
 | Legacy mode (treated as generate) | `python main.py --config config/Acct_bkng.xlsx --output output/run_01` |
 

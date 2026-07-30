@@ -72,8 +72,7 @@ def run_enrich(args) -> int:
         return 0
     except Exception as exc:
         logger.error(f"Schema enrichment failed: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.debug('Full traceback:', exc_info=True)
         return 1
 
 def run_collibra_import(args) -> int:
@@ -92,8 +91,7 @@ def run_collibra_import(args) -> int:
         return 0
     except Exception as exc:
         logger.error(f"Collibra import failed: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.debug('Full traceback:', exc_info=True)
         return 1
 
 def run_infer_config(args) -> int:
@@ -133,8 +131,7 @@ def run_infer_config(args) -> int:
         return 0
     except Exception as exc:
         logger.error(f"infer-config failed: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.debug('Full traceback:', exc_info=True)
         return 1
 
 def run_pii_scan(args) -> int:
@@ -176,6 +173,5 @@ def run_pii_scan(args) -> int:
         return 0
     except Exception as exc:
         logger.error(f"pii-scan failed: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.debug('Full traceback:', exc_info=True)
         return 1

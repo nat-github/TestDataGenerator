@@ -124,8 +124,7 @@ def run_infer_relationships(args) -> int:
         return 0
     except Exception as exc:
         logger.error(f"infer-relationships failed: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.debug('Full traceback:', exc_info=True)
         return 1
 
 def _relationship_confidence(rel) -> Optional[float]:
@@ -439,6 +438,5 @@ def run_record_feedback(args) -> int:
         return 0
     except Exception as exc:
         logger.error(f"record-feedback failed: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.debug('Full traceback:', exc_info=True)
         return 1

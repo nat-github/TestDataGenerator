@@ -20,10 +20,10 @@ poetry install
 python main.py generate --config config/Acct_bkng.xlsx --output output/run_01 --default-records 1000
 
 # Generate from a JSON config
-python main.py generate --config config/sample_workflow.json --output output/sample_run --seed 42
+python main.py generate --config config/sample_rules_and_cdc.json --output output/sample_run --seed 42
 
 # Generate using rules + derived columns + cdc:
-python main.py generate --config config/sample_workflow.yaml --output output/sample_run --seed 42
+python main.py generate --config config/sample_rules_and_cdc.yaml --output output/sample_run --seed 42
 
 # Reproducible run (--seed makes output deterministic)
 python main.py generate --config config/Acct_bkng.xlsx --output output/run_01 --seed 42
@@ -227,6 +227,7 @@ Excel / YAML Config
 | `utils/helpers.py` | Regex generation, Faker integration (18 locales), type coercion, NULL rate logic, 60+ special rules |
 | `utils/parquet_post_processor.py` | Delta (I/U/D) and SCD2 effective-dating logic with delta-log rollback safety. Delta writes honour `delta_write_mode` (`overwrite` default / `append` / `error`); the overwrite path warns before discarding an existing table's change history. |
 | `utils/rule_evaluator.py` | Layer A (when/then) and Layer B (derived expressions) post-generation pass — operates on plain dicts so it can be reused by stub/mock renderers later |
+| `utils/workflow_engine.py` | Layer C — lifecycle state machines. Walks each row through declared transitions, back-fills only the visited states' timestamps in increasing order, NULLs the rest. `validate_workflow()` is called by `lint`. |
 | `utils/mimesis_provider.py` | Optional Mimesis adapter — handles `MIMESIS_*` special rules. Lazy import; the library is an optional poetry extra |
 | `utils/data_validator.py` | Post-generation FK relationship validation |
 | `utils/er_diagram.py` | ER diagram generation: Mermaid (zero-dep), Graphviz DOT, PNG (matplotlib optional) |
@@ -309,9 +310,21 @@ training so generated tables mimic its distributions. `_apply_relationship_group
 never rewrites an anchor table's own FK columns. The source dataset must contain
 every configured column. See `Yaml_Config_Schema.md` → *Anchored generation*.
 
-### Rules and derived columns (Layer A + B)
+### Rules, derived columns and workflows (Layers A, B, C)
 
-Per-column `rules:` list applies when/then logic at row evaluation time; per-column `derived:` produces values computed from other columns. Both run after FK resolution. Engine lives at `utils/rule_evaluator.py` and operates on plain dicts so it can be reused by the future stub/mock track. See `Rules_and_Workflows.md`.
+Per-column `rules:` applies when/then logic at row evaluation time; per-column `derived:` computes a value from other columns; top-level `workflows:` walks each row through a lifecycle state machine.
+
+All three run after FK resolution, in the order **C → A → B** — a workflow assigns the lifecycle, rules react to the state it assigned, derived columns compute from the result. A Layer A rule targeting the state column therefore **overrides** the workflow.
+
+| Layer | Engine | Scope |
+|---|---|---|
+| A — when/then rules | `utils/rule_evaluator.py` | per column |
+| B — derived columns | `utils/rule_evaluator.py` | per column |
+| C — workflows | `utils/workflow_engine.py` | per table, YAML/JSON only |
+
+Layer C guarantees, per row: only declared transitions are followed; each visited state's timestamp column is set, strictly increasing along the path; unvisited states' columns are NULL. That makes a CANCELLED order with a delivery timestamp structurally impossible. Outgoing probabilities that sum below 1 leave the remainder as the chance of stopping in that state. Cycles are allowed but require an explicit `start_state` and are capped at 50 steps.
+
+Both engines operate on plain dicts/DataFrames so the stub/mock track can reuse them. See `Rules_and_Workflows.md`.
 
 ### Data Types
 
@@ -369,6 +382,7 @@ Tests live in `tests/`:
 - `test_synthesizer_engines.py` — engine registry, shared sampling helper (including the `num_rows`→`scale` fallback), engine contract, `DataGenerator` wiring, and the back-compat guarantee that a directly-assigned `generator.synthesizer` still samples.
 - `test_utility_and_bias.py` — TSTR utility and bias drift. Fixtures carry a *known* answer (a learnable signal that synthetic data either preserves or destroys; a group skew that is either faithful or amplified), so the tests check the metrics measure what they claim — including the case fidelity misses: identical marginals, zero utility.
 
+- `test_workflows.py` — Layer C: the model (`from`/`to` aliasing, start-state inference), validation, the walk (only legal transitions, probability distribution, residual-stop rule, cycle capping), and the invariants on generated data — unvisited states NULL, visited states populated, timestamps strictly increasing. Plus config parsing and an end-to-end run through `generate_dataset`.
 - `test_service_layer.py` — the extracted units directly: `services/common.py`, `GenerationRequest`/`GenerationOutcome`, `generate_dataset` (end-to-end, seed reproducibility, failure paths, engine stats, DP report), the mixin composition (including a guard that no method is defined twice across mixins, which would make behaviour depend on MRO order), the `cli_commands` handler surface, and size ratchets on `cli.py` / `data_generator.py`.
 - `test_error_handling.py` — degraded paths must still work *and* leave a trace: invalid rules, malformed `cdc:` blocks, unparseable `null_rate`, unknown Faker locales, bad distribution descriptors. Plus two codebase-wide guards — no bare `except:`, and a ratchet on broad handlers that swallow without any signal.
 - `test_hardening_fixes.py` — regression guards for defects found in platform assessment: the missing `Path` import in `collibra_importer` (NameError on every write), the hardcoded destructive delta overwrite, engine flags unreachable from the SDK, deprecated packaging metadata, and an AST-based check that library modules never `print()`.

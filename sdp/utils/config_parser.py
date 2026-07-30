@@ -16,8 +16,10 @@ from sdp.models.config_models import (
     RuleAction,
     RuleConfig,
     TableConfig,
+    WorkflowConfig,
 )
 from sdp.utils.helpers import DataHelpers
+from sdp.utils.workflow_engine import validate_workflow
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,8 @@ class ConfigParser:
         self.run_settings_df: Optional[pd.DataFrame] = None
         self.tables: Dict[str, TableConfig] = {}
         self.relationships: List[RelationshipConfig] = []
+        # Layer C lifecycle workflows (YAML/JSON only — see Rules_and_Workflows.md)
+        self.workflows: List[WorkflowConfig] = []
         self.helpers = DataHelpers()
         self.run_settings: Dict[str, Any] = {}
         self.available_sheets: List[str] = []
@@ -331,11 +335,33 @@ class ConfigParser:
             result['event_time_column'] = cdc_obj.event_time
         return result
 
+    def _parse_workflows(self, raw_config: Dict[str, Any]) -> List[WorkflowConfig]:
+        """Parse the top-level ``workflows:`` block (Layer C).
+
+        Invalid entries are skipped with a warning rather than failing the
+        load — the same policy as `rules:`. ``lint`` reports them as errors,
+        which is where a config problem should stop you.
+        """
+        workflows: List[WorkflowConfig] = []
+        for raw in raw_config.get('workflows', []) or []:
+            if not isinstance(raw, dict):
+                self.logger.warning(f"Skipping non-mapping workflow entry: {raw!r}")
+                continue
+            try:
+                workflows.append(WorkflowConfig(**raw))
+            except (TypeError, ValueError, ValidationError) as exc:
+                self.logger.warning(
+                    f"Skipping invalid workflow {raw.get('name', '<unnamed>')!r}: {exc}"
+                )
+        return workflows
+
     def _load_dict_config(self, raw_config: Any, source_label: str = 'config') -> bool:
         """Shared loader for YAML and JSON inputs — both deserialize to dicts."""
         if not isinstance(raw_config, dict):
             self.logger.error(f'❌ {source_label} configuration must contain a top-level mapping')
             return False
+
+        self.workflows = self._parse_workflows(raw_config)
 
         columns_rows: List[Dict[str, Any]] = []
         tables_rows: List[Dict[str, Any]] = []
@@ -847,6 +873,20 @@ class ConfigParser:
                     f"Relationship references unknown source table '{rel.source_table}'",
                     sheet="Relationships",
                 )
+
+        # Layer C — a workflow that cannot execute produces quietly wrong
+        # lifecycles, so it is caught here rather than at generation time.
+        for workflow in self.workflows:
+            table = self.tables.get(workflow.table)
+            if table is None:
+                self._add_error(
+                    f"Workflow '{workflow.name}' targets unknown table '{workflow.table}'",
+                    sheet="workflows", table=workflow.table,
+                )
+                continue
+            columns = [c.column_name for c in table.columns]
+            for problem in validate_workflow(workflow, columns):
+                self._add_error(problem, sheet="workflows", table=workflow.table)
 
         return self._errors + self._warnings
 

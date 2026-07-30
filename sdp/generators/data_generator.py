@@ -101,6 +101,8 @@ class DataGenerator(
         self.is_fitted = False
         self.seed = seed
         self._column_audit: Dict[str, Dict[str, Any]] = {}
+        # Layer C workflow results, surfaced on the generation report.
+        self._workflow_stats: List[Dict[str, Any]] = []
         self.logger = self._setup_logging()
 
         # Enhanced PK tracking - track used values to prevent duplicates
@@ -924,6 +926,7 @@ class DataGenerator(
                         synthetic_data = self._enforce_all_relationships(synthetic_data)
                         self.generated_data = synthetic_data
                         self._resolve_foreign_keys()  # Final FK resolution
+                        self._apply_workflows()  # Layer C
                         self._apply_rules_and_derived()  # Layer A + Layer B
                         self._build_column_audit(sdv_used=True)
                         total_records = sum(len(df) for df in self.generated_data.values())
@@ -945,6 +948,7 @@ class DataGenerator(
                 self.logger.error("❌ Generated data is empty!")
                 raise ValueError("No data was generated")
 
+            self._apply_workflows()  # Layer C
             self._apply_rules_and_derived()  # Layer A + Layer B
             self._build_column_audit(sdv_used=False)
             self.logger.info(f"✅ Fallback data generation completed: {total_records} total records")
@@ -1044,11 +1048,48 @@ class DataGenerator(
     # ---------------------------------------------------------------------
     # Layer A (rules) + Layer B (derived) post-generation pass
     # ---------------------------------------------------------------------
+    def _apply_workflows(self) -> None:
+        """Layer C — walk each row through its table's lifecycle state machine.
+
+        Runs **before** Layers A and B so when/then rules and derived columns
+        see the final state value and can build on it. A workflow that cannot
+        execute is reported and skipped: losing a lifecycle is bad, losing the
+        whole run is worse.
+        """
+        workflows = getattr(self.config_parser, "workflows", None)
+        if not workflows or not self.generated_data:
+            return
+
+        from sdp.utils.workflow_engine import WorkflowError, apply_workflow
+
+        rng = np.random.default_rng(self.seed if self.seed is not None else 12345)
+        for workflow in workflows:
+            if workflow.table not in self.generated_data:
+                self.logger.warning(
+                    f"⚠️ Workflow {workflow.name!r} targets table {workflow.table!r}, "
+                    f"which was not generated — skipping"
+                )
+                continue
+            try:
+                frame, stats = apply_workflow(
+                    self.generated_data[workflow.table], workflow, rng,
+                )
+            except WorkflowError as exc:
+                self.logger.warning(f"⚠️ Workflow {workflow.name!r} skipped: {exc}")
+                continue
+            self.generated_data[workflow.table] = frame
+            self._workflow_stats.append(stats.to_dict())
+            summary = ", ".join(
+                f"{state}={count}" for state, count in sorted(stats.terminal_states.items())
+            )
+            self.logger.info(f"🔀 Workflow {workflow.name} → {workflow.table}: {summary}")
+
     def _apply_rules_and_derived(self) -> None:
         """Apply when/then rules and resolve derived columns for every table.
 
         No-op for tables with no rules and no derived columns. Runs after FK
-        resolution so cross-row references are stable.
+        resolution so cross-row references are stable, and after Layer C so
+        rules can react to the state a workflow assigned.
         """
         if not self.generated_data:
             return
@@ -1164,5 +1205,6 @@ class DataGenerator(
             "seed": self.seed,
             "column_audit": self._column_audit,
             "generation_path_summary": path_summary,
+            "workflows": list(self._workflow_stats),
             "status": "SUCCESS" if total > 0 else "FAILED",
         }

@@ -63,8 +63,7 @@ def run_mock_init(args) -> int:
         return 0
     except Exception as exc:
         logger.error(f"mock-init failed: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.debug('Full traceback:', exc_info=True)
         return 1
 
 def _detect_mock_source_type(source_path: str, override: str) -> str:
@@ -172,8 +171,7 @@ def run_mock_render(args) -> int:
         return 0 if total_files > 0 else 1
     except Exception as exc:
         logger.error(f"mock-render failed: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.debug('Full traceback:', exc_info=True)
         return 1
 
 def run_mock_enrich(args) -> int:
@@ -211,8 +209,7 @@ def run_mock_enrich(args) -> int:
         return 0
     except Exception as exc:
         logger.error(f"mock-enrich failed: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.debug('Full traceback:', exc_info=True)
         return 1
 
 def run_mock_lint(args) -> int:

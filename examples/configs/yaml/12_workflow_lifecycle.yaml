@@ -1,0 +1,92 @@
+# ==============================================================================
+# Layer C — declarative lifecycle workflows
+#
+# Random generation draws each column independently, which happily produces a
+# CANCELLED order carrying a delivery timestamp. A workflow walks each row
+# through legal transitions instead, and back-fills only the timestamps for
+# states actually visited, in increasing order.
+#
+# Run:
+#   python main.py generate --config examples/configs/yaml/12_workflow_lifecycle.yaml \
+#                           --output output/workflow_run --seed 42
+#
+# Then check the invariants hold:
+#   poetry run python readParquet.py output/workflow_run
+# ==============================================================================
+config_format: sdp-yaml-v1
+config_version: "1.0"
+
+run_settings:
+  default_records_per_table: 200
+
+tables:
+  - name: orders
+    description: Order lifecycle driven by a state machine
+    num_rows: 200
+    primary_key_columns: [order_id]
+
+    columns:
+      - name: order_id
+        data_type: N38
+        is_pk: true
+        nullable: false
+
+      - name: customer_ref
+        data_type: VA32
+        special_rules: "REGEX:CUST-\\d{6}"
+
+      # Owned by the workflow — whatever generation puts here is replaced.
+      - name: status
+        data_type: VA16
+        business_values: "PLACED;SHIPPED;DELIVERED;CANCELLED;RETURNED"
+
+      - name: placed_ts
+        data_type: DT
+        nullable: false
+      - name: shipped_ts
+        data_type: DT
+        nullable: true
+      - name: delivered_ts
+        data_type: DT
+        nullable: true
+      - name: cancelled_ts
+        data_type: DT
+        nullable: true
+      - name: returned_ts
+        data_type: DT
+        nullable: true
+
+      - name: order_total
+        data_type: DC(10,2)
+        min_value: 5
+        max_value: 2000
+
+# ------------------------------------------------------------------------------
+# The workflow itself.
+#
+# Probabilities are read *per source state*. Where they sum to less than 1, the
+# remainder is the chance of stopping in that state — which is how DELIVERED
+# below keeps 98% of its rows and returns only 2%.
+# ------------------------------------------------------------------------------
+workflows:
+  - name: order_lifecycle
+    table: orders
+    state_column: status
+    start_state: PLACED
+    start_between: ["2024-01-01", "2024-12-31"]
+    step_hours: [2, 96]
+
+    timestamps:
+      placed_ts:    PLACED
+      shipped_ts:   SHIPPED
+      delivered_ts: DELIVERED
+      cancelled_ts: CANCELLED
+      returned_ts:  RETURNED
+
+    transitions:
+      - { from: PLACED,    to: SHIPPED,   probability: 0.93 }
+      - { from: PLACED,    to: CANCELLED, probability: 0.07 }
+      - { from: SHIPPED,   to: DELIVERED, probability: 0.97 }
+      # SHIPPED -> (nothing) for the residual 3%: still in transit.
+      - { from: DELIVERED, to: RETURNED,  probability: 0.02 }
+      # DELIVERED keeps the other 98% — no transition needed for "stays".

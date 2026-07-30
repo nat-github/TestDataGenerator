@@ -116,8 +116,7 @@ def run_quality_report(args) -> int:
         )
     except Exception as exc:
         logger.error(f"quality-report failed: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.debug('Full traceback:', exc_info=True)
         return 1
 
     md = report.to_markdown(max_columns_shown=200)

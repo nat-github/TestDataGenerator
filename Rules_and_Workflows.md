@@ -2,7 +2,7 @@
 
 This guide covers the **column-level conditional logic** and **declarative state-machine workflows** added to the Synthetic Data Platform. These features let you make generated data realistic by expressing the kind of business rules you'd see in production — without writing Python.
 
-> **Status:** Layer A (rules) and Layer B (derived) are shipped. Layer C (state-machine workflows) is documented here but planned for v2.
+> **Status:** all three layers are shipped. Layer C (state-machine workflows) is YAML/JSON only — Excel authoring is not yet supported.
 
 ## Why this exists
 
@@ -12,9 +12,9 @@ Random generation produces realistic *individual* values but loses the relations
 |---|---|---|---|
 | **A** — when/then rules | Override a column's value based on other columns in the same row | "if status = CLOSED, closure_date is between 2020-01-01 and today" | ✅ v1 |
 | **B** — derived columns | Compute a column deterministically from other columns | "full_name = {first} + ' ' + {last}" | ✅ v1 |
-| **C** — workflows | State-machine over multiple status/timestamp columns per row | "Order: PLACED → SHIPPED → DELIVERED, with timestamps that monotonically increase" | 🚧 v2 |
+| **C** — workflows | State-machine over multiple status/timestamp columns per row | "Order: PLACED → SHIPPED → DELIVERED, with timestamps that monotonically increase" | ✅ v1 (YAML/JSON) |
 
-All three layers run **after** SDV / fallback generation and **after** FK resolution, so your foreign keys and parent-child cardinalities are stable when the rules fire.
+All three layers run **after** SDV / fallback generation and **after** FK resolution, so your foreign keys and parent-child cardinalities are stable when the rules fire. Within that pass the order is **C → A → B**: a workflow assigns the lifecycle, then rules react to it, then derived columns compute from the result.
 
 ---
 
@@ -208,42 +208,147 @@ If a derived expression references a column that doesn't exist (typo), the evalu
 
 ---
 
-## Layer C — declarative workflows (planned)
+## Layer C — declarative workflows
 
-> **Not yet implemented.** Documented here so you can shape your data model around it.
+> **Shipped.** YAML and JSON configs only — Excel authoring is not yet
+> supported. Validated by `python main.py lint`.
 
-For datasets where rows have a **lifecycle** (orders, claims, loans, accounts), use a state-machine workflow:
+For datasets where rows have a **lifecycle** (orders, claims, loans,
+accounts), a workflow replaces independent column draws with a walk through
+a state machine.
+
+Without it, random generation produces a CANCELLED order that carries a
+delivery timestamp, or a DELIVERED order that was never shipped. Those rows
+are the ones that make a downstream test pass when it should fail.
 
 ```yaml
 workflows:
   - name: order_lifecycle
     table: orders
     state_column: status
-    timestamps:                    # column → state that produces it
+    start_state: PLACED                        # optional — inferred when unambiguous
+    start_between: ["2024-01-01", "2024-12-31"]  # optional — window for the first timestamp
+    step_hours: [2, 96]                        # optional — gap between consecutive states
+
+    timestamps:                                # column → state that produces it
       placed_ts:    PLACED
       shipped_ts:   SHIPPED
       delivered_ts: DELIVERED
       cancelled_ts: CANCELLED
+      returned_ts:  RETURNED
+
     transitions:
-      - { from: PLACED,  to: SHIPPED,    probability: 0.95 }
-      - { from: PLACED,  to: CANCELLED,  probability: 0.05 }
-      - { from: SHIPPED, to: DELIVERED,  probability: 0.98 }
-      - { from: SHIPPED, to: RETURNED,   probability: 0.02 }
+      - { from: PLACED,    to: SHIPPED,   probability: 0.93 }
+      - { from: PLACED,    to: CANCELLED, probability: 0.07 }
+      - { from: SHIPPED,   to: DELIVERED, probability: 0.97 }
+      - { from: DELIVERED, to: RETURNED,  probability: 0.02 }
 ```
 
-The generator will:
-1. For each row, pick a terminal state weighted by transition probabilities.
-2. Back-fill timestamps for every state visited (monotonically increasing).
-3. Leave timestamps for unvisited states as `null`.
+Runnable example: `examples/configs/yaml/12_workflow_lifecycle.yaml`.
 
-This produces realistic distributions: ~95% delivered, ~5% cancelled, ~2% returned-after-shipping, etc.
+### What it guarantees
 
-Until v2 ships, you can fake a workflow using rules + derived columns:
-- Generate `status` as a categorical with weighted business_values.
-- Use rules to null out timestamps that don't apply for that status.
-- Use derived columns to ensure timestamps are monotonic per row.
+For every row:
 
----
+1. The path starts at `start_state` and follows **only declared transitions**.
+2. Each visited state's timestamp column gets a value, **strictly increasing**
+   along the path.
+3. Columns for states **not** visited are `NULL`.
+4. The `state_column` is set to the terminal state.
+
+So `delivered_ts > shipped_ts > placed_ts` holds by construction, a
+CANCELLED row has no `shipped_ts` or `delivered_ts`, and a DELIVERED row
+always has a `shipped_ts`.
+
+### Probabilities: the residual rule
+
+Probabilities are read **per source state**. Where the outgoing
+probabilities sum to less than 1, **the remainder is the chance of stopping
+in that state**.
+
+In the example above:
+
+| State | Outgoing | Residual | Meaning |
+|---|---|---|---|
+| `PLACED` | 0.93 + 0.07 = 1.0 | 0 | always moves on |
+| `SHIPPED` | 0.97 | 0.03 | 3% stay in transit |
+| `DELIVERED` | 0.02 | 0.98 | 98% stay delivered |
+| `CANCELLED` | none | 1.0 | terminal |
+
+That is how a state stays non-terminal in the schema while still absorbing
+most of its rows. A state with no outgoing transitions is terminal outright.
+
+A measured run of the shipped example, 300 rows:
+
+```
+🔀 Workflow order_lifecycle → orders: CANCELLED=22, DELIVERED=270, RETURNED=3, SHIPPED=5
+```
+
+### Fields
+
+| Field | Required | Meaning |
+|---|:---:|---|
+| `name` | ✅ | Identifier, used in logs and the generation report |
+| `table` | ✅ | Table the workflow applies to |
+| `state_column` | ✅ | Column that receives the terminal state. **Overwritten** — whatever generation produced is replaced |
+| `transitions` | ✅ | List of `{from, to, probability}`. `probability` defaults to 1.0 |
+| `timestamps` | — | `column: state` map. Omit for a state-only workflow |
+| `start_state` | — | Inferred when exactly one state is never a transition target; **required otherwise** (e.g. any cyclic workflow) |
+| `start_between` | — | `[min, max]` ISO dates for the first timestamp. Defaults to the last 365 days |
+| `step_hours` | — | `[min, max]` gap between consecutive state timestamps. Defaults to `[1, 72]` |
+
+### Cycles
+
+Cycles are allowed — a claim can reopen, an account can be suspended and
+reactivated:
+
+```yaml
+transitions:
+  - { from: OPEN,   to: CLOSED, probability: 0.8 }
+  - { from: CLOSED, to: OPEN,   probability: 0.3 }
+```
+
+Two consequences:
+
+- `start_state` **must be declared**, because no state is a natural root.
+- Walks are capped at 50 steps. Rows that hit the cap are counted and
+  logged as `truncated_walks`; a revisited state's timestamp holds the
+  **last** time it was entered.
+
+### Ordering against Layers A and B
+
+Layer C runs **first**, then Layer A rules, then Layer B derived columns.
+
+That ordering is deliberate: rules and derived columns can react to the
+state the workflow assigned. A rule keyed on `status == CANCELLED` sees the
+workflow's verdict, not a random draw.
+
+The corollary is that **a Layer A rule targeting the state column will
+override the workflow.** If you have both, the rule wins — which is
+occasionally what you want, and otherwise a bug worth knowing about.
+
+### Validation
+
+`python main.py lint` reports, as errors:
+
+- a `state_column` or `timestamps` column absent from the table
+- a `timestamps` entry pointing at a state no transition mentions
+- outgoing probabilities summing above 1.0
+- a `start_state` that cannot be inferred and was not declared
+- `step_hours` that is not `[min, max]`
+
+A workflow that fails to parse is skipped with a warning at load time and
+reported as an error by `lint` — the same policy as `rules:`.
+
+### Limitations
+
+- **YAML/JSON only.** There is no `Workflows` Excel sheet yet.
+- **One workflow per table.** Two workflows naming the same table both run,
+  and the second overwrites the first's state column. Don't.
+- **Timestamps are generated, not derived from existing values.** The
+  workflow owns those columns entirely.
+- **No per-state dwell distributions.** `step_hours` is a single uniform
+  range for every transition.
 
 ## Authoring formats
 

@@ -351,8 +351,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
     except Exception as exc:
         logger.error(f"Unexpected error: {exc}")
-        import traceback
-        traceback.print_exc()
+        logger.debug('Full traceback:', exc_info=True)
         return 1
 
 
