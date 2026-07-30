@@ -290,14 +290,25 @@ class ParquetPostProcessor:
             backup_dir = table_dir / f"_delta_log_bak_{uuid.uuid4().hex[:8]}"
             shutil.copytree(str(log_dir), str(backup_dir))
 
+        write_mode = self._delta_write_mode()
+        if write_mode == "overwrite" and log_dir.exists():
+            # Silent history loss is the worst failure mode here: a delta table
+            # is a change feed, and overwriting discards every batch written
+            # before this one.
+            self.logger.warning(
+                f"Delta table {table_name!r} already exists and delta_write_mode is "
+                f"'overwrite' — its previous change history will be replaced. "
+                f"Set delta_write_mode: append in Run_Settings to accumulate batches."
+            )
+
         write_deltalake = _require_deltalake_writer()
         try:
             write_deltalake(
                 str(table_dir),
                 pa.Table.from_pandas(export_df, preserve_index=False),
-                mode="overwrite",
+                mode=write_mode,
                 partition_by=partition_columns or None,
-                schema_mode="overwrite",
+                schema_mode="overwrite" if write_mode == "overwrite" else "merge",
             )
         except Exception:
             if backup_dir and backup_dir.exists():
@@ -345,6 +356,29 @@ class ParquetPostProcessor:
 
         partition_column = str(self.run_settings.get("delta_partition_column", "edl_partition_date")).strip()
         return [partition_column or "edl_partition_date"]
+
+    #: Delta write modes we accept. `error` refuses to touch an existing table.
+    _DELTA_WRITE_MODES = {"overwrite", "append", "error"}
+
+    def _delta_write_mode(self) -> str:
+        """How to write a delta table that already exists.
+
+        Default stays ``overwrite`` deliberately. Flipping it would silently
+        change what every existing delta output *means* — accumulating
+        batches instead of replacing them — and duplicated rows in a
+        downstream pipeline are a quieter, nastier failure than the
+        documented status quo. Callers who want an accumulating change feed
+        opt in with ``delta_write_mode: append``; the overwrite path warns
+        before discarding history.
+        """
+        mode = str(self.run_settings.get("delta_write_mode", "overwrite")).strip().lower()
+        if mode not in self._DELTA_WRITE_MODES:
+            self.logger.warning(
+                f"Unknown delta_write_mode {mode!r}; falling back to 'overwrite'. "
+                f"Valid: {', '.join(sorted(self._DELTA_WRITE_MODES))}"
+            )
+            return "overwrite"
+        return mode
 
     def _prepare_delta_target_directory(self, table_dir: Path) -> None:
         log_dir = table_dir / "_delta_log"

@@ -104,15 +104,20 @@ def generate_data(
     tables = parser.parse_tables()
     parser.parse_relationships()
 
-    gen = DataGenerator(parser)
+    # DataGenerator takes the config *path* and parses it itself; the seed is
+    # a constructor argument, not a per-call one.
+    gen = DataGenerator(str(cfg_path), seed=seed)
+    if not gen.load_configuration():
+        return {"ok": False, "error": "Failed to load configuration"}
+
     records_config = {
         name: cap for name, cfg in tables.items() if cfg.active
     }
 
     try:
         gen.create_sdv_metadata()
-        gen.train_synthesizer(sample_size=min(cap, 200), seed=seed)
-        gen.generate_data(records_config=records_config, seed=seed)
+        gen.train_synthesizer(sample_size=min(cap, 200))
+        gen.generate_data(records_config)
         gen.export_to_parquet(str(out_dir))
     except Exception as exc:
         return {

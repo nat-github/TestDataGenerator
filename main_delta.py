@@ -127,7 +127,7 @@ def main():
 
         # Get record counts
         records_config = get_record_counts(table_names, args)
-        print(f"\n🎯 Generation settings:")
+        print("\n🎯 Generation settings:")
         print(f" Config file: {args.config}")
         print(f" Output root: {args.output}")
         print(f" Default records per table: {args.default_records}")

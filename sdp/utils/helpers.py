@@ -5,7 +5,6 @@ from __future__ import annotations
 import random
 import re
 import string
-import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -226,7 +225,6 @@ class DataHelpers:
         return self.get_currency_name(code) is not None
 
     def generate_currency_code(self, prefer: Optional[List[str]] = None) -> str:
-        codes = list(CURRENCY_CODE_TO_NAME.keys())
         if prefer:
             prefer = [c.upper() for c in prefer if c and self.is_valid_currency_code(c)]
             if prefer:

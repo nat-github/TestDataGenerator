@@ -719,7 +719,7 @@ def _append_utility_section(lines: List[str], t: TableQualityMetrics) -> None:
     if u is None:
         return
 
-    lines.append(f"### Utility — can a model still learn from this data?")
+    lines.append("### Utility — can a model still learn from this data?")
     lines.append("")
     lines.append(f"Predicting **`{u.target_column}`** ({u.task}, scored by `{u.metric}`)")
     lines.append("")

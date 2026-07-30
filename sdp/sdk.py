@@ -176,6 +176,10 @@ class SyntheticDataPlatform:
         validate_with_gx: bool = False,
         gx_tolerance: Optional[float] = None,
         verbose: bool = False,
+        # --- Generation engine (see Synthesizer_Engines.md) ---
+        engine: Optional[str] = None,
+        engine_options: Optional[Dict[str, Any]] = None,
+        epsilon: Optional[float] = None,
         # --- Delta Lake direct write (additive; default = off) ---
         write_delta: bool = False,
         delta_partition_col: Optional[str] = None,
@@ -188,6 +192,17 @@ class SyntheticDataPlatform:
         When ``output`` is omitted a temporary directory is created and kept
         (so :attr:`GenerationResult.frames` can read it back); the caller owns
         cleanup of that directory.
+
+        ``engine`` selects the generation engine (``sdv``, ``gaussian-copula``,
+        ``ctgan``, ``tvae``, ``dp-marginal``, ``rule-based``); ``epsilon`` sets
+        the privacy budget for ``dp-marginal``. See ``Synthesizer_Engines.md``.
+
+        Note: this method builds a CLI argument vector and invokes
+        ``sdp.cli.main`` in-process. It is a wrapper, not an independent code
+        path — every flag maps to a CLI flag, and behaviour is identical to
+        running the CLI. That keeps the two surfaces from drifting, but it
+        also means the SDK cannot currently return richer objects than the
+        CLI produces.
         """
         out_dir = Path(output) if output is not None else Path(
             tempfile.mkdtemp(prefix="sdp_generate_")
@@ -230,6 +245,14 @@ class SyntheticDataPlatform:
             argv += ["--gx-tolerance", str(gx_tolerance)]
         if verbose:
             argv.append("--verbose")
+        # --- Generation engine ---
+        if engine is not None:
+            argv += ["--engine", str(engine)]
+        if epsilon is not None:
+            argv += ["--epsilon", str(epsilon)]
+        if engine_options:
+            for key, value in engine_options.items():
+                argv += ["--engine-option", f"{key}={value}"]
         # --- Delta Lake direct write ---
         if write_delta:
             argv.append("--write-delta")

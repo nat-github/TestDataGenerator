@@ -172,27 +172,66 @@ def test_read_example_raises_on_unknown_name():
 # ---------------------------------------------------------------------------
 
 
+def test_generate_data_runs_end_to_end(tmp_path: Path):
+    """Drive the real DataGenerator — no stubs.
+
+    This test exists because the previous version monkeypatched
+    `train_synthesizer`, `generate_data` and `export_to_parquet` with
+    permissive signatures, which hid three genuine signature mismatches in
+    the MCP tool: `DataGenerator(parser)` (it takes a path), a `seed=`
+    argument `train_synthesizer` does not accept, and a `records_config=`
+    keyword `generate_data` does not accept. Every call failed at runtime
+    and was swallowed by the tool's `except Exception`, so MCP generation
+    had never worked. Stubs that accept anything cannot catch that; only
+    calling the real thing can.
+    """
+    cfg = EXAMPLES_YAML / "01_simple_users.yaml"
+    out_dir = tmp_path / "out"
+
+    out = _call(
+        "generate_data",
+        config_path=str(cfg),
+        output_dir=str(out_dir),
+        default_records=25,
+        seed=42,
+    )
+
+    assert out["ok"] is True, out
+    assert out["tables"], "no parquet files were written"
+
+    import pandas as pd
+    for name in out["tables"]:
+        frame = pd.read_parquet(out_dir / name)
+        assert len(frame) == 25
+        assert not frame.empty
+
+
 def test_generate_data_caps_at_max_rows(tmp_path: Path, monkeypatch):
-    """Confirm the 10k row cap is enforced — even when caller passes higher."""
+    """The 10k cap is enforced even when the caller asks for more.
+
+    Only `export_to_parquet` is stubbed here — writing 10k rows would make
+    the test slow — and the stub keeps the real signature so a change to it
+    still breaks this test.
+    """
     cfg = EXAMPLES_YAML / "01_simple_users.yaml"
     captured = {}
 
-    # Stub out heavy SDV calls so the test is fast
     from sdp.generators.data_generator import DataGenerator
 
-    def fake_train(self, sample_size=None, seed=None):
-        return None
+    real_generate = DataGenerator.generate_data
 
-    def fake_generate(self, records_config, seed=None):
-        captured["records_config"] = records_config
+    def spy_generate(self, records_per_table):
+        captured["records_per_table"] = records_per_table
+        # Return empty frames rather than generating 10k rows per table.
+        import pandas as pd
+        self.generated_data = {t: pd.DataFrame() for t in records_per_table}
+        return self.generated_data
 
     def fake_export(self, output_dir):
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        # Touch a placeholder so the tool's parquet glob finds something
         (Path(output_dir) / "users.parquet").write_bytes(b"")
 
-    monkeypatch.setattr(DataGenerator, "train_synthesizer", fake_train)
-    monkeypatch.setattr(DataGenerator, "generate_data", fake_generate)
+    monkeypatch.setattr(DataGenerator, "generate_data", spy_generate)
     monkeypatch.setattr(DataGenerator, "export_to_parquet", fake_export)
 
     out = _call(
@@ -203,9 +242,13 @@ def test_generate_data_caps_at_max_rows(tmp_path: Path, monkeypatch):
     )
     assert out["ok"] is True
     assert out["rows_per_table"] == srv.MAX_ROWS_PER_TABLE
-    # The records_config the generator saw must also be capped
-    for cap in captured["records_config"].values():
+    for cap in captured["records_per_table"].values():
         assert cap == srv.MAX_ROWS_PER_TABLE
+
+    # The spy must match the real signature, or it would hide drift again.
+    import inspect
+    assert list(inspect.signature(real_generate).parameters) == \
+        list(inspect.signature(spy_generate).parameters)
 
 
 # ---------------------------------------------------------------------------

@@ -72,14 +72,14 @@ class ParquetDuckDBRunner:
         if not self.loaded_tables:
             self.load_parquet_files()
 
-        print(f"\n🚀 Executing SQL Query:")
+        print("\n🚀 Executing SQL Query:")
         print(f"```sql\n{sql_query}\n```")
 
         try:
             # Execute query directly in DuckDB
             result = self.conn.execute(sql_query).fetchdf()
 
-            print(f"✅ Query executed successfully")
+            print("✅ Query executed successfully")
             print(f"📊 Result: {len(result)} records")
 
             return result
@@ -185,7 +185,7 @@ if __name__ == "__main__":
         try:
             result = runner.run_sql(sql_query)
             if len(result) > 0:
-                print(f"📄 Results:")
+                print("📄 Results:")
                 print(result.to_string(index=False, max_rows=10))
         except Exception as e:
             print(f"⚠ Query might fail if tables don't exist: {e}")

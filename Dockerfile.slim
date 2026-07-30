@@ -1,0 +1,87 @@
+# Synthetic Data Platform — slim image
+#
+# The default Dockerfile installs every optional extra (gx, ui, mcp, mimesis)
+# so one image covers every feature. That image is large, mostly because the
+# SDV stack pulls in torch.
+#
+# This variant installs **no extras**: CLI generation, delta/SCD2, quality
+# reports, contracts and the mock renderers only. No Streamlit UI, no MCP
+# server, no Great Expectations, no Mimesis.
+#
+# Build:
+#   docker build -f Dockerfile.slim -t sdp:slim .
+#
+# Run (identical interface to the full image, minus the ui/mcp verbs):
+#   docker run --rm -v "$PWD:/work" sdp:slim generate --config /work/x.yaml --output /work/out
+#
+# What is *not* removed: sdv and torch are still core dependencies of the
+# project, so they are present here too. Making them optional would mean
+# decoupling `generators/data_generator.py` from its module-level sdv
+# imports — a real change, not a packaging one, and out of scope for a
+# Dockerfile. Use `--engine rule-based` or `--engine dp-marginal` if you
+# want generation that never touches them at runtime.
+
+# ---------------------------------------------------------------------------
+# Builder stage
+# ---------------------------------------------------------------------------
+FROM python:3.13-slim AS builder
+
+ENV POETRY_VERSION=2.2.1 \
+    POETRY_HOME=/opt/poetry \
+    POETRY_VIRTUALENVS_CREATE=true \
+    POETRY_VIRTUALENVS_IN_PROJECT=true \
+    POETRY_NO_INTERACTION=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        gcc \
+        curl \
+        ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sSL https://install.python-poetry.org | python3 - \
+    && ln -s ${POETRY_HOME}/bin/poetry /usr/local/bin/poetry
+
+WORKDIR /app
+
+COPY pyproject.toml poetry.lock ./
+
+# No --extras: this is the whole point of the slim variant.
+RUN poetry install --no-root --without dev
+
+COPY . .
+
+RUN poetry install --without dev
+
+
+# ---------------------------------------------------------------------------
+# Runtime stage
+# ---------------------------------------------------------------------------
+FROM python:3.13-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/app/.venv/bin:${PATH}"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN useradd --create-home --shell /bin/bash sdp
+
+WORKDIR /app
+
+COPY --from=builder --chown=sdp:sdp /app /app
+
+COPY --chown=root:root docker/sdp-entrypoint.sh /usr/local/bin/sdp-entrypoint.sh
+RUN chmod +x /usr/local/bin/sdp-entrypoint.sh
+
+USER sdp
+
+VOLUME ["/work"]
+WORKDIR /work
+
+ENTRYPOINT ["sdp-entrypoint.sh"]
+CMD ["help"]

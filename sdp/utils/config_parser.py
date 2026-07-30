@@ -740,7 +740,11 @@ class ConfigParser:
 
         # must be explicit booleans and have ref_table/ref_column
         fk_mask = (
-            (self.config_df.get('is_fk', False) == True) &
+            # noqa is deliberate: on a Series this is an elementwise mask that
+            # matches only literal True. Plain truthiness would also match
+            # non-empty strings in an object-dtype column, which is exactly
+            # what "must be explicit booleans" rules out.
+            (self.config_df.get('is_fk', False) == True) &  # noqa: E712
             (self.config_df.get('ref_table').notna()) &
             (self.config_df.get('ref_column').notna())
         )

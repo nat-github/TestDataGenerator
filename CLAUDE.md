@@ -104,8 +104,15 @@ python -c "from sdp import SyntheticDataPlatform; \
 poetry install --extras api
 poetry run sdp-api --host 0.0.0.0 --port 8000      # docs at http://localhost:8000/docs
 
-# Run all tests
+# Run all tests (pytest lives in the dev group — `poetry install` includes it,
+# but the published wheel does not depend on it)
 poetry run pytest tests/ -v
+
+# Lint (ruff config in pyproject.toml — narrow rule set, kept at zero findings)
+poetry run ruff check .
+
+# Build a slim image without the ui/mcp/gx/mimesis extras
+docker build -f Dockerfile.slim -t sdp:slim .
 
 # Run a single test
 poetry run pytest tests/test_config_and_parquet_flows.py::test_name -v
@@ -193,7 +200,7 @@ Excel / YAML Config
 | `generators/data_generator.py` | Main orchestrator — SDV training, data generation, FK resolution, Parquet export |
 | `utils/config_parser.py` | Excel & YAML parsing, validation with row/column error context, `lint_config()` |
 | `utils/helpers.py` | Regex generation, Faker integration (18 locales), type coercion, NULL rate logic, 60+ special rules |
-| `utils/parquet_post_processor.py` | Delta (I/U/D) and SCD2 effective-dating logic with delta-log rollback safety |
+| `utils/parquet_post_processor.py` | Delta (I/U/D) and SCD2 effective-dating logic with delta-log rollback safety. Delta writes honour `delta_write_mode` (`overwrite` default / `append` / `error`); the overwrite path warns before discarding an existing table's change history. |
 | `utils/rule_evaluator.py` | Layer A (when/then) and Layer B (derived expressions) post-generation pass — operates on plain dicts so it can be reused by stub/mock renderers later |
 | `utils/mimesis_provider.py` | Optional Mimesis adapter — handles `MIMESIS_*` special rules. Lazy import; the library is an optional poetry extra |
 | `utils/data_validator.py` | Post-generation FK relationship validation |
@@ -337,8 +344,13 @@ Tests live in `tests/`:
 - `test_synthesizer_engines.py` — engine registry, shared sampling helper (including the `num_rows`→`scale` fallback), engine contract, `DataGenerator` wiring, and the back-compat guarantee that a directly-assigned `generator.synthesizer` still samples.
 - `test_utility_and_bias.py` — TSTR utility and bias drift. Fixtures carry a *known* answer (a learnable signal that synthetic data either preserves or destroys; a group skew that is either faithful or amplified), so the tests check the metrics measure what they claim — including the case fidelity misses: identical marginals, zero utility.
 
+- `test_hardening_fixes.py` — regression guards for defects found in platform assessment: the missing `Path` import in `collibra_importer` (NameError on every write), the hardcoded destructive delta overwrite, engine flags unreachable from the SDK, deprecated packaging metadata, and an AST-based check that library modules never `print()`.
+
 CI (`.github/workflows/ci.yml`) runs the full suite with all extras on every
-push and pull request. No linting is configured yet (pending item in `Pending_Items.md`).
+push and pull request. Linting is configured via `[tool.ruff]` in
+`pyproject.toml` — a deliberately narrow rule set (undefined names, unused
+imports/variables, mutable defaults, bare excepts) kept at zero findings, so
+it can be widened without a repo-wide restyle.
 
 ## Relationship Inference
 

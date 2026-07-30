@@ -218,7 +218,7 @@ def _render_summary(cfg) -> None:
     """Show the MockConfig summary inline."""
     st.markdown(f"**Endpoints:** {len(cfg.endpoints)}  •  **Schemas:** {len(cfg.schemas)}")
     if cfg.servers:
-        st.caption(f"Servers: " + ", ".join(s.url for s in cfg.servers))
+        st.caption("Servers: " + ", ".join(s.url for s in cfg.servers))
 
     if cfg.endpoints:
         rows = []

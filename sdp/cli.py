@@ -1182,7 +1182,7 @@ def _run_er_diagram(generator, args) -> None:
         gen = ERDiagramGenerator(generator.tables_config, generator.relationships)
         written = gen.save(er_output, formats=er_formats)
         if written:
-            logger.info(f"\nER diagram(s) saved:")
+            logger.info("\nER diagram(s) saved:")
             for p in written:
                 logger.info(f"  {p}")
             if any(str(p).endswith(".mmd") for p in written):
@@ -1250,7 +1250,7 @@ def run_infer_config(args) -> int:
         n_cols = len(table_cfg.get("columns", []))
         pii_cols = [c for c in table_cfg.get("columns", []) if "_pii_note" in c]
         lines = [
-            f"",
+            "",
             f"Config written to: {out}",
             f"  Table: {table_cfg['name']} | {n_cols} column(s) inferred",
         ]
@@ -1390,7 +1390,7 @@ def run_infer_relationships(args) -> int:
             _write_er_diagram(Path(args.er_output), tables, existing + inferred)
 
         # Print summary
-        print(f"\n=== Inference summary ===")
+        print("\n=== Inference summary ===")
         print(f"Method:                 {method}")
         if method in ("ml", "both"):
             print(f"ML mode:                {getattr(args, 'ml_mode', 'standard')}")
@@ -1725,7 +1725,7 @@ def run_record_feedback(args) -> int:
             store.append(entry)
             added += 1
 
-        print(f"=== Feedback recorded ===")
+        print("=== Feedback recorded ===")
         print(f"  Accepted (kept):  {accept_count}")
         print(f"  Rejected (gone):  {reject_count}")
         print(f"  SME-added:        {added}")
@@ -1770,7 +1770,7 @@ def run_mock_init(args) -> int:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         dump_mock_config(cfg, out_path)
 
-        print(f"=== mock-init ===")
+        print("=== mock-init ===")
         print(f"  Source:      {args.source}")
         print(f"  Source type: {source_type}")
         print(f"  Output:      {out_path}")
@@ -1883,7 +1883,7 @@ def run_mock_render(args) -> int:
             else:
                 logger.warning(f"Unknown format: {fmt} — skipping")
 
-        print(f"\n=== mock-render ===")
+        print("\n=== mock-render ===")
         print(f"  Config:    {args.config}")
         print(f"  Output:    {out_dir}")
         print(f"  Formats:   {formats}")
@@ -1919,7 +1919,7 @@ def run_mock_enrich(args) -> int:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         dump_mock_config(enriched, out_path)
 
-        print(f"=== mock-enrich ===")
+        print("=== mock-enrich ===")
         print(f"  Source:           {args.config}")
         print(f"  Output:           {out_path}")
         print(f"  Examples added:   {result.examples_added}")

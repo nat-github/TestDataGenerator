@@ -213,6 +213,32 @@ python main.py generate \
 
 Delta is a **separate post-processing command**. It does not generate data from Excel directly. It compares two parquet snapshot folders and writes a **real Delta Lake table** per eligible output table.
 
+> ### ⚠️ Delta writes overwrite by default
+>
+> Each delta run writes its change batch with `mode="overwrite"`, which
+> **replaces the entire Delta table** — including change history written by
+> earlier runs. If you run delta repeatedly against the same output
+> directory expecting an accumulating change feed, you will only ever see
+> the most recent batch.
+>
+> The run logs a warning before replacing an existing table. To accumulate
+> batches instead, set `delta_write_mode` in `Run_Settings`:
+>
+> ```yaml
+> run_settings:
+>   delta_write_mode: append     # overwrite (default) | append | error
+> ```
+>
+> | Mode | Behaviour |
+> |---|---|
+> | `overwrite` *(default)* | Replaces the table and its schema. Previous batches are lost. |
+> | `append` | Adds this batch to the existing table; schema is merged. |
+> | `error` | Refuses to write when the table already exists. |
+>
+> The default is unchanged for backward compatibility: switching it would
+> silently alter what every existing delta output means. Pick `append`
+> deliberately when you want a change feed.
+
 ### Basic delta command
 ```zsh
 python main.py delta \

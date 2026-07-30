@@ -1,9 +1,18 @@
-[tool.poetry]
+[project]
 name = "synthetic-data-platform"
 version = "0.3.0"
 description = "Synthetic Data Platform — relationship-aware synthetic data generation with GenAI, a REST API and a Python SDK"
-authors = ["Your Name <you@example.com>"]
 readme = "README.md"
+requires-python = ">=3.11,<3.14"
+authors = [{ name = "nat-github" }]
+license = { text = "Proprietary" }
+keywords = ["synthetic-data", "test-data", "sdv", "parquet", "delta-lake", "differential-privacy"]
+
+[project.scripts]
+sdp = "sdp.cli:main"
+sdp-api = "sdp.api.__main__:main"
+
+[tool.poetry]
 packages = [{ include = "sdp" }]
 
 
@@ -124,10 +133,13 @@ threadpoolctl = "3.6.0"
 toolz = "1.0.0"
 urllib3 = "2.4.0"
 
-# --- Testing ---
+[tool.poetry.group.dev.dependencies]
+# Test tooling is not a runtime requirement — keeping it out of the main
+# dependency table stops pytest shipping as a dependency of the wheel.
 pytest = "8.3.5"
 pytest-bdd = "8.1.0"
 pytest-cov = ">=6.0.0"
+ruff = ">=0.6"
 
 [tool.poetry.extras]
 mimesis = ["mimesis"]
@@ -136,9 +148,23 @@ mcp = ["mcp"]
 gx = ["great-expectations"]
 api = ["fastapi", "uvicorn", "python-multipart"]
 
-[tool.poetry.scripts]
-sdp = "sdp.cli:main"
-sdp-api = "sdp.api.__main__:main"
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["build", "dist", ".venv", "output"]
+
+[tool.ruff.lint]
+# Deliberately narrow to start: rules that catch real defects (undefined
+# names, unused imports, mutable default arguments, bare excepts) without
+# demanding a repo-wide restyle. Widen once these are clean.
+select = ["F", "E9", "B006", "B008", "E711", "E712", "E713", "E714", "E722"]
+ignore = ["F401"]   # re-exports in __init__.py are intentional
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["F811", "F841"]
+# FastAPI's Depends()/File()/Form() in defaults is the framework's idiom,
+# not the mutable-default bug B008 exists to catch.
+"sdp/api/app.py" = ["B008"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -564,7 +564,6 @@ class DataGenerator:
 
         elif base_type == "A":
             # For alphabetic, generate beyond specified length if needed
-            chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
             if length and seq_val <= (26 ** length):
                 # Within original capacity - generate normally
                 pk_value = self._generate_alphabetic_sequence(seq_val, length)

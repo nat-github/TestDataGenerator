@@ -520,8 +520,6 @@ def apply_to_dataframe(
     if not has_rules and not derived_order:
         return df
 
-    columns_by_name = {c.column_name: c for c in table_config.columns}
-
     out = df.copy()
     records = out.to_dict(orient='records')
 
