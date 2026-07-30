@@ -29,13 +29,46 @@ import pyarrow.parquet as pq
 from sdv.metadata import Metadata
 from sdv.multi_table import HMASynthesizer
 
+from sdp.generators._anchors import AnchorMixin
+from sdp.generators._arrow_export import ArrowExportMixin
+from sdp.generators._model_cache import ModelCacheMixin
+from sdp.generators._primary_keys import PrimaryKeyMixin
+from sdp.generators._relationships import RelationshipMixin
+from sdp.generators._sdv_metadata import SDVMetadataMixin
 from sdp.models.config_models import TableConfig, RelationshipConfig
 from sdp.utils.config_parser import ConfigParser
 from sdp.utils.helpers import DataHelpers
 from sdp.utils.rule_evaluator import apply_to_dataframe as apply_rules_to_dataframe
 
 
-class DataGenerator:
+class DataGenerator(
+    AnchorMixin,
+    PrimaryKeyMixin,
+    SDVMetadataMixin,
+    RelationshipMixin,
+    ModelCacheMixin,
+    ArrowExportMixin,
+):
+    """Orchestrates generation: config → metadata → train → generate → export.
+
+    The concerns below are inherited rather than defined here — each was
+    lifted verbatim into its own module so this class stays readable:
+
+    ==================== ============================================
+    Mixin                Owns
+    ==================== ============================================
+    ``AnchorMixin``      ``source:`` tables loaded from real data
+    ``PrimaryKeyMixin``  PK generation and uniqueness repair
+    ``SDVMetadataMixin`` SDV metadata + training-sample sanitisation
+    ``RelationshipMixin``FK resolution and referential integrity
+    ``ModelCacheMixin``  fingerprint-keyed artifact caching
+    ``ArrowExportMixin`` Arrow casting and Parquet export
+    ==================== ============================================
+
+    What remains here is the orchestration itself plus per-column value
+    generation, rules/derived columns, and the fallback path.
+    """
+
     SAFE_DATETIME_MIN = pd.Timestamp("1900-01-01 00:00:00")
     SAFE_DATETIME_MAX = pd.Timestamp("2262-04-11 23:47:16")
 
@@ -131,527 +164,30 @@ class DataGenerator:
             self.logger.error(f"❌ Error loading configuration: {e}")
             return False
 
-    def _initialize_pk_tracking(self):
-        """Initialize primary key tracking for all tables"""
-        for table_name, table_config in self.tables_config.items():
-            pk_columns = [col for col in table_config.columns if col.is_pk]
-            for pk_col in pk_columns:
-                self.pk_sequences[(table_name, pk_col.column_name)] = 1
-                self.used_pk_values[(table_name, pk_col.column_name)] = set()
 
     # ---------------------------------------------------------------------
     # Anchored generation — load real datasets declared via `source:`
     # ---------------------------------------------------------------------
-    def _resolve_source_path(self, source: str) -> Path:
-        """Resolve a table's `source:` path — as given, then relative to the
-        config file's directory, then relative to the working directory."""
-        candidates = [Path(source)]
-        config_dir = Path(self.config_file).resolve().parent
-        candidates.append(config_dir / source)
-        candidates.append(Path.cwd() / source)
-        for candidate in candidates:
-            if candidate.is_file():
-                return candidate
-        # Nothing matched — return the most informative candidate for the error.
-        return candidates[0]
 
-    def _load_anchor_tables(self) -> None:
-        """Load every table that declares a `source:` dataset into ``anchor_data``.
 
-        Supported formats: ``.parquet`` and ``.csv``. The loaded data must
-        contain all columns declared for the table in the config; extra columns
-        are dropped with a warning. Anchor tables are never generated — they are
-        used verbatim and also feed SDV training.
-        """
-        self.anchor_data = {}
-        for table_name, table_config in self.tables_config.items():
-            source = getattr(table_config, "source", None)
-            if not source:
-                continue
 
-            path = self._resolve_source_path(str(source))
-            if not path.is_file():
-                raise FileNotFoundError(
-                    f"Anchor table '{table_name}': source dataset not found — '{source}'"
-                )
 
-            suffix = path.suffix.lower()
-            if suffix == ".parquet":
-                df = pd.read_parquet(path)
-            elif suffix == ".csv":
-                df = pd.read_csv(path)
-            else:
-                raise ValueError(
-                    f"Anchor table '{table_name}': unsupported source format '{suffix}' "
-                    f"— use .parquet or .csv"
-                )
 
-            if df.empty:
-                raise ValueError(f"Anchor table '{table_name}': source dataset '{path}' has no rows")
 
-            configured = [c.column_name for c in table_config.columns]
-            missing = [c for c in configured if c not in df.columns]
-            if missing:
-                raise ValueError(
-                    f"Anchor table '{table_name}': source dataset is missing configured "
-                    f"column(s) {missing}. The source file must contain every configured column."
-                )
-            extra = [c for c in df.columns if c not in configured]
-            if extra:
-                self.logger.warning(
-                    f"⚠️ Anchor table '{table_name}': dropping {len(extra)} unconfigured "
-                    f"column(s) from source data: {extra}"
-                )
-            # Keep configured columns, in configured order.
-            self.anchor_data[table_name] = df[configured].reset_index(drop=True)
-            self.logger.info(
-                f"📌 Anchor table '{table_name}': loaded {len(df)} real row(s) from {path}"
-            )
 
-    def _is_anchor_table(self, table_name: str) -> bool:
-        """True when the table's data comes from a real `source:` dataset."""
-        return table_name in self.anchor_data
 
-    def _inject_anchor_tables(self, data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
-        """Replace any anchor tables in ``data`` with their real (verbatim) rows.
 
-        Called before foreign-key resolution so generated child tables resolve
-        their FKs against the anchor's real key values.
-        """
-        for table_name, anchor_df in self.anchor_data.items():
-            data[table_name] = anchor_df.copy()
-        return data
 
-    @staticmethod
-    def _to_arrow_dc(series: pd.Series, precision: int, scale: int) -> pa.Array:
-        """
-        Convert a Series to Arrow Decimal(precision, scale), raising local context precision
-        to avoid decimal.InvalidOperation on large coefficients.
-        """
-        exp = Decimal(1).scaleb(-scale)  # exponent 10^-scale
-
-        dec_vals: list[Decimal | None] = []
-        with localcontext() as ctx:
-            # safe margin above requested precision
-            ctx.prec = max(precision + 2, 40)
-
-            for v in series:
-                # Nulls
-                if pd.isna(v):
-                    dec_vals.append(None)
-                    continue
-
-                s = str(v).strip().replace(',', '').replace('_', '')
-                sl = s.lower()
-                if sl in {'nan', 'inf', '+inf', '-inf'}:
-                    dec_vals.append(None)
-                    continue
-
-                # Build Decimal (prefer string to avoid float artifacts)
-                try:
-                    d0 = Decimal(s)
-                except Exception:
-                    try:
-                        fv = float(s)
-                        if not (float('-inf') < fv < float('inf')):
-                            dec_vals.append(None)
-                            continue
-                        d0 = Decimal(str(fv))
-                    except Exception:
-                        dec_vals.append(None)
-                        continue
-
-                # >>> Your fixed try/except block <<<
-                try:
-                    dq = d0.quantize(exp, rounding=ROUND_HALF_UP)
-                except InvalidOperation:
-                    # Integral fallback then apply scale
-                    try:
-                        dq = (
-                            d0.to_integral_value(rounding=ROUND_HALF_UP)
-                            .quantize(exp, rounding=ROUND_HALF_UP)
-                        )
-                    except Exception:
-                        dec_vals.append(None)
-                        continue
-
-                dec_vals.append(dq)
-
-        pa_type = pa.decimal128(precision, scale) if precision <= 38 else pa.decimal256(precision, scale)
-        return pa.array(dec_vals, type=pa_type)
-
-    @staticmethod
-    def _count_digits_int_str(x: str) -> int:
-        """Count integer digits in a numeric string (ignoring sign and fractional part)."""
-        s = x.strip()
-        if s.startswith('-') or s.startswith('+'):
-            s = s[1:]
-        if '.' in s:
-            s = s.split('.', 1)[0]
-        # Remove thousands separators/underscores if any
-        s = s.replace(',', '').replace('_', '')
-        return len(s) if s.isdigit() else 0
-
-    @staticmethod
-    def _to_arrow_bigint(series: pd.Series) -> pa.Array:
-
-        dec_vals: list[Decimal | None] = []
-        max_digits = 1
-        for v in series:
-            if pd.isna(v):
-                dec_vals.append(None);
-                continue
-            s = str(v).strip().replace(',', '').replace('_', '')
-            l = s.lower()
-            if l in {'nan', 'inf', '+inf', '-inf'}:
-                dec_vals.append(None);
-                continue
-            try:
-                d = Decimal(s)  # exact (string-based)  [3](https://www.ibantest.com/en/iban-structure/france)
-            except Exception:
-                # fallback: float -> str -> Decimal, still reject non-finite
-                try:
-                    fv = float(s)
-                    if not (float('-inf') < fv < float('inf')):
-                        dec_vals.append(None);
-                        continue
-                    d = Decimal(str(fv))
-                except Exception:
-                    dec_vals.append(None);
-                    continue
-            # Round to integer with HALF_UP (scale=0)
-            di = d.to_integral_value(rounding=ROUND_HALF_UP)
-            dec_vals.append(di)
-            # Update max digits in integer part
-            formatted = format(di, 'f').lstrip('+-').replace('.', '').lstrip('0')
-            max_digits = max(max_digits, len(formatted) or 1)
-
-        # Choose Arrow decimal type (scale=0)
-        if max_digits <= 38:
-            pa_type = pa.decimal128(max_digits, 0)
-        else:
-            pa_type = pa.decimal256(max_digits,
-                                    0)  # up to 76 digits  [7](https://www.52spain.com/d/117547-a-complete-guide-to-spanish-bank-account-iban-format-avoid-transfer-hassles)
-        string_vals = [None if value is None else format(value, 'f') for value in dec_vals]
-        return pa.array(string_vals, type=pa.string()).cast(pa_type)
-
-    def create_sdv_metadata(self) -> Metadata:
-        self.metadata = Metadata()
-        self.sdv_relationship_groups = []
-        primary_keys_by_table: Dict[str, str] = {}
-
-        # Add tables
-        for table_name in self.tables_config.keys():
-            self.metadata.add_table(table_name=table_name)
-
-        # Add columns & PKs
-        for table_name, table_config in self.tables_config.items():
-            pk = self._resolve_sdv_primary_key(table_config)
-            for column in table_config.columns:
-                business_values = self.helpers.parse_business_values(column.business_values)
-                col_meta = self._enhanced_sdv_type_mapping(column, business_values)
-
-                if column.column_name == pk or column.is_pk:
-                    col_meta = {"sdtype": "id"}
-                elif column.is_fk:
-                    col_meta = {"sdtype": "id"}
-
-                try:
-                    self.metadata.add_column(
-                        table_name=table_name,
-                        column_name=column.column_name,
-                        **col_meta,
-                    )
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Could not add column {table_name}.{column.column_name}: {e}")
-                    self.metadata.add_column(
-                        table_name=table_name,
-                        column_name=column.column_name,
-                        sdtype="categorical"
-                    )
-
-            if pk:
-                try:
-                    self.metadata.set_primary_key(table_name=table_name, column_name=pk)
-                    primary_keys_by_table[table_name] = pk
-                except Exception as e:
-                    self.logger.warning(f"⚠️ Could not set primary key for {table_name}: {e}")
-
-        # Add relationships
-        added = 0
-        for relationship_group in self._iter_relationship_groups():
-            if len(relationship_group) != 1:
-                exemplar = relationship_group[0]
-                self.logger.info(
-                    f"ℹ️ Skipping composite relationship for SDV metadata: {exemplar.source_table} → {exemplar.target_table}"
-                )
-                continue
-
-            rel = relationship_group[0]
-            expected_parent_pk = primary_keys_by_table.get(rel.target_table)
-            if expected_parent_pk != rel.target_column:
-                self.logger.info(
-                    f"ℹ️ Skipping unsupported SDV relationship {rel.source_table}.{rel.source_column} → "
-                    f"{rel.target_table}.{rel.target_column}; parent primary key is {expected_parent_pk!r}"
-                )
-                continue
-
-            try:
-                self.metadata.add_relationship(
-                    parent_table_name=rel.target_table,
-                    parent_primary_key=rel.target_column,
-                    child_table_name=rel.source_table,
-                    child_foreign_key=rel.source_column,
-                )
-                self.sdv_relationship_groups.append(relationship_group)
-                added += 1
-                self.logger.info(
-                    f"✅ Added relationship: {rel.source_table}.{rel.source_column} → {rel.target_table}.{rel.target_column}")
-            except Exception as e:
-                self.logger.warning(
-                    f"⚠️ Could not add relationship {rel.source_table}.{rel.source_column} → {rel.target_table}.{rel.target_column}: {e}")
-
-        # Validate metadata
-        try:
-            self.metadata.validate()
-            self.logger.info(f"✅ SDV metadata validated - {added} relationships")
-        except Exception as e:
-            self.logger.error(f"❌ SDV metadata validation failed: {e}")
-
-        return self.metadata
-
-    def _resolve_sdv_primary_key(self, table_config: TableConfig) -> Optional[str]:
-        valid_columns = {column.column_name for column in table_config.columns}
-        explicit_primary_keys = [column for column in table_config.primary_key_columns if column in valid_columns]
-        derived_primary_keys = [column.column_name for column in table_config.columns if column.is_pk]
-        business_keys = [column for column in table_config.business_key_columns if column in valid_columns]
-
-        candidates = explicit_primary_keys or derived_primary_keys or business_keys
-        deduplicated_candidates = list(dict.fromkeys(candidates))
-
-        if len(deduplicated_candidates) == 1:
-            return deduplicated_candidates[0]
-
-        if len(deduplicated_candidates) > 1:
-            self.logger.info(
-                f"ℹ️ Table {table_config.name} uses composite keys {deduplicated_candidates}; SDV metadata only supports single-column primary keys, so relationships for this table will be skipped"
-            )
-
-        return None
-
-    def _iter_relationship_groups(self) -> List[List[RelationshipConfig]]:
-        grouped: Dict[Tuple[str, str, str], List[RelationshipConfig]] = {}
-
-        for relationship in self.relationships:
-            base_name = relationship.name or (
-                f"{relationship.source_table}.{relationship.source_column}->{relationship.target_table}.{relationship.target_column}"
-            )
-            if "#" in base_name:
-                base_name = base_name.rsplit("#", 1)[0]
-
-            key = (relationship.source_table, relationship.target_table, base_name)
-            grouped.setdefault(key, []).append(relationship)
-
-        return list(grouped.values())
-
-    def _enhanced_sdv_type_mapping(self, column, business_values: Optional[List[str]]) -> Dict[str, Any]:
-        """Enhanced SDV type mapping"""
-        base_type, length, precision, scale = self.config_parser.parse_data_type_details(column.data_type)
-        name_lower = column.column_name.lower()
-
-        mapping = {'sdtype': 'categorical'}
-
-        if business_values:
-            mapping['sdtype'] = 'categorical'
-        elif base_type in ['D', 'DT', 'TS']:
-            mapping['sdtype'] = 'datetime'
-        elif column.is_pk or column.is_fk or name_lower == 'id' or name_lower.endswith('_id') or name_lower.endswith('uuid'):
-            mapping['sdtype'] = 'id'
-        elif base_type in ['N', 'DC']:
-            mapping['sdtype'] = 'numerical'
-        else:
-            mapping['sdtype'] = 'text'
-
-        return mapping
 
     # ---------------------------------------------------------------------
     # FIXED: Guaranteed Unique Primary Key Generation - NO LENGTH CONSTRAINTS
     # ---------------------------------------------------------------------
 
-    @staticmethod
-    def _resolve_generator_max_length(base_type: str, length: Optional[int]) -> Optional[int]:
-        if base_type in {"A", "AN", "NS", "VA"}:
-            return int(length) if length is not None else None
-        return None
 
     # --- In _generate_unique_primary_key(...), add special_rule handling up-front ---
-    def _generate_unique_primary_key(self, column, table_name: str, index: int, num_records: int) -> Any:
-        """
-        GUARANTEED UNIQUE primary key generation
-        Now HONORS special_rules (e.g., NL_IBAN, BBAN) for PKs as well.
-        """
-        base_type, length, precision, scale = self.config_parser.parse_data_type_details(column.data_type)
-        pk_key = (table_name, column.column_name)
 
-        # 0) If PK has explicit special_rules, generate via helpers and ensure uniqueness
-        special = getattr(column, "special_rules", None)
-        if special and not pd.isna(special):
-            max_length = self._resolve_generator_max_length(base_type, length)
-            for attempt in range(200):
-                val = self.helpers.generate_special_value(
-                    special,
-                    column.data_type,
-                    column_name=column.column_name,
-                    max_length=max_length,
-                )
-                # enforce uniqueness for PK
-                if val not in self.used_pk_values[pk_key]:
-                    self.used_pk_values[pk_key].add(val)
-                    return val
-            # If we somehow collide, fall through to sequential
 
-        # 1) Business values logic (existing)
-        business_values = self.helpers.parse_business_values(column.business_values)
-        if business_values:
-            if index < len(business_values):
-                pk_value = business_values[index]
-                if pk_value in self.used_pk_values[pk_key]:
-                    self.logger.warning(
-                        f"⚠️ Business value duplicate detected for {table_name}.{column.column_name}, using sequential")
-                    return self._generate_sequential_pk(column, table_name, index, num_records)
-                self.used_pk_values[pk_key].add(pk_value)
-                return pk_value
-            else:
-                warn_key = (table_name, column.column_name)
-                if warn_key not in self._bv_overflow_warned:
-                    self._bv_overflow_warned.add(warn_key)
-                    self.logger.warning(
-                        f"⚠️ More records requested than business values for {table_name}.{column.column_name}, generating sequential")
-                return self._generate_sequential_pk(column, table_name, index, num_records)
 
-        # 2) Default sequential PK (existing)
-        return self._generate_sequential_pk(column, table_name, index, num_records)
-
-    def _generate_sequential_pk(self, column, table_name: str, index: int, num_records: int) -> Any:
-        """
-        Generate guaranteed unique sequential primary key values
-        IGNORES data type length constraints for PK uniqueness
-        """
-        base_type, length, precision, scale = self.config_parser.parse_data_type_details(column.data_type)
-        pk_key = (table_name, column.column_name)
-
-        # Calculate what the value SHOULD be based on sequence
-        seq_val = self.pk_sequences[pk_key] + index
-
-        # Generate based on data type, but IGNORE length constraints for uniqueness
-        if base_type == "N":
-            # For numeric PK, just use the sequence value regardless of length
-            # If it exceeds N3 length, we still use it to maintain uniqueness
-            pk_value = seq_val
-
-            # Only apply min constraint, ignore max for uniqueness
-            min_val = 1  # PKs usually start from 1
-            if pk_value < min_val:
-                pk_value = min_val
-
-        elif base_type == "NS":
-            # For numeric string, convert to string but don't truncate
-            pk_value = str(seq_val)
-            # Only apply zero-padding up to original length, but don't truncate
-            if length and len(pk_value) < length:
-                pk_value = pk_value.zfill(length)
-            # If longer than specified length, keep it as-is for uniqueness
-
-        elif base_type == "A":
-            # For alphabetic, generate beyond specified length if needed
-            if length and seq_val <= (26 ** length):
-                # Within original capacity - generate normally
-                pk_value = self._generate_alphabetic_sequence(seq_val, length)
-            else:
-                # Beyond capacity - use extended format
-                base_val = self._generate_alphabetic_sequence(seq_val % (26 ** min(length or 4, 4)),
-                                                              min(length or 4, 4))
-                pk_value = f"{base_val}_{seq_val}"
-
-        elif base_type == "AN":
-            # For alphanumeric, similar approach
-            if length and seq_val <= (36 ** length):
-                pk_value = self._generate_alphanumeric_sequence(seq_val, length)
-            else:
-                base_val = self._generate_alphanumeric_sequence(seq_val % (36 ** min(length or 4, 4)),
-                                                                min(length or 4, 4))
-                pk_value = f"{base_val}_{seq_val}"
-
-        else:
-            # Fallback for other types (DC, D, DT, TS, VA)
-            pk_value = f"{table_name}_{column.column_name}_{seq_val}"
-
-        # CRITICAL: Track used values to guarantee uniqueness
-        max_attempts = 100
-        attempt = 0
-        final_value = pk_value
-
-        while attempt < max_attempts:
-            if final_value not in self.used_pk_values[pk_key]:
-                self.used_pk_values[pk_key].add(final_value)
-                self.pk_sequences[pk_key] = max(self.pk_sequences[pk_key], seq_val)
-                return final_value
-
-            # If collision, modify the value
-            attempt += 1
-            if base_type == "N":
-                final_value = seq_val + (attempt * num_records)
-            elif base_type in ["NS", "A", "AN"]:
-                final_value = f"{pk_value}_{attempt}"
-            else:
-                final_value = f"{pk_value}_DUP{attempt}"
-
-        # Ultimate fallback - should never happen
-        final_value = f"PK_{uuid.uuid4().hex[:16]}"
-        self.used_pk_values[pk_key].add(final_value)
-        return final_value
-
-    def _generate_alphabetic_sequence(self, seq_val: int, length: int) -> str:
-        """Generate alphabetic sequence (A, B, ..., Z, AA, AB, ...)"""
-        chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        result = ""
-        n = seq_val
-
-        while n > 0:
-            n -= 1
-            result = chars[n % 26] + result
-            n //= 26
-
-        # Pad or truncate to desired length
-        if len(result) < length:
-            result = result.rjust(length, 'A')
-        elif len(result) > length:
-            # For PK uniqueness, we return the full value even if longer
-            pass  # Keep the full value
-
-        return result
-
-    def _generate_alphanumeric_sequence(self, seq_val: int, length: int) -> str:
-        """Generate alphanumeric sequence (0-9, A-Z)"""
-        chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-        result = ""
-        n = seq_val
-
-        while n > 0:
-            result = chars[n % 36] + result
-            n //= 36
-
-        if not result:  # Handle zero case
-            result = "0"
-
-        # Pad or truncate to desired length
-        if len(result) < length:
-            result = result.zfill(length)
-        elif len(result) > length:
-            # For PK uniqueness, we return the full value even if longer
-            pass  # Keep the full value
-
-        return result
 
     # ---------------------------------------------------------------------
     # FIXED: Record Count Logic - NO REDUCTION FOR DATA TYPE CAPACITY
@@ -691,23 +227,6 @@ class DataGenerator:
         # Always return requested records - we'll make it work!
         return requested_records
 
-    def _calculate_max_unique_values(self, column) -> int:
-        """Calculate maximum possible unique values for any data type"""
-        base_type, length, precision, scale = self.config_parser.parse_data_type_details(column.data_type)
-
-        if not length:
-            return float('inf')  # No length constraint
-
-        if base_type == "N":
-            return (10 ** length) - 1
-        elif base_type == "NS":
-            return 10 ** length
-        elif base_type == "A":
-            return 26 ** length
-        elif base_type == "AN":
-            return 36 ** length
-        else:
-            return float('inf')
 
     # ---------------------------------------------------------------------
     # Enhanced Table Data Generation with PK Uniqueness Validation
@@ -771,151 +290,9 @@ class DataGenerator:
         df = self._apply_data_type_constraints(df, table_config)
         return df
 
-    def _validate_and_fix_pk_uniqueness(self, df: pd.DataFrame, table_config: TableConfig) -> pd.DataFrame:
-        """Validate and guarantee PRIMARY KEY uniqueness in the generated data.
 
-        Single primary key  → the column itself must be unique.
-        Composite primary key → only the *combination* of members must be
-        unique; individual members may (and routinely do) repeat — e.g. one
-        ``order_id`` shared across many ``line_no`` rows. Members are never
-        validated individually, and a foreign-key member is never rewritten.
-        """
-        pk_columns = [c for c in table_config.columns
-                      if c.is_pk and c.column_name in df.columns]
-        if not pk_columns:
-            return df
-        if len(pk_columns) == 1:
-            return self._fix_single_pk(df, table_config, pk_columns[0])
-        return self._fix_composite_pk(df, table_config, pk_columns)
 
-    def _fix_single_pk(self, df: pd.DataFrame, table_config: TableConfig, pk_col) -> pd.DataFrame:
-        """Guarantee a single-column primary key holds unique values."""
-        column_name = pk_col.column_name
-        duplicate_mask = df.duplicated(subset=[column_name], keep=False)
-        duplicate_count = int(duplicate_mask.sum())
 
-        if duplicate_count == 0:
-            unique_count = df[column_name].nunique()
-            self.logger.info(
-                f"✅ PK uniqueness verified for {table_config.name}.{column_name} "
-                f"({unique_count}/{len(df)} unique)")
-            return df
-
-        self.logger.warning(
-            f"⚠️ Found {duplicate_count} duplicate PK values in "
-            f"{table_config.name}.{column_name}, fixing...")
-
-        unique_values: Set[Any] = set()
-        new_values: List[Any] = []
-        for idx, value in enumerate(df[column_name]):
-            if value in unique_values or duplicate_mask.iloc[idx]:
-                new_value = self._generate_unique_pk_value(
-                    pk_col, table_config.name, idx, len(df), existing_values=unique_values)
-                new_values.append(new_value)
-                unique_values.add(new_value)
-            else:
-                new_values.append(value)
-                unique_values.add(value)
-        df[column_name] = new_values
-
-        final_duplicates = int(df.duplicated(subset=[column_name], keep=False).sum())
-        if final_duplicates == 0:
-            self.logger.info(f"✅ Fixed all PK duplicates for {table_config.name}.{column_name}")
-        else:
-            self.logger.error(f"❌ Still have {final_duplicates} PK duplicates after fix!")
-        return df
-
-    def _fix_composite_pk(self, df: pd.DataFrame, table_config: TableConfig, pk_cols: List) -> pd.DataFrame:
-        """Guarantee a composite primary key is unique *as a combination*.
-
-        Only the tuple of members is deduplicated. To preserve referential
-        integrity a foreign-key member is never rewritten — a non-FK member is
-        perturbed instead (falling back to the last member only if every member
-        is itself a foreign key).
-        """
-        pk_names = [c.column_name for c in pk_cols]
-        label = f"{table_config.name}.({','.join(pk_names)})"
-
-        dup_rows = int(df.duplicated(subset=pk_names, keep=False).sum())
-        if dup_rows == 0:
-            unique_combos = len(df.drop_duplicates(subset=pk_names))
-            self.logger.info(
-                f"✅ Composite PK uniqueness verified for {label} "
-                f"({unique_combos}/{len(df)} unique combinations)")
-            return df
-
-        self.logger.warning(
-            f"⚠️ Found {dup_rows} row(s) with duplicate composite-PK "
-            f"combinations in {label}, fixing...")
-
-        # Perturb a non-FK member so foreign keys are never rewritten.
-        non_fk = [c for c in pk_cols if not c.is_fk]
-        perturb = (non_fk or pk_cols)[-1]
-        p_pos = pk_names.index(perturb.column_name)
-
-        rows = df[pk_names].values.tolist()
-        seen: Set[tuple] = set()
-        used_member: Set[Any] = set(df[perturb.column_name].tolist())
-        for idx, row in enumerate(rows):
-            key = tuple(row)
-            if key not in seen:
-                seen.add(key)
-                continue
-            # Duplicate combination — regenerate the perturb member until the
-            # full tuple is unique.
-            for _ in range(2000):
-                candidate = self._generate_unique_pk_value(
-                    perturb, table_config.name, idx, len(df), existing_values=used_member)
-                new_row = list(row)
-                new_row[p_pos] = candidate
-                new_key = tuple(new_row)
-                if new_key not in seen:
-                    rows[idx] = new_row
-                    seen.add(new_key)
-                    used_member.add(candidate)
-                    break
-
-        for col_pos, name in enumerate(pk_names):
-            df[name] = [r[col_pos] for r in rows]
-
-        final = int(df.duplicated(subset=pk_names, keep=False).sum())
-        if final == 0:
-            self.logger.info(f"✅ Fixed all composite-PK duplicates for {label}")
-        else:
-            self.logger.error(f"❌ Still have {final} composite-PK duplicates after fix!")
-        return df
-
-    def _generate_unique_pk_value(self, column, table_name: str, index: int, num_records: int,
-                                  existing_values: Set[Any]) -> Any:
-        """
-        Generate a unique PK value that doesn't exist in existing_values
-        """
-        base_type, length, precision, scale = self.config_parser.parse_data_type_details(column.data_type)
-        pk_key = (table_name, column.column_name)
-
-        max_attempts = 100
-        for attempt in range(max_attempts):
-            # Use sequential generation but with offset to ensure uniqueness
-            seq_val = self.pk_sequences[pk_key] + index + num_records + attempt
-
-            if base_type == "N":
-                pk_value = seq_val
-            elif base_type == "NS":
-                pk_value = str(seq_val)
-                if length and len(pk_value) < length:
-                    pk_value = pk_value.zfill(length)
-            elif base_type == "A":
-                pk_value = self._generate_alphabetic_sequence(seq_val, length or 4)
-            elif base_type == "AN":
-                pk_value = self._generate_alphanumeric_sequence(seq_val, length or 4)
-            else:
-                pk_value = f"{table_name}_{column.column_name}_{seq_val}_FIXED"
-
-            if pk_value not in existing_values:
-                return pk_value
-
-        # Ultimate fallback
-        return f"FALLBACK_{uuid.uuid4().hex[:16]}"
 
     # ---------------------------------------------------------------------
     # Enhanced Value Generation
@@ -1214,150 +591,10 @@ class DataGenerator:
 
         return df
 
-    def _sanitize_business_values(self, values: Optional[List[Any]], data_type: str) -> List[Any]:
-        if not values:
-            return []
-        if data_type not in ["D", "DT", "TS"]:
-            return values
 
-        cleaned: List[str] = []
-        for v in values:
-            if v is None:
-                continue
-            s = str(v).strip()
-            if s:
-                cleaned.append(s)
 
-        coerced: List[Any] = []
-        for s in cleaned:
-            ts = self._coerce_safe_timestamp(s, normalize=(data_type == "D"))
-            if ts is not None:
-                coerced.append(ts)
-        return coerced
 
-    def _coerce_safe_timestamp(self, value: Any, normalize: bool = False) -> Optional[pd.Timestamp]:
-        try:
-            parsed = pd.to_datetime(value, errors="coerce")
-        except Exception:
-            return None
 
-        if pd.isna(parsed):
-            return None
-
-        ts = pd.Timestamp(parsed)
-        if ts.tzinfo is not None:
-            ts = ts.tz_convert(None)
-
-        if ts < self.SAFE_DATETIME_MIN or ts > self.SAFE_DATETIME_MAX:
-            return None
-
-        return ts.normalize() if normalize else ts
-
-    def _coerce_identifier_series(
-        self,
-        series: pd.Series,
-        table_name: str,
-        column_name: str,
-        enforce_unique: bool = False,
-    ) -> pd.Series:
-        coerced = pd.Series(pd.NA, index=series.index, dtype="string")
-        seen_values: Dict[str, int] = {}
-
-        non_null_mask = series.notna()
-        if non_null_mask.any():
-            for row_index, raw_value in series.loc[non_null_mask].items():
-                text_value = str(raw_value)
-                if enforce_unique:
-                    duplicate_count = seen_values.get(text_value, 0)
-                    seen_values[text_value] = duplicate_count + 1
-                    if duplicate_count:
-                        text_value = f"{text_value}__{duplicate_count + 1}"
-                coerced.at[row_index] = text_value
-
-        missing_mask = coerced.isna()
-        if missing_mask.any():
-            for position, row_index in enumerate(coerced.index[missing_mask], start=1):
-                coerced.at[row_index] = f"{table_name}_{column_name}_{position}"
-
-        return coerced
-
-    def _coerce_datetime_series(self, series: pd.Series, date_only: bool = False, aggressive: bool = False) -> pd.Series:
-        coerced = pd.to_datetime(series, errors="coerce")
-
-        if getattr(coerced.dt, "tz", None) is not None:
-            coerced = coerced.dt.tz_convert(None)
-
-        lower_bound = self.SAFE_DATETIME_MIN.normalize() if date_only else self.SAFE_DATETIME_MIN
-        upper_bound = self.SAFE_DATETIME_MAX.normalize() if date_only else self.SAFE_DATETIME_MAX
-        coerced = coerced.clip(lower=lower_bound, upper=upper_bound)
-
-        if date_only:
-            coerced = coerced.dt.normalize()
-
-        if aggressive and coerced.isna().any():
-            fallback = pd.Timestamp("2024-01-01 00:00:00")
-            if date_only:
-                fallback = fallback.normalize()
-            coerced = coerced.fillna(fallback)
-
-        return coerced
-
-    def _sanitize_sample_data_for_sdv(
-        self,
-        sample_data: Dict[str, pd.DataFrame],
-        aggressive: bool = False,
-    ) -> Dict[str, pd.DataFrame]:
-        sanitized: Dict[str, pd.DataFrame] = {}
-
-        for table_name, df in sample_data.items():
-            table_config = self.tables_config.get(table_name)
-            if table_config is None:
-                sanitized[table_name] = df.copy()
-                continue
-
-            clean_df = df.copy()
-            sdv_primary_key = self._resolve_sdv_primary_key(table_config)
-            for column in table_config.columns:
-                column_name = column.column_name
-                if column_name not in clean_df.columns:
-                    continue
-
-                base_type, _, _, _ = self.config_parser.parse_data_type_details(column.data_type)
-                series = clean_df[column_name]
-
-                if base_type in ["D", "DT", "TS"]:
-                    clean_df[column_name] = self._coerce_datetime_series(
-                        series,
-                        date_only=(base_type == "D"),
-                        aggressive=aggressive,
-                    )
-                elif column_name == sdv_primary_key or column.is_pk or column.is_fk:
-                    clean_df[column_name] = self._coerce_identifier_series(
-                        series,
-                        table_name,
-                        column_name,
-                        enforce_unique=(column_name == sdv_primary_key),
-                    )
-                elif base_type in ["N", "DC"]:
-                    numeric_series = pd.to_numeric(series, errors="coerce")
-                    if aggressive and numeric_series.isna().any():
-                        fill_value = numeric_series.dropna().median() if not numeric_series.dropna().empty else 0
-                        numeric_series = numeric_series.fillna(fill_value)
-                    clean_df[column_name] = numeric_series
-                else:
-                    string_series = pd.Series(pd.NA, index=series.index, dtype="string")
-                    non_null_mask = series.notna()
-                    if non_null_mask.any():
-                        string_series.loc[non_null_mask] = series.loc[non_null_mask].astype("string")
-                    if aggressive and string_series.isna().any():
-                        missing_mask = string_series.isna()
-                        for position, row_index in enumerate(string_series.index[missing_mask], start=1):
-                            string_series.at[row_index] = f"{table_name}_{column_name}_{position}"
-                    clean_df[column_name] = string_series
-
-            sanitized[table_name] = clean_df
-
-        return self._enforce_relationships_in_sample(sanitized)
 
     # ---------------------------------------------------------------------
     # SDV Training & Data Generation
@@ -1595,150 +832,9 @@ class DataGenerator:
     # ---------------------------------------------------------------------
     # Model artifact caching — fingerprint-keyed, SDV-version-validated
     # ---------------------------------------------------------------------
-    def _config_fingerprint(self) -> str:
-        """A stable 16-hex hash of the parsed config (tables, columns,
-        relationships). Any structural or rule change to the config changes
-        this hash; an unchanged config keeps it. Used to key cached synthesizer
-        artifacts so a model is only ever reused for the config it was fit on.
-        """
-        payload = {
-            "tables": {
-                name: tc.model_dump(mode="json")
-                for name, tc in sorted(self.tables_config.items())
-            },
-            "relationships": sorted(
-                (r.model_dump(mode="json") for r in self.relationships),
-                key=lambda d: json.dumps(d, sort_keys=True, default=str),
-            ),
-        }
-        blob = json.dumps(payload, sort_keys=True, default=str)
-        return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
-    def _model_artifact_dir(self, output_dir: Optional[str] = None) -> Path:
-        """Resolve the directory where synthesizer artifacts are kept."""
-        target = output_dir or self.config_parser.get_setting('model_artifact_path', 'output/models')
-        return Path(target)
 
-    def _try_load_cached_synthesizer(self) -> bool:
-        """Load a previously-saved synthesizer when one matches this exact config.
 
-        Returns True (and sets ``self.synthesizer`` / ``is_fitted``) only when a
-        cached artifact exists whose config fingerprint **and** SDV version
-        match. Any mismatch, missing file, or load error → False, so the caller
-        retrains. The cache is never a source of truth: a stale model is
-        ignored, not used.
-        """
-        if not bool(self.config_parser.get_setting('save_model_artifact', False)):
-            return False
-        try:
-            import sdv as _sdv
-            fingerprint = self._config_fingerprint()
-            artifact_dir = self._model_artifact_dir()
-            model_file = artifact_dir / f"model_{fingerprint}.pkl"
-            sidecar_file = artifact_dir / f"model_{fingerprint}.json"
-            if not model_file.is_file() or not sidecar_file.is_file():
-                return False
-
-            sidecar = json.loads(sidecar_file.read_text(encoding="utf-8"))
-            cached_version = sidecar.get("sdv_version")
-            if cached_version != _sdv.__version__:
-                self.logger.info(
-                    f"ℹ️ Cached model SDV version {cached_version!r} != installed "
-                    f"{_sdv.__version__!r} — retraining instead of loading."
-                )
-                return False
-
-            # Prefer the newer sdv.utils.load_synthesizer; fall back to the
-            # class method on older SDV builds that lack it.
-            try:
-                from sdv.utils import load_synthesizer as _load_synthesizer
-            except ImportError:
-                _load_synthesizer = None
-            if _load_synthesizer is not None:
-                synthesizer = _load_synthesizer(str(model_file))
-            else:
-                synthesizer = HMASynthesizer.load(filepath=str(model_file))
-            self.synthesizer = synthesizer
-            self._fitted_sample_sizes = {
-                str(k): int(v) for k, v in (sidecar.get("fitted_sample_sizes") or {}).items()
-            }
-            self.is_fitted = True
-            self.logger.info(
-                f"♻️ Reusing cached synthesizer {model_file.name} "
-                f"(config fingerprint {fingerprint}) — skipping training."
-            )
-            return True
-        except Exception as exc:
-            self.logger.warning(f"⚠️ Could not reuse cached synthesizer ({exc}); retraining.")
-            self.is_fitted = False
-            self.synthesizer = None
-            return False
-
-    def save_model_artifacts(self, output_dir: Optional[str] = None) -> Optional[Path]:
-        """Save the fitted synthesizer, keyed by config fingerprint, when enabled.
-
-        Writes ``model_<fingerprint>.pkl`` plus a ``model_<fingerprint>.json``
-        sidecar (config fingerprint, SDV version, fitted sample sizes) and a
-        ``model_<fingerprint>.metadata.json``. The fingerprint key means a later
-        run reuses the model only for the exact config it was trained on; an SDV
-        upgrade is detected on load and triggers a retrain.
-        """
-        if not self.is_fitted or self.synthesizer is None or self.metadata is None:
-            return None
-
-        save_enabled = self.config_parser.get_setting('save_model_artifact', False)
-        if not bool(save_enabled):
-            return None
-
-        # The artifact format (single pickled synthesizer + SDV-version
-        # sidecar) only describes the SDV engine. Other engines hold a model
-        # per table; silently writing an unloadable artifact would be worse
-        # than not caching.
-        engine_name = self.resolve_engine_name()
-        if engine_name != "sdv":
-            self.logger.info(
-                f"ℹ️ Model artifact caching is only supported for the 'sdv' engine "
-                f"(current: {engine_name!r}) — skipping save."
-            )
-            return None
-
-        artifact_dir = self._model_artifact_dir(output_dir)
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-
-        fingerprint = self._config_fingerprint()
-        model_file = artifact_dir / f"model_{fingerprint}.pkl"
-        sidecar_file = artifact_dir / f"model_{fingerprint}.json"
-        metadata_file = artifact_dir / f"model_{fingerprint}.metadata.json"
-
-        # Artifact for this exact config is already on disk — nothing to do.
-        if model_file.is_file() and sidecar_file.is_file():
-            self.logger.info(f"💾 Synthesizer artifact already current: {model_file.name}")
-            return artifact_dir
-
-        try:
-            self.metadata.save_to_json(filepath=str(metadata_file))
-        except Exception as exc:
-            self.logger.warning(f"⚠️ Could not save metadata artifact: {exc}")
-
-        try:
-            import sdv as _sdv
-            self.synthesizer.save(filepath=str(model_file))
-            sidecar = {
-                "fingerprint": fingerprint,
-                "sdv_version": _sdv.__version__,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "tables": sorted(self.tables_config.keys()),
-                "fitted_sample_sizes": self._fitted_sample_sizes,
-            }
-            sidecar_file.write_text(json.dumps(sidecar, indent=2), encoding="utf-8")
-            self.logger.info(
-                f"💾 Saved synthesizer artifact {model_file.name} "
-                f"(config fingerprint {fingerprint})"
-            )
-            return artifact_dir
-        except Exception as exc:
-            self.logger.warning(f"⚠️ Could not save synthesizer artifact: {exc}")
-            return artifact_dir if metadata_file.exists() else None
 
     # Real-data rows fed into SDV training for an anchor table are capped at
     # this size to keep HMASynthesizer.fit fast while still learning distributions.
@@ -1771,121 +867,9 @@ class DataGenerator:
         # Enforce relationships in sample data
         return self._enforce_relationships_in_sample(sample_data)
 
-    def _is_one_to_one_fk(
-        self,
-        exemplar: RelationshipConfig,
-        child_table: str,
-        source_columns: List[str],
-    ) -> bool:
-        """True when the FK must hold *unique* values — a one-to-one relationship.
 
-        That happens when the child FK column(s) are exactly the child table's
-        primary key (so the FK value cannot repeat), or when the relationship
-        explicitly declares ``relationship_type`` one_to_one.
-        """
-        declared = str(getattr(exemplar, "relationship_type", "") or "").strip().lower()
-        if declared in ("one_to_one", "one-to-one", "1:1"):
-            return True
-        cfg = self.tables_config.get(child_table)
-        if cfg is None:
-            return False
-        pk_cols = {c.column_name for c in cfg.columns if getattr(c, "is_pk", False)}
-        # One-to-one only when the FK columns *are* the whole primary key.
-        return bool(pk_cols) and pk_cols == set(source_columns)
 
-    def _sample_fk_values(
-        self,
-        parent_values: List[Any],
-        n: int,
-        one_to_one: bool,
-        label: str,
-    ) -> List[Any]:
-        """Pick ``n`` FK values from the parent key pool.
 
-        ``one_to_one`` → sample *without* replacement, so each child row gets a
-        distinct parent key and the child primary key stays unique. Otherwise
-        sample *with* replacement (one parent row, many child rows).
-        """
-        if not one_to_one:
-            return random.choices(parent_values, k=n)
-        distinct = list(dict.fromkeys(parent_values))   # unique, order-preserving
-        if len(distinct) >= n:
-            return random.sample(distinct, k=n)
-        # Not enough distinct parent keys for a true 1:1 — a config-size mismatch.
-        # Use every distinct key, top up with repeats, and warn loudly.
-        self.logger.warning(
-            f"⚠️ One-to-one FK {label}: parent has only {len(distinct)} distinct "
-            f"key(s) for {n} child rows — {n - len(distinct)} row(s) cannot be unique."
-        )
-        pool = distinct + random.choices(distinct, k=n - len(distinct))
-        random.shuffle(pool)
-        return pool
-
-    def _apply_relationship_group(
-        self,
-        data: Dict[str, pd.DataFrame],
-        relationship_group: List[RelationshipConfig],
-    ) -> None:
-        exemplar = relationship_group[0]
-        parent_table = exemplar.target_table
-        child_table = exemplar.source_table
-
-        if parent_table not in data or child_table not in data:
-            return
-
-        # Anchor tables hold real data — never rewrite their foreign keys.
-        if self._is_anchor_table(child_table):
-            return
-
-        parent_df = data[parent_table]
-        child_df = data[child_table]
-        source_columns = [relationship.source_column for relationship in relationship_group]
-        target_columns = [relationship.target_column for relationship in relationship_group]
-
-        if any(column not in parent_df.columns for column in target_columns):
-            return
-        if any(column not in child_df.columns for column in source_columns):
-            return
-
-        one_to_one = self._is_one_to_one_fk(exemplar, child_table, source_columns)
-
-        if len(relationship_group) == 1:
-            valid_parent_values = parent_df[target_columns[0]].dropna().tolist()
-            if valid_parent_values:
-                child_df[source_columns[0]] = self._sample_fk_values(
-                    valid_parent_values, len(child_df), one_to_one,
-                    f"{child_table}.{source_columns[0]}",
-                )
-                data[child_table] = child_df
-            return
-
-        parent_pairs = parent_df[target_columns].dropna().drop_duplicates()
-        if parent_pairs.empty:
-            return
-
-        # One-to-one composite FK: each child row needs a distinct parent
-        # key-combination — sample without replacement when there are enough.
-        replace = True
-        if one_to_one and len(parent_pairs) >= len(child_df):
-            replace = False
-        elif one_to_one:
-            self.logger.warning(
-                f"⚠️ One-to-one FK {child_table}.{tuple(source_columns)}: parent has "
-                f"only {len(parent_pairs)} distinct key combinations for "
-                f"{len(child_df)} child rows — uniqueness cannot be fully honoured."
-            )
-        sampled_parent_rows = parent_pairs.sample(n=len(child_df), replace=replace).reset_index(drop=True)
-        child_df = child_df.copy()
-        for source_column, target_column in zip(source_columns, target_columns):
-            child_df[source_column] = sampled_parent_rows[target_column].tolist()
-        data[child_table] = child_df
-
-    def _enforce_relationships_in_sample(self, sample_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
-        """Enforce relationships in sample data for better SDV learning"""
-        for relationship_group in self.sdv_relationship_groups:
-            self._apply_relationship_group(sample_data, relationship_group)
-
-        return sample_data
 
     def _sample_from_synthesizer(self, records_per_table: Dict[str, int]) -> Dict[str, pd.DataFrame]:
         """Draw rows from the fitted engine.
@@ -2035,13 +1019,6 @@ class DataGenerator:
         self.logger.info(f"📋 Identified reference tables: {reference_tables}")
         return reference_tables
 
-    def _enforce_all_relationships(self, data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
-        """Enforce ALL relationships in data"""
-        for _ in range(3):
-            for relationship_group in self._iter_relationship_groups():
-                self._apply_relationship_group(data, relationship_group)
-
-        return data
 
     def _validate_sdv_data(self, data: Dict[str, pd.DataFrame]) -> bool:
         """Validate SDV generated data quality"""
@@ -2085,224 +1062,10 @@ class DataGenerator:
     # ---------------------------------------------------------------------
     # Foreign Key Resolution
     # ---------------------------------------------------------------------
-    def _resolve_foreign_keys(self) -> None:
-        """Resolve foreign key relationships in generated_data"""
-        if not self.relationships:
-            return
-
-        self.logger.info("🔗 Resolving foreign key relationships...")
-        resolved_count = 0
-
-        for relationship_group in self._iter_relationship_groups():
-            exemplar = relationship_group[0]
-            src_t = exemplar.source_table
-            tgt_t = exemplar.target_table
-
-            if src_t not in self.generated_data or tgt_t not in self.generated_data:
-                continue
-
-            src_df = self.generated_data[src_t]
-            original_dtypes = {
-                relationship.source_column: src_df[relationship.source_column].dtype
-                for relationship in relationship_group
-                if relationship.source_column in src_df.columns
-            }
-            before_frame = src_df[[column for column in original_dtypes]].copy() if original_dtypes else pd.DataFrame()
-
-            self._apply_relationship_group(self.generated_data, relationship_group)
-            src_df = self.generated_data[src_t]
-
-            for source_column, original_dtype in original_dtypes.items():
-                try:
-                    src_df[source_column] = src_df[source_column].astype(original_dtype)
-                except (ValueError, TypeError):
-                    pass
-
-            if not before_frame.empty and not before_frame.equals(src_df[list(original_dtypes)]):
-                resolved_count += 1
-                source_columns = ", ".join(rel.source_column for rel in relationship_group)
-                target_columns = ", ".join(rel.target_column for rel in relationship_group)
-                self.logger.info(f" ✅ Resolved FK: {src_t}.{source_columns} → {tgt_t}.{target_columns}")
-
-        self.logger.info(f"✅ Resolved {resolved_count} foreign key relationships")
 
     # ---------------------------------------------------------------------
     # Export Methods
     # ---------------------------------------------------------------------
-    def export_to_parquet(self, output_dir: str = "output"):
-        try:
-            output_path = Path(output_dir)
-            output_path.mkdir(parents=True, exist_ok=True)
-
-            # Ensure FKs are resolved before export
-            self._resolve_foreign_keys()
-
-            files_exported = 0
-            total_records = 0
-
-            for table_name, data in self.generated_data.items():
-                if data.empty:
-                    self.logger.warning(f"⚠️ Table {table_name} is empty, skipping export")
-                    continue
-
-                table_cfg = self.tables_config[table_name]
-                export_file = output_path / f"{table_name}.parquet"
-
-                arrays: List[pa.Array] = []
-                names: List[str] = []
-
-                for column in table_cfg.columns:
-                    col = column.column_name
-                    if col not in data.columns:
-                        continue
-
-                    s = data[col]
-                    base_type, _, precision, parsed_scale = self.config_parser.parse_data_type_details(column.data_type)
-
-                    if base_type in ["DT", "TS"]:
-                        iso = self._to_iso_datetime_strings(s)
-                        arr_str = pa.array(iso, type=pa.string())
-                        arr_ts_naive = pc.strptime(arr_str, format="%Y-%m-%d %H:%M:%S", unit="us", error_is_null=True)
-                        arr_ts = arr_ts_naive.cast(pa.timestamp('us', tz='UTC'))
-                        arrays.append(arr_ts)
-                        names.append(col)
-
-                    elif base_type == "D":
-                        dt_series = pd.to_datetime(s, format="mixed", errors="coerce").dt.date
-                        arr_date = pa.array(dt_series, type=pa.date32(), from_pandas=True)
-                        arrays.append(arr_date)
-                        names.append(col)
-
-                    elif base_type == "T":
-                        arr = pa.array(s.astype("string"))
-                        arrays.append(arr)
-                        names.append(col)
-
-                    elif base_type == "NS":
-                        arr = pa.array(s.astype("string"))
-                        arrays.append(arr)
-                        names.append(col)
-
-
-
-
-
-                    elif base_type == "N":
-
-                        # Existing numeric export, but robust for N38 (≥20 integer digits)
-
-                        # 1) Parse declared length (if provided)
-
-                        _bt, declared_len, _prec, _sc = self.config_parser.parse_data_type_details(column.data_type)
-
-                        try:
-
-                            declared_len = int(declared_len) if declared_len else None
-
-                        except Exception:
-
-                            declared_len = None
-
-                        # 2) Detect oversize beyond 64-bit (either by declared_len or observed digits)
-
-                        oversize_64 = False
-
-                        if declared_len and declared_len > 19:
-
-                            oversize_64 = True
-
-                        else:
-
-                            for v in s.dropna():
-
-                                digits = self._count_digits_int_str(str(v))
-
-                                if digits > 19:
-                                    oversize_64 = True
-
-                                    break
-
-                        if oversize_64:
-
-                            # N38 (or similar): export as Decimal with scale=0 (exact integers)
-
-                            arr = self._to_arrow_bigint(s)
-
-                            arrays.append(arr);
-                            names.append(col)
-
-                        else:
-
-                            # Normal int64 path — build Arrow array from Python ints (avoid pandas UInt64 cast)
-
-                            vals_num = pd.to_numeric(s, errors="coerce")
-
-                            int_list = [None if pd.isna(v) else int(v) for v in vals_num]
-
-                            INT64_MIN = np.iinfo(
-                                np.int64).min  # dtype, not string  [5](https://en.wikipedia.org/wiki/International_Bank_Account_Number)
-
-                            INT64_MAX = np.iinfo(np.int64).max
-
-                            min_val = vals_num.min(skipna=True)
-
-                            max_val = vals_num.max(skipna=True)
-
-                            if pd.isna(min_val) or pd.isna(max_val):
-
-                                arr = pa.array(int_list, type=pa.int64())
-
-                            elif min_val >= INT64_MIN and max_val <= INT64_MAX:
-
-                                arr = pa.array(int_list, type=pa.int64())
-
-                            else:
-
-                                # Strictly non-negative & within uint64? use uint64; otherwise fallback to decimal(precision<=38)
-
-                                UINT64_MAX = np.iinfo(np.uint64).max
-
-                                if min_val >= 0 and max_val <= UINT64_MAX:
-
-                                    arr = pa.array(int_list, type=pa.uint64())
-
-                                else:
-
-                                    # Extremely rare; ensure exact integer via Decimal128 up to 38 digits
-
-                                    arr = self._to_arrow_bigint(s)
-
-                            arrays.append(arr);
-                            names.append(col)
-
-
-                    elif base_type == "DC":
-                        precision = int(precision or 18)
-                        scale = int(getattr(column, "scale", None) or (parsed_scale or 2))
-                        q = Decimal("1." + "0" * scale)
-                        dec_vals = [
-                            (None if pd.isna(v) else Decimal(str(v)).quantize(q, rounding=ROUND_HALF_UP)) for v in s
-                        ]
-                        arr = pa.array(dec_vals, type=pa.decimal128(precision, scale))
-                        arrays.append(arr)
-                        names.append(col)
-
-                    else:
-                        arr = pa.array(s.astype("string"))
-                        arrays.append(arr)
-                        names.append(col)
-
-                table = pa.Table.from_arrays(arrays, names=names)
-                pq.write_table(table, export_file)
-                files_exported += 1
-                total_records += len(data)
-
-                self.logger.info(f"💾 Exported {table_name}.parquet ({len(data)} records)")
-
-            self.logger.info(f"✅ Successfully exported {files_exported} files with {total_records} total records")
-        except Exception as e:
-            self.logger.error(f"❌ Error exporting data: {e}")
-            raise
 
     def _to_iso_datetime_strings(self, series: pd.Series) -> List[Optional[str]]:
         out: List[Optional[str]] = []

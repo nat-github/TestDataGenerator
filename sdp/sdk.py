@@ -25,6 +25,12 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Union
 
+from sdp.services.generation import (
+    GenerationOutcome,
+    GenerationRequest,
+    generate_dataset,
+)
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import pandas as pd
 
@@ -71,9 +77,36 @@ class GenerationResult:
         default=None, repr=False, compare=False
     )
 
+    #: Full service outcome — row counts, generation report, engine cost,
+    #: DP privacy accounting, relationship validation. Populated because
+    #: `generate` calls the service directly; an exit code was all the old
+    #: CLI-wrapping implementation could return.
+    outcome: Optional["GenerationOutcome"] = dataclasses.field(
+        default=None, repr=False, compare=False
+    )
+
     @property
     def success(self) -> bool:
         return self.exit_code == 0
+
+    @property
+    def report(self) -> Dict[str, Any]:
+        """Generation report (record counts, relationships, seed, paths)."""
+        return self.outcome.report if self.outcome else {}
+
+    @property
+    def engine_stats(self) -> Optional[Dict[str, Any]]:
+        """Engine fit/sample cost, or None when no engine was fitted."""
+        return self.outcome.engine_stats if self.outcome else None
+
+    @property
+    def privacy_report(self) -> Optional[Dict[str, Any]]:
+        """DP accounting — only the ``dp-marginal`` engine produces one."""
+        return self.outcome.privacy_report if self.outcome else None
+
+    @property
+    def row_counts(self) -> Dict[str, int]:
+        return self.outcome.row_counts if self.outcome else {}
 
     @property
     def tables(self) -> List[str]:
@@ -197,12 +230,14 @@ class SyntheticDataPlatform:
         ``ctgan``, ``tvae``, ``dp-marginal``, ``rule-based``); ``epsilon`` sets
         the privacy budget for ``dp-marginal``. See ``Synthesizer_Engines.md``.
 
-        Note: this method builds a CLI argument vector and invokes
-        ``sdp.cli.main`` in-process. It is a wrapper, not an independent code
-        path — every flag maps to a CLI flag, and behaviour is identical to
-        running the CLI. That keeps the two surfaces from drifting, but it
-        also means the SDK cannot currently return richer objects than the
-        CLI produces.
+        Calls :func:`sdp.services.generation.generate_dataset` directly — the
+        same function the CLI calls — so the returned
+        :class:`GenerationResult` carries the full outcome (row counts,
+        generation report, engine cost, DP privacy accounting) rather than
+        just an exit code.
+
+        The one exception is ``extra_args``: raw CLI flags have no typed
+        equivalent, so passing them routes through argparse instead.
         """
         out_dir = Path(output) if output is not None else Path(
             tempfile.mkdtemp(prefix="sdp_generate_")
@@ -263,11 +298,52 @@ class SyntheticDataPlatform:
         if delta_tables:
             argv += ["--delta-tables", *[str(t) for t in delta_tables]]
         if extra_args:
+            # `extra_args` is a raw-CLI escape hatch — flags the SDK has no
+            # typed parameter for. There is nothing to map them onto, so this
+            # is the one path that still goes through argparse.
             argv += [str(a) for a in extra_args]
+            result = self.run(*argv)
+            return GenerationResult(
+                output_dir=out_dir, exit_code=result.exit_code, argv=result.argv
+            )
 
-        result = self.run(*argv)
+        outcome = generate_dataset(GenerationRequest(
+            config=str(config),
+            output=str(out_dir),
+            default_records=default_records,
+            records=(
+                [f"{k}:{v}" for k, v in records.items()]
+                if isinstance(records, dict)
+                else ([str(r) for r in records] if records else None)
+            ),
+            seed=seed,
+            validate=validate,
+            stream=stream,
+            chunk_size=chunk_size if chunk_size is not None else 100_000,
+            infer_relationships=infer_relationships,
+            method=method,
+            llm_confidence=llm_confidence if llm_confidence is not None else 0.7,
+            ml_confidence=ml_confidence if ml_confidence is not None else 0.55,
+            feedback_store=str(feedback_store) if feedback_store is not None else None,
+            er_diagram=er_diagram,
+            er_format=[str(f) for f in er_format] if er_format else ["mermaid"],
+            upload_to=str(upload_to) if upload_to else None,
+            validate_with_gx=validate_with_gx,
+            gx_tolerance=gx_tolerance if gx_tolerance is not None else 0.5,
+            write_delta=write_delta,
+            delta_partition_col=delta_partition_col,
+            delta_partition_value=delta_partition_value,
+            delta_tables=[str(t) for t in delta_tables] if delta_tables else None,
+            engine=engine,
+            engine_options=engine_options,
+            verbose=verbose,
+        ))
+
         return GenerationResult(
-            output_dir=out_dir, exit_code=result.exit_code, argv=result.argv
+            output_dir=out_dir,
+            exit_code=outcome.exit_code,
+            argv=argv,          # kept for traceability / logging
+            outcome=outcome,
         )
 
     # -- lint ---------------------------------------------------------------

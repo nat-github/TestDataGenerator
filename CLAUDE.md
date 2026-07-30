@@ -156,14 +156,33 @@ Four entry surfaces share the same code paths: `sdp/cli.py` (CLI),
 `sdp/sdk.py` (Python SDK — `SyntheticDataPlatform`), `sdp/api/` (REST API,
 FastAPI), `sdp/mcp_server/` (MCP). See `SDK_and_API.md`.
 
-### Entry Point
+### Entry Point and the service layer
 
-`sdp/cli.py` — the CLI, with subcommands `generate`, `delta`, `scd2`, `lint`,
-`enrich`, `collibra-import`, `infer-config`, `pii-scan`, `infer-relationships`,
-`record-feedback`, `mock-*`, `validate-data`, `quality-report`. Dispatches to
-`DataGenerator`, `ParquetPostProcessor`, `ERDiagramGenerator`, cloud uploaders,
-and `CollibraImporter`. A root `main.py` shim re-exports it, so
-`python main.py ...` and `from main import ...` keep working.
+`sdp/cli.py` (~360 lines) is **argument dispatch only**. The work sits behind
+it:
+
+| Module | Owns |
+|---|---|
+| `sdp/cli_parser.py` | the argparse tree (`build_parser`) |
+| `sdp/cli_commands/*.py` | one module per command group — `cdc`, `config_tools`, `mocks`, `quality`, `relationships` |
+| `sdp/services/generation.py` | `generate_dataset()` — the generation run itself |
+| `sdp/services/common.py` | config validation, output dirs, export verification |
+
+**The service layer is the important part.** `generate_dataset(GenerationRequest)
+-> GenerationOutcome` is called by both `cli.run_generate` and
+`sdk.generate`. Nothing under `sdp/services/` imports `sdp.cli`, so the SDK
+is no longer a CLI wrapper: it gets row counts, the generation report, engine
+cost and DP privacy accounting instead of just an exit code.
+
+`GenerationRequest`'s field names deliberately match the `generate`
+subcommand's argparse destinations, so an argparse `Namespace` and a
+`GenerationRequest` are interchangeable — which is what let the orchestration
+move without rewriting the helpers it calls.
+
+The CLI presentation layer (`cli.py`, `cli_parser.py`, `cli_commands/`) may
+`print`; everything else must log, and `test_hardening_fixes.py` enforces it.
+A root `main.py` shim re-exports `sdp.cli`, so `python main.py ...` and
+`from main import ...` keep working.
 
 ### Core Data Flow
 
@@ -197,7 +216,13 @@ Excel / YAML Config
 
 | Module | Responsibility |
 |---|---|
-| `generators/data_generator.py` | Main orchestrator — SDV training, data generation, FK resolution, Parquet export |
+| `generators/data_generator.py` | Main orchestrator (~1,160 lines). Composes six mixins below; what remains here is the run sequence, per-column value generation, rules/derived columns, and the fallback path. |
+| `generators/_primary_keys.py` | `PrimaryKeyMixin` — PK generation, sequences, uniqueness repair (single + composite) |
+| `generators/_arrow_export.py` | `ArrowExportMixin` — Arrow type casting (decimal/bigint) and Parquet export |
+| `generators/_sdv_metadata.py` | `SDVMetadataMixin` — SDV `Metadata` construction, sdtype mapping, training-sample sanitisation |
+| `generators/_relationships.py` | `RelationshipMixin` — FK resolution, relationship groups, referential integrity |
+| `generators/_model_cache.py` | `ModelCacheMixin` — fingerprint-keyed synthesizer artifacts, SDV-version validation |
+| `generators/_anchors.py` | `AnchorMixin` — `source:` tables loaded verbatim from real data |
 | `utils/config_parser.py` | Excel & YAML parsing, validation with row/column error context, `lint_config()` |
 | `utils/helpers.py` | Regex generation, Faker integration (18 locales), type coercion, NULL rate logic, 60+ special rules |
 | `utils/parquet_post_processor.py` | Delta (I/U/D) and SCD2 effective-dating logic with delta-log rollback safety. Delta writes honour `delta_write_mode` (`overwrite` default / `append` / `error`); the overwrite path warns before discarding an existing table's change history. |

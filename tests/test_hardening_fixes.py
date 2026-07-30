@@ -115,7 +115,55 @@ def test_sdk_generate_accepts_engine_arguments():
         assert name in params, f"SDK cannot reach --{name}"
 
 
-def test_sdk_builds_engine_flags_into_argv(monkeypatch, tmp_path):
+def test_sdk_passes_engine_settings_to_the_service(monkeypatch, tmp_path):
+    """The SDK calls the service directly, so the assertion is on the typed
+    request rather than on a constructed argv."""
+    import sdp.sdk as sdk_module
+    from sdp.services.generation import GenerationOutcome
+    from sdp.sdk import SyntheticDataPlatform
+
+    captured = {}
+
+    def fake_generate(request):
+        captured["request"] = request
+        return GenerationOutcome(exit_code=0, output_dir=tmp_path)
+
+    monkeypatch.setattr(sdk_module, "generate_dataset", fake_generate)
+    SyntheticDataPlatform().generate(
+        config="cfg.yaml", output=str(tmp_path),
+        engine="dp-marginal", epsilon=0.5, engine_options={"numeric_bins": 30},
+    )
+
+    request = captured["request"]
+    assert request.engine == "dp-marginal"
+    assert request.engine_options == {"numeric_bins": 30}
+
+
+def test_sdk_does_not_route_generation_through_argparse(monkeypatch, tmp_path):
+    """Regression: `generate` used to build an argv list and call cli.main,
+    which capped what it could return at an exit code."""
+    from sdp.services.generation import GenerationOutcome
+    from sdp.sdk import SyntheticDataPlatform
+
+    def explode(self, *argv):
+        raise AssertionError(f"SDK fell back to the CLI: {argv}")
+
+    monkeypatch.setattr(SyntheticDataPlatform, "run", explode)
+    monkeypatch.setattr(
+        "sdp.sdk.generate_dataset",
+        lambda request: GenerationOutcome(
+            exit_code=0, output_dir=tmp_path, row_counts={"users": 5},
+        ),
+    )
+
+    result = SyntheticDataPlatform().generate(config="cfg.yaml", output=str(tmp_path))
+    assert result.success
+    # Richer than an exit code — the point of the refactor.
+    assert result.row_counts == {"users": 5}
+
+
+def test_sdk_extra_args_still_routes_through_the_cli(monkeypatch, tmp_path):
+    """Raw CLI flags have no typed equivalent, so that escape hatch stays."""
     from sdp.sdk import CommandResult, SyntheticDataPlatform
 
     captured = {}
@@ -126,14 +174,9 @@ def test_sdk_builds_engine_flags_into_argv(monkeypatch, tmp_path):
 
     monkeypatch.setattr(SyntheticDataPlatform, "run", fake_run)
     SyntheticDataPlatform().generate(
-        config="cfg.yaml", output=str(tmp_path),
-        engine="dp-marginal", epsilon=0.5, engine_options={"numeric_bins": 30},
+        config="cfg.yaml", output=str(tmp_path), extra_args=["--some-new-flag"],
     )
-
-    argv = captured["argv"]
-    assert "--engine" in argv and "dp-marginal" in argv
-    assert "--epsilon" in argv and "0.5" in argv
-    assert "--engine-option" in argv and "numeric_bins=30" in argv
+    assert "--some-new-flag" in captured["argv"]
 
 
 # ---------------------------------------------------------------------------
@@ -215,9 +258,19 @@ def test_slim_docker_variant_exists():
 # ---------------------------------------------------------------------------
 
 
+#: The CLI presentation layer — stdout is its output channel, so printing
+#: here is correct. Everything else is library code whose output would leak
+#: into SDK, REST API and MCP consumers.
+CLI_LAYER = ("cli.py", "cli_parser.py")
+CLI_PACKAGES = ("cli_commands",)
+
+
 def test_library_modules_do_not_print():
-    """The CLI may print — it is the output channel. Library modules must
-    not, or their output leaks into SDK, REST API and MCP consumers.
+    """Service and library modules must log, not print.
+
+    This is why `_run_gx_validation` had to change when it moved into the
+    service layer: printing its report was fine while it lived in `cli.py`
+    and wrong the moment SDK/API/MCP callers ran the same code.
 
     Parsed with `ast` rather than grepped: a substring search counts
     docstring examples and `_config_fingerprint(` as hits, which is how a
@@ -228,7 +281,7 @@ def test_library_modules_do_not_print():
 
     offenders = []
     for path in (REPO_ROOT / "sdp").rglob("*.py"):
-        if path.name == "cli.py":
+        if path.name in CLI_LAYER or path.parent.name in CLI_PACKAGES:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):

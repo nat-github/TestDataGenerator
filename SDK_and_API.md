@@ -6,8 +6,35 @@ top of the same code paths as the `sdp` CLI:
 - **Python SDK** (`sdp.sdk`) — an in-process facade. Core install, no extras.
 - **REST API** (`sdp.api`) — an HTTP layer over the SDK. Needs the `api` extra.
 
-Both translate their inputs into the exact argument vector the CLI parser
-expects, so behaviour is identical to running `sdp ...` on the command line.
+### How the SDK relates to the CLI
+
+`SyntheticDataPlatform.generate()` calls
+`sdp.services.generation.generate_dataset()` — **the same function the CLI
+calls** — rather than building an argument vector and invoking the CLI.
+Behaviour is identical because the code is shared, not because the inputs are
+translated into flags.
+
+That matters for what you get back. Because the SDK holds the service's
+`GenerationOutcome`, `GenerationResult` exposes row counts, the generation
+report, engine cost and DP privacy accounting:
+
+```python
+result = sdp.generate(config="config/loans.yaml", engine="dp-marginal", epsilon=0.5)
+
+result.success            # bool
+result.row_counts         # {"loans": 2000}
+result.report             # total_records, relationships_configured, seed, ...
+result.engine_stats       # {"engine": "dp-marginal", "fit_seconds": 0.003, ...}
+result.privacy_report     # epsilon accounting — None for non-DP engines
+result.frames             # tables as DataFrames
+```
+
+The one exception is `extra_args`, an escape hatch for raw CLI flags that
+have no typed parameter. Passing it routes that call through argparse, and
+the richer fields will be empty.
+
+Other SDK methods (`lint`, `run`, contract helpers) still dispatch through
+the CLI where no service function exists yet.
 
 ---
 
