@@ -78,8 +78,10 @@ def _detect_mock_source_type(source_path: str, override: str) -> str:
     raw = ""
     try:
         raw = p.read_text(encoding="utf-8", errors="ignore")[:4096]
-    except Exception:
-        pass
+    except OSError as exc:
+        # Unreadable file — fall through to extension-based detection, which
+        # is all the caller can do anyway.
+        logger.debug("Could not sniff %s for type detection: %s", p, exc)
     # HAR files always contain a top-level "log": with "version" + "entries"
     if '"log"' in raw and '"entries"' in raw:
         return "har"

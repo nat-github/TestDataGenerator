@@ -179,7 +179,11 @@ def _expand_versions_from_config(config_path: str, output_dir: str, generator, s
                     continue
                 try:
                     bv_list = generator.helpers.parse_business_values(getattr(cc, "business_values", None)) or []
-                except Exception:
+                except (AttributeError, TypeError, ValueError) as exc:
+                    logger.warning(
+                        f"Could not parse business_values for {ac!r} ({exc}) — "
+                        f"SCD2 version expansion will fall back to special rules"
+                    )
                     bv_list = []
                 special = getattr(cc, "special_rules", None)
                 data_type = getattr(cc, "data_type", None)
@@ -200,7 +204,10 @@ def _expand_versions_from_config(config_path: str, output_dir: str, generator, s
                         for _ in range(10):
                             try:
                                 cand = generator.helpers.generate_special_value(special, data_type, column_name=ac)
-                            except Exception:
+                            except (AttributeError, KeyError, TypeError, ValueError) as exc:
+                                logger.debug(
+                                    "special rule %r failed for %s: %s", special, ac, exc,
+                                )
                                 cand = None
                                 break
                             if cand is not None and cand not in seen_for_key:

@@ -72,8 +72,10 @@ class TemplateEngine:
             try:
                 from faker import Faker
                 Faker.seed(seed)
-            except Exception:
-                pass
+            except ImportError:
+                # Best-effort: without Faker, Faker-backed fields simply are
+                # not reproducible. Everything else still honours the seed.
+                logger.debug("Faker unavailable — Faker-backed fields will not be seeded")
         self._helpers = None  # lazy-init utils.helpers.DataHelpers
 
     # ------------------------------------------------------------------

@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import logging
 import random
 import re
 import string
@@ -11,6 +12,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 from faker import Faker
+
+logger = logging.getLogger(__name__)
 
 
 SAFE_DATETIME_MIN = pd.Timestamp("1900-01-01 00:00:00")
@@ -255,8 +258,11 @@ class DataHelpers:
             pc = self.faker.postcode().upper().replace(" ", "")
             if pc[:4].isdigit() and pc[4:6].isalpha():
                 return f"{pc[:4]} {pc[4:6]}"
-        except Exception:
-            pass
+        except (AttributeError, IndexError, TypeError) as exc:
+            # The active locale may not provide postcode(), or may return a
+            # shape this NL-specific formatter cannot use. Returning the
+            # input unchanged is the intended fallback.
+            logger.debug("postcode formatting fell back to the raw value: %s", exc)
         return postcode
 
     def generate_nl_address_components(
@@ -971,7 +977,14 @@ class DataHelpers:
         if locale not in self._locale_fakers:
             try:
                 self._locale_fakers[locale] = Faker(locale)
-            except Exception:
+            except (AttributeError, TypeError, ValueError) as exc:
+                # Faker raises AttributeError for locales it does not ship.
+                # Falling back is right, but silently returning US data for a
+                # config that asked for de_DE is worth a warning.
+                logger.warning(
+                    f"Faker has no locale {locale!r} ({type(exc).__name__}) — "
+                    f"falling back to en_US for this column"
+                )
                 self._locale_fakers[locale] = Faker('en_US')
         return self._locale_fakers[locale]
 
@@ -1751,8 +1764,16 @@ class DataHelpers:
                 if data_type.startswith("N"):
                     return [int(round(v)) for v in arr]
                 return [round(float(v), 2) for v in arr]
-            except Exception:
-                pass  # fall through to plain range generation
+            except (ImportError, AttributeError, KeyError, TypeError,
+                    ValueError, ArithmeticError) as exc:
+                # A distribution descriptor that scipy cannot sample is a
+                # config-quality problem, so it is worth a line — but it must
+                # not stop generation: plain range sampling below is a valid
+                # substitute.
+                logger.warning(
+                    "Distribution sampling failed (%s: %s) — falling back to "
+                    "uniform range generation", type(exc).__name__, exc,
+                )
 
         # 3. Numeric / decimal ranges — numpy vectorised
         if data_type.startswith("N"):

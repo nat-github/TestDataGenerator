@@ -239,6 +239,25 @@ Delta is a **separate post-processing command**. It does not generate data from 
 > silently alter what every existing delta output means. Pick `append`
 > deliberately when you want a change feed.
 
+## Diagnosing a run from its logs
+
+Generation degrades rather than failing when it can, so the log is where
+recoverable problems surface. Run with `--verbose` and look for:
+
+| Log line | What happened |
+|---|---|
+| `null_rate ... is not a number — ignoring it` | A column's `null_rate` will not parse; the special-rule path is used instead |
+| `Invalid cdc block ... falling back to defaults` | A malformed `cdc:` block — **the table is now a snapshot**, not delta/SCD2 |
+| `Skipping invalid rule ...` | A `rules:` entry failed validation and was dropped |
+| `Faker has no locale 'xx' — falling back to en_US` | A locale suffix the installed Faker does not ship |
+| `Distribution sampling failed ... falling back to uniform` | A `distribution:` descriptor scipy could not sample |
+| `Synthesizer training failed (engine: X) - using fallback` | The model did not fit; data came from config rules |
+| `Cycle detection aborted` | Relationship inference stopped checking for FK cycles |
+
+None of these stop a run, and all of them mean the output differs from what
+the config asked for. The `cdc:` one is the most consequential — a table
+silently generating as a snapshot looks like success.
+
 ### Basic delta command
 ```zsh
 python main.py delta \

@@ -369,6 +369,8 @@ Tests live in `tests/`:
 - `test_synthesizer_engines.py` — engine registry, shared sampling helper (including the `num_rows`→`scale` fallback), engine contract, `DataGenerator` wiring, and the back-compat guarantee that a directly-assigned `generator.synthesizer` still samples.
 - `test_utility_and_bias.py` — TSTR utility and bias drift. Fixtures carry a *known* answer (a learnable signal that synthetic data either preserves or destroys; a group skew that is either faithful or amplified), so the tests check the metrics measure what they claim — including the case fidelity misses: identical marginals, zero utility.
 
+- `test_service_layer.py` — the extracted units directly: `services/common.py`, `GenerationRequest`/`GenerationOutcome`, `generate_dataset` (end-to-end, seed reproducibility, failure paths, engine stats, DP report), the mixin composition (including a guard that no method is defined twice across mixins, which would make behaviour depend on MRO order), the `cli_commands` handler surface, and size ratchets on `cli.py` / `data_generator.py`.
+- `test_error_handling.py` — degraded paths must still work *and* leave a trace: invalid rules, malformed `cdc:` blocks, unparseable `null_rate`, unknown Faker locales, bad distribution descriptors. Plus two codebase-wide guards — no bare `except:`, and a ratchet on broad handlers that swallow without any signal.
 - `test_hardening_fixes.py` — regression guards for defects found in platform assessment: the missing `Path` import in `collibra_importer` (NameError on every write), the hardcoded destructive delta overwrite, engine flags unreachable from the SDK, deprecated packaging metadata, and an AST-based check that library modules never `print()`.
 
 CI (`.github/workflows/ci.yml`) runs the full suite with all extras on every
@@ -376,6 +378,31 @@ push and pull request. Linting is configured via `[tool.ruff]` in
 `pyproject.toml` — a deliberately narrow rule set (undefined names, unused
 imports/variables, mutable defaults, bare excepts) kept at zero findings, so
 it can be widened without a repo-wide restyle.
+
+## Error-handling conventions
+
+Two rules, enforced by `tests/test_error_handling.py`:
+
+**1. Name the exceptions that can actually occur.** `except Exception` hides
+genuine bugs — a typo raising `NameError` looked identical to a malformed
+value. Narrowing is not free: when the distribution handler was first
+narrowed it omitted `AttributeError`, which a non-dict descriptor raises, and
+that would have turned a degraded path into a crash. The test that pins it
+exists because of that near-miss.
+
+**2. Every swallowed failure leaves a trace** — a log line, a note on the
+report, or a returned error. The one exemption is per-cell code: the Arrow
+coercion helpers in `generators/_arrow_export.py` run once per cell, so a
+single bad column would emit a log line per row. Those handlers name their
+exception types and stay silent, and the module docstring says why.
+
+Severity follows who can act on it: config errors the user can fix
+(`null_rate` that will not parse, an invalid `cdc:` block, an unknown Faker
+locale) are `warning`; internal fallbacks that are normal operation (a
+distribution candidate that does not fit) are `debug`.
+
+A ratchet test caps the number of broad handlers that swallow without any
+signal. Fixing one lowers the number; it must never rise.
 
 ## Relationship Inference
 

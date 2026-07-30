@@ -31,7 +31,19 @@ logger = logging.getLogger(__name__)
 
 
 class ArrowExportMixin:
-    """Arrow type casting and Parquet export."""
+    """Arrow type casting and Parquet export.
+
+    Note on error handling in this module: the coercion helpers run **once
+    per cell**, so a table of a million rows enters these handlers a million
+    times. Logging inside them is not an option — a single malformed column
+    would produce a million log lines and dominate the run.
+
+    The handlers therefore name the exceptions that can actually occur
+    (``InvalidOperation``, ``ValueError``, ``TypeError``, ``OverflowError``)
+    and coerce the offending cell to ``None`` without comment. An unexpected
+    exception type now propagates instead of being silently swallowed, which
+    is the behaviour change: a genuine bug surfaces, a bad value does not.
+    """
 
     @staticmethod
     def _to_arrow_dc(series: pd.Series, precision: int, scale: int) -> pa.Array:
@@ -61,14 +73,14 @@ class ArrowExportMixin:
                 # Build Decimal (prefer string to avoid float artifacts)
                 try:
                     d0 = Decimal(s)
-                except Exception:
+                except (InvalidOperation, ValueError, TypeError):
                     try:
                         fv = float(s)
                         if not (float('-inf') < fv < float('inf')):
                             dec_vals.append(None)
                             continue
                         d0 = Decimal(str(fv))
-                    except Exception:
+                    except (InvalidOperation, ValueError, TypeError, OverflowError):
                         dec_vals.append(None)
                         continue
 
@@ -82,7 +94,7 @@ class ArrowExportMixin:
                             d0.to_integral_value(rounding=ROUND_HALF_UP)
                             .quantize(exp, rounding=ROUND_HALF_UP)
                         )
-                    except Exception:
+                    except (InvalidOperation, OverflowError, ValueError):
                         dec_vals.append(None)
                         continue
 
@@ -118,8 +130,8 @@ class ArrowExportMixin:
                 dec_vals.append(None);
                 continue
             try:
-                d = Decimal(s)  # exact (string-based)  [3](https://www.ibantest.com/en/iban-structure/france)
-            except Exception:
+                d = Decimal(s)  # exact (string-based)
+            except (InvalidOperation, ValueError, TypeError):
                 # fallback: float -> str -> Decimal, still reject non-finite
                 try:
                     fv = float(s)
@@ -127,7 +139,7 @@ class ArrowExportMixin:
                         dec_vals.append(None);
                         continue
                     d = Decimal(str(fv))
-                except Exception:
+                except (InvalidOperation, ValueError, TypeError, OverflowError):
                     dec_vals.append(None);
                     continue
             # Round to integer with HALF_UP (scale=0)
@@ -216,7 +228,7 @@ class ArrowExportMixin:
 
                             declared_len = int(declared_len) if declared_len else None
 
-                        except Exception:
+                        except (TypeError, ValueError):
 
                             declared_len = None
 

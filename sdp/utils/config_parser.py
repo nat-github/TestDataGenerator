@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import yaml
+from pydantic import ValidationError
 from sdp.models.config_models import (
     CDCConfig,
     ColumnConfig,
@@ -17,6 +18,8 @@ from sdp.models.config_models import (
     TableConfig,
 )
 from sdp.utils.helpers import DataHelpers
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -167,8 +170,10 @@ class ConfigParser:
                 continue
             try:
                 rules.append(RuleConfig(**item))
-            except Exception:
-                continue
+            except (TypeError, ValueError, ValidationError) as exc:
+                # A malformed rule is a config error the user can fix — it
+                # was previously dropped without a word.
+                logger.warning(f"Skipping invalid rule {item!r}: {exc}")
         return rules or None
 
     def _get_optional_sheet(self, excel_file: pd.ExcelFile, *sheet_names: str) -> Optional[pd.DataFrame]:
@@ -305,7 +310,13 @@ class ConfigParser:
         try:
             cdc_obj = CDCConfig(**{k: v for k, v in cdc_raw.items()
                                    if k in {'mode', 'track', 'event_time', 'partition_by'}})
-        except Exception:
+        except (TypeError, ValueError, ValidationError) as exc:
+            # Falling back to defaults silently turns a bad `cdc:` block into
+            # a snapshot table, which looks like the config was honoured.
+            logger.warning(
+                f"Invalid cdc block {cdc_raw!r} ({exc}) — falling back to defaults "
+                f"(mode=snapshot)"
+            )
             cdc_obj = CDCConfig()
 
         result: Dict[str, Any] = {'_cdc_object': cdc_obj}

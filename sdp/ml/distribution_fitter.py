@@ -82,7 +82,12 @@ class DistributionFitter:
                     best_ks = ks_stat
                     best_name = name
                     best_params = params
-            except Exception:
+            except (ValueError, TypeError, ArithmeticError, MemoryError) as exc:
+                # Not every candidate distribution can fit every sample —
+                # skipping one is normal, so this is debug rather than a
+                # warning. Logged at all so a fit that silently rejects
+                # every candidate can be diagnosed.
+                logger.debug("Distribution %s did not fit: %s", name, exc)
                 continue
 
         if best_params is None:

@@ -37,6 +37,8 @@ name/structure path, behaving exactly as before.
 """
 from __future__ import annotations
 
+import logging
+
 import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
@@ -52,6 +54,8 @@ from sdp.ml.relationship_inferrer import (
 from sdp.ml.relationship_signals import name_similarity
 from sdp.ml.semantic_profile import SemanticProfile, default_profile
 from sdp.models.config_models import RelationshipConfig, TableConfig
+
+logger = logging.getLogger(__name__)
 
 _TOKEN_SPLIT = re.compile(r"[_\W]+|(?<=[a-z])(?=[A-Z])")
 
@@ -616,7 +620,15 @@ class KnowledgeGraphRelationshipInferrer(MLRelationshipInferrer):
                     digraph.add_edge(rel.source_table, rel.target_table)
             try:
                 cycles = [c for c in nx.simple_cycles(digraph) if len(c) >= 2]
-            except Exception:
+            except (nx.NetworkXError, RecursionError, MemoryError) as exc:
+                # Cycle enumeration is exponential in the worst case. Bailing
+                # out leaves the surviving relationships as-is, which is safe
+                # — but silently returning a graph that may still contain
+                # cycles is worth recording.
+                logger.warning(
+                    "Cycle detection aborted (%s: %s) — remaining relationships "
+                    "were not checked for cycles", type(exc).__name__, exc,
+                )
                 break
             if not cycles:
                 break

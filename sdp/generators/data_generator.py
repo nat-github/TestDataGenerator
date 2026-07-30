@@ -130,8 +130,11 @@ class DataGenerator(
         try:
             from faker import Faker as _Faker
             _Faker.seed(seed)
-        except Exception:
-            pass
+        except ImportError:
+            # Faker is a core dependency, but seeding it is best-effort: a
+            # build without it still generates, just not reproducibly for
+            # Faker-backed columns.
+            self.logger.debug("Faker unavailable — Faker-backed columns will not be seeded")
 
     def _apply_table_seed(self, table_name: str) -> None:
         if self.seed is None:
@@ -440,8 +443,14 @@ class DataGenerator(
         if explicit is not None and not pd.isna(explicit):
             try:
                 return max(0.0, min(1.0, float(explicit)))
-            except Exception:
-                pass
+            except (TypeError, ValueError):
+                # A null_rate that will not parse is a config error, not a
+                # normal condition — say so rather than silently falling
+                # through to the special-rule path.
+                self.logger.warning(
+                    f"Column {getattr(column, 'column_name', '?')}: null_rate "
+                    f"{explicit!r} is not a number — ignoring it"
+                )
         parsed = self._parse_null_rate_from_rules(getattr(column, "special_rules", None))
         if parsed is not None:
             return parsed
