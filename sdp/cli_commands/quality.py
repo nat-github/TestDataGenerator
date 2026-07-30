@@ -24,7 +24,7 @@ def run_validate_data(args) -> int:
         from sdp.validators.gx_validator import (
             HAS_GX, validate_tables, format_report,
         )
-    except Exception as exc:
+    except ImportError as exc:
         logger.error(f"Could not import sdp.validators.gx_validator: {exc}")
         return 1
     if not HAS_GX:
@@ -191,12 +191,12 @@ def run_contract_test_cmd(args) -> int:
     try:
         from sdp.contracts import ContractError, run_contract_test
         from sdp.contracts.checker import format_contract_report
-    except Exception as exc:
+    except ImportError as exc:
         logger.error(f"Could not import the contract checker: {exc}")
         return 1
     try:
         parser = load_config_context(args.contract)
-    except Exception as exc:
+    except (ValueError, OSError) as exc:
         logger.error(f"Failed to load contract: {exc}")
         return 1
     try:
@@ -235,13 +235,13 @@ def run_contract_diff_cmd(args) -> int:
     try:
         from sdp.contracts import diff_contracts
         from sdp.contracts.diff import format_contract_diff
-    except Exception as exc:
+    except ImportError as exc:
         logger.error(f"Could not import the contract differ: {exc}")
         return 1
     try:
         old_parser = load_config_context(args.old)
         new_parser = load_config_context(args.new)
-    except Exception as exc:
+    except (ValueError, OSError) as exc:
         logger.error(f"Failed to load a contract: {exc}")
         return 1
 

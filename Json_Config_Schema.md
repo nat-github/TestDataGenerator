@@ -306,6 +306,34 @@ python main.py lint --config config/orders.yaml --strict-schema  # violations as
 [WARN]  (sheet=schema, field=workflows[0].transitions[1]) schema: 'from' is a required property
 ```
 
+### Typos are caught
+
+`tables[]` and `columns[]` are closed (`additionalProperties: false`), so a
+misspelled key is reported rather than silently ignored:
+
+```
+tables[0].columns[0]: 'buisness_values', 'data_typ' do not match any of the regexes: '^(x-|_)'
+```
+
+Before this, the schema was open at every level and a typo produced **no
+violation at all** — `--strict-schema` could not help, because there was
+nothing to promote.
+
+To carry your own metadata, prefix the key with `x-` or `_`. Those are
+ignored by both the parser and the schema:
+
+```yaml
+tables:
+  - name: orders
+    x-owner: data-platform      # allowed anywhere
+    columns:
+      - name: iban
+        _pii_note: restricted   # allowed anywhere
+```
+
+`run_settings` stays open — settings are read with defaults and are
+genuinely extensible.
+
 ### Why warnings by default
 
 The parser is deliberately tolerant — an unrecognised key is skipped so one

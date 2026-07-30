@@ -332,3 +332,103 @@ def test_no_bare_except_anywhere():
             if isinstance(node, ast.ExceptHandler) and node.type is None:
                 offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
     assert not offenders, f"bare except found: {offenders}"
+
+
+# ---------------------------------------------------------------------------
+# Handlers that were narrowed — and the ones deliberately left broad
+# ---------------------------------------------------------------------------
+
+
+def test_config_readers_survive_a_malformed_json_config(tmp_path, caplog):
+    """These re-read the config file outside ConfigParser. Narrowing them to
+    named exceptions must not turn a bad file into a crash."""
+    from sdp.services.generation import (
+        _read_delta_partition_overrides,
+        _read_delta_table_selection,
+        _read_versions_per_key,
+    )
+
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        assert _read_delta_table_selection(str(broken)) is None
+        assert _read_versions_per_key(str(broken)) == {}
+        assert _read_delta_partition_overrides(str(broken)) == {}
+    assert "Could not read" in caplog.text
+
+
+def test_config_readers_survive_a_malformed_yaml_config(tmp_path, caplog):
+    from sdp.services.generation import _read_delta_table_selection
+
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("tables: [unclosed\n", encoding="utf-8")
+    with caplog.at_level(logging.WARNING):
+        assert _read_delta_table_selection(str(broken)) is None
+
+
+def test_config_readers_survive_a_wrong_shaped_config(tmp_path):
+    """`tables:` holding strings rather than mappings raises AttributeError
+    inside the loop — which the narrowed tuple must still catch."""
+    from sdp.services.generation import _read_versions_per_key
+
+    odd = tmp_path / "odd.yaml"
+    odd.write_text("tables:\n  - just-a-string\n", encoding="utf-8")
+    assert _read_versions_per_key(str(odd)) == {}
+
+
+def test_config_readers_handle_a_missing_file(tmp_path):
+    from sdp.services.generation import _read_delta_table_selection
+
+    assert _read_delta_table_selection(str(tmp_path / "gone.yaml")) is None
+
+
+def test_json_config_path_does_not_hit_an_unbound_yaml_name(tmp_path):
+    """Regression: `import yaml` used to live inside the .yaml branch, so a
+    .json config left the name unbound — and the narrowed handler references
+    yaml.YAMLError, which would then raise UnboundLocalError."""
+    import json as _json
+
+    from sdp.services.generation import _read_delta_table_selection
+
+    good = tmp_path / "c.json"
+    good.write_text(_json.dumps({"tables": [{"name": "t", "write_delta": True}]}),
+                    encoding="utf-8")
+    assert _read_delta_table_selection(str(good)) == ["t"]
+
+
+def test_mcp_broad_handlers_are_the_tool_error_channel():
+    """Documented exemption: every broad handler in the MCP server returns an
+    error result. A tool that raises gives the agent a transport error rather
+    than a message it can act on, so these must not be narrowed.
+    """
+    source = (REPO_ROOT / "sdp" / "mcp_server" / "server.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.ExceptHandler) and node.type
+                and ast.unparse(node.type) == "Exception"):
+            continue
+        body = "\n".join(ast.unparse(s) for s in node.body)
+        if not ("return" in body and ("ok" in body or "error" in body)):
+            offenders.append(node.lineno)
+
+    assert not offenders, (
+        f"MCP handlers at {offenders} neither narrow nor return an error result"
+    )
+
+
+def test_import_guards_are_narrowed_to_import_error():
+    """An import guard catching Exception hides a NameError in the module it
+    is importing, reporting it as 'could not import'."""
+    for module in ("sdp/cli_commands/quality.py",):
+        tree = ast.parse((REPO_ROOT / module).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ExceptHandler):
+                continue
+            body = "\n".join(ast.unparse(s) for s in node.body)
+            if "Could not import" in body:
+                assert node.type and "ImportError" in ast.unparse(node.type), (
+                    f"{module}:{node.lineno} import guard is still broad"
+                )

@@ -357,3 +357,107 @@ def test_schema_issues_empty_for_excel(tmp_path):
     workbook = tmp_path / "cfg.xlsx"
     workbook.write_bytes(b"stub")
     assert _schema_issues(str(workbook), strict=True) == []
+
+
+# ---------------------------------------------------------------------------
+# Strictness — typos must fail
+# ---------------------------------------------------------------------------
+
+
+def test_misspelled_column_key_is_reported():
+    """The whole point of tightening: `data_typ` used to pass silently, and
+    `--strict-schema` could not help because nothing was flagged to promote."""
+    document = {"tables": [{"name": "t", "columns": [
+        {"name": "c", "data_typ": "VA8"},
+    ]}]}
+    violations = validate_document(document)
+    assert any("data_typ" in v.message for v in violations)
+
+
+def test_misspelled_table_key_is_reported():
+    document = {"tables": [{"name": "t", "colums": [], "columns": []}]}
+    assert any("colums" in v.message for v in validate_document(document))
+
+
+def test_misspelled_root_key_is_reported():
+    document = {**MINIMAL, "tabels": []}
+    assert any("tabels" in v.message for v in validate_document(document))
+
+
+@pytest.mark.parametrize("prefix", ["x-", "_"])
+def test_annotation_prefixes_are_allowed_everywhere(prefix):
+    """The escape hatch: carry your own metadata without weakening the schema."""
+    document = {
+        **MINIMAL,
+        f"{prefix}owner": "data-platform",
+        "tables": [{
+            "name": "t",
+            f"{prefix}ticket": "ABC-1",
+            "columns": [{"name": "c", "data_type": "VA8", f"{prefix}note": "pii"}],
+        }],
+    }
+    assert validate_document(document) == []
+
+
+# ---------------------------------------------------------------------------
+# Fields the schema was missing entirely
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("field,value", [
+    ("num_rows", 500),
+    ("source", "data/real/customers.parquet"),   # anchored generation
+    ("versions_per_key", 3),
+    ("seed", 7),
+    ("omitted_columns", ["internal_flag"]),
+    ("table_name", "t"),
+])
+def test_real_table_fields_are_accepted(field, value):
+    """These are honoured by the parser but were absent from the schema —
+    the permissiveness had been masking genuine gaps, not enabling
+    extensibility."""
+    document = {"tables": [{"name": "t", field: value,
+                            "columns": [{"name": "c", "data_type": "VA8"}]}]}
+    assert validate_document(document) == [], f"{field} rejected"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("null_rate", 0.25),
+    ("distribution", {"name": "norm", "params": [0, 1]}),
+    ("length", 32),
+    ("precision", 18),
+    ("scale", 2),
+    ("example_value", "ACME"),
+    ("column_name", "c"),
+])
+def test_real_column_fields_are_accepted(field, value):
+    document = {"tables": [{"name": "t", "columns": [
+        {"name": "c", "data_type": "VA8", field: value},
+    ]}]}
+    assert validate_document(document) == [], f"{field} rejected"
+
+
+def test_null_rate_is_bounded():
+    document = {"tables": [{"name": "t", "columns": [
+        {"name": "c", "data_type": "VA8", "null_rate": 1.5},
+    ]}]}
+    assert validate_document(document)
+
+
+def test_schema_reference_key_is_allowed_at_root():
+    """Json_Config_Schema.md tells users to add `$schema`; rejecting it would
+    break the documented IDE workflow."""
+    document = {"$schema": "./schemas/sdp_config.schema.json", **MINIMAL}
+    assert validate_document(document) == []
+
+
+def test_notes_may_be_a_string_or_a_list():
+    assert validate_document({**MINIMAL, "notes": "one line"}) == []
+    assert validate_document({**MINIMAL, "notes": ["a", "b"]}) == []
+
+
+def test_config_format_is_not_stricter_than_the_parser():
+    """The parser never reads config_format, so the schema must not reject a
+    legacy marker that in fact loads fine."""
+    assert validate_document({**MINIMAL, "config_format": "fdl-yaml-v1-sample"}) == []
+    assert validate_document({**MINIMAL, "config_format": "totally-wrong"})

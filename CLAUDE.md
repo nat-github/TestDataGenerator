@@ -424,6 +424,31 @@ distribution candidate that does not fit) are `debug`.
 A ratchet test caps the number of broad handlers that swallow without any
 signal. Fixing one lowers the number; it must never rise.
 
+### Where `except Exception` is correct — do not "fix" these
+
+Reviews keep flagging the raw count of broad handlers. Three groups are
+deliberate and should stay:
+
+**`mcp_server/server.py` (13).** Every one returns `{"ok": False, "error":
+...}`. That *is* the MCP tool contract — a tool that raises hands the agent
+a transport error instead of a message it can act on. Narrowing them would
+make the server worse.
+
+**Third-party boundaries.** LLM inference, cloud upload and the Delta write
+call SDKs that raise a wide and undocumented range of types. These log (and
+the Delta one re-raises), so nothing is hidden; enumerating their exceptions
+would be guesswork that silently stops catching things on the next SDK
+upgrade.
+
+**Per-cell coercion in `generators/_arrow_export.py` (5).** Documented in
+that module: they run once per cell, so logging is not an option. Their
+exception types *are* named — they are counted as broad only because a
+`ValueError` tuple still reads as broad to a naive count.
+
+What was narrowed instead: import guards to `ImportError`, config-file
+reads to `(OSError, TypeError, AttributeError, ValueError, yaml.YAMLError)`,
+and `load_config_context` calls to `(ValueError, OSError)`.
+
 ## Relationship Inference
 
 Two interchangeable engines behind the same interface (`infer(tables, ...) -> InferenceResult`):

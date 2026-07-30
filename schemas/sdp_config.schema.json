@@ -4,12 +4,32 @@
   "title": "Synthetic Data Platform — config (YAML/JSON)",
   "description": "Canonical schema for sdp-yaml-v1 / sdp-json-v1 configs. Use in IDEs (VS Code, IntelliJ) for autocompletion and validation.",
   "type": "object",
-  "additionalProperties": true,
+  "additionalProperties": false,
+  "patternProperties": {
+    "^(x-|_)": {
+      "description": "Annotation escape hatch. Keys prefixed with `x-` or `_` are ignored by the parser and never validated, so you can carry your own metadata without weakening the schema."
+    }
+  },
   "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "IDE schema reference. Json_Config_Schema.md documents adding this, so it must be allowed at the root."
+    },
+    "notes": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "array", "items": { "type": "string" } }
+      ],
+      "description": "Free-text notes about this config — a string or a list of lines."
+    },
+    "source_workbook": { "type": "string", "description": "Provenance — the workbook this config was generated from." },
     "config_format": {
       "type": "string",
-      "enum": ["sdp-yaml-v1", "sdp-json-v1", "fdl-yaml-v1", "fdl-json-v1"],
-      "description": "Format marker. fdl-* values are accepted for backward compatibility."
+      "anyOf": [
+        { "enum": ["sdp-yaml-v1", "sdp-json-v1", "fdl-yaml-v1", "fdl-json-v1"] },
+        { "pattern": "^(sdp|fdl)-" }
+      ],
+      "description": "Format marker. The parser does not read this field, so the schema does not constrain it beyond an `sdp-`/`fdl-` prefix — being stricter here than the implementation would fail configs that work. The enum drives IDE autocompletion."
     },
     "config_version": { "type": "string" },
     "run_settings": {
@@ -43,10 +63,31 @@
     "Table": {
       "type": "object",
       "required": ["name", "columns"],
-      "additionalProperties": true,
+      "additionalProperties": false,
+      "patternProperties": { "^(x-|_)": {} },
       "properties": {
         "name": { "type": "string" },
+        "table_name": { "type": "string", "description": "Alias for name." },
         "description": { "type": "string" },
+        "num_rows": { "type": "integer", "minimum": 0, "description": "Rows to generate. Alias of rows/row_count." },
+        "seed": { "type": "integer", "description": "Per-table seed override." },
+        "output_format": { "type": "string", "enum": ["parquet", "json", "csv"] },
+        "omitted_columns": {
+          "oneOf": [
+            { "type": "array", "items": { "type": "string" } },
+            { "type": "string" }
+          ],
+          "description": "Documentation of columns intentionally left out of this config."
+        },
+        "source": {
+          "type": "string",
+          "description": "Anchored generation — load this table verbatim from a real .parquet/.csv dataset instead of generating it. Other tables generate around it and resolve FKs against its real keys. See Yaml_Config_Schema.md."
+        },
+        "versions_per_key": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Repeat each business key 1..N times, varying scd2_tracked_columns. Schema is unchanged."
+        },
         "table_kind": {
           "type": "string",
           "enum": ["transactional", "dimension", "reference", "fact", "bridge"]
@@ -137,10 +178,31 @@
     "Column": {
       "type": "object",
       "required": ["name"],
-      "additionalProperties": true,
+      "additionalProperties": false,
+      "patternProperties": { "^(x-|_)": {} },
       "properties": {
         "name": { "type": "string" },
+        "column_name": { "type": "string", "description": "Alias for name." },
+        "description": { "type": "string" },
         "data_type": { "type": "string" },
+        "length": { "type": "integer", "minimum": 0 },
+        "precision": { "type": "integer", "minimum": 0 },
+        "scale": { "type": "integer", "minimum": 0 },
+        "null_rate": {
+          "type": "number", "minimum": 0, "maximum": 1,
+          "description": "Fraction of values generated as NULL. `nullable: false` overrides this."
+        },
+        "distribution": {
+          "type": "object",
+          "description": "Statistical distribution descriptor — {name, params, data_min, data_max}. Produced by infer-config; drives numeric sampling.",
+          "properties": {
+            "name": { "type": "string" },
+            "params": {},
+            "data_min": {},
+            "data_max": {}
+          }
+        },
+        "example_value": { "description": "Canonical example — used by the mock renderers and API docs." },
         "type": { "type": "string", "description": "Alias for data_type." },
         "is_pk": { "type": "boolean" },
         "pk": { "type": "boolean" },

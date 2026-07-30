@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 import pandas as pd
+import yaml
 
 from sdp.generators.data_generator import DataGenerator
 from sdp.services.common import (
@@ -103,7 +104,6 @@ def _read_versions_per_key(config_path: str) -> Dict[str, int]:
     specs: Dict[str, int] = {}
     try:
         if suffix in (".yaml", ".yml"):
-            import yaml
             raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         elif suffix == ".json":
             import json
@@ -118,7 +118,7 @@ def _read_versions_per_key(config_path: str) -> Dict[str, int]:
                     specs[name] = int(vpk)
                 except (TypeError, ValueError):
                     pass
-    except Exception as exc:
+    except (OSError, TypeError, AttributeError, ValueError, yaml.YAMLError) as exc:
         logger.warning(f"Could not read versions_per_key from {config_path}: {exc}")
     return specs
 
@@ -242,7 +242,6 @@ def _read_delta_table_selection(config_path: str) -> Optional[List[str]]:
     selected: List[str] = []
     try:
         if suffix in (".yaml", ".yml"):
-            import yaml
             raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         elif suffix == ".json":
             import json
@@ -253,7 +252,7 @@ def _read_delta_table_selection(config_path: str) -> Optional[List[str]]:
             name = t.get("name") or t.get("table_name")
             if name and t.get("write_delta"):
                 selected.append(name)
-    except Exception as exc:
+    except (OSError, TypeError, AttributeError, ValueError, yaml.YAMLError) as exc:
         logger.warning(f"Could not read write_delta flags from {config_path}: {exc}")
         return None
     return selected if selected else None
@@ -274,7 +273,6 @@ def _read_delta_partition_overrides(config_path: str) -> Dict[str, str]:
     overrides: Dict[str, str] = {}
     try:
         if suffix in (".yaml", ".yml"):
-            import yaml
             raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
         elif suffix == ".json":
             import json
@@ -286,7 +284,7 @@ def _read_delta_partition_overrides(config_path: str) -> Dict[str, str]:
             col = t.get("delta_partition_col")
             if name and col:
                 overrides[name] = str(col)
-    except Exception as exc:
+    except (OSError, TypeError, AttributeError, ValueError, yaml.YAMLError) as exc:
         logger.warning(f"Could not read delta_partition_col overrides from {config_path}: {exc}")
         return {}
     return overrides
@@ -429,7 +427,7 @@ def _run_gx_validation(generator, *, output_dir: str, tolerance: float, verbose:
         from sdp.validators.gx_validator import (
             HAS_GX, validate_tables, format_report,
         )
-    except Exception as exc:
+    except ImportError as exc:
         logger.error(f"Could not import sdp.validators.gx_validator: {exc}")
         return 1
     if not HAS_GX:
