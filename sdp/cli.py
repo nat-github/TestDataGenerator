@@ -329,6 +329,13 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Optional path to write the structured JSON report")
     qr_parser.add_argument("--privacy-threshold", type=float, default=0.0,
                            help="Distance below which a synthetic row is flagged as too close to source (0.0 = exact duplicates)")
+    qr_parser.add_argument("--no-utility", action="store_true",
+                           help="Skip the TSTR utility check (the slowest metric — it fits two models per table)")
+    qr_parser.add_argument("--no-bias", action="store_true",
+                           help="Skip representation / outcome-disparity checks")
+    qr_parser.add_argument("--target", action="append", default=None, metavar="TABLE=COLUMN",
+                           help="Column to predict and measure outcomes against, per table "
+                                "(repeatable; auto-selected when omitted)")
     qr_parser.add_argument("--verbose", action="store_true", help="Print full markdown report")
 
     # --- contract-test ---
@@ -1949,6 +1956,21 @@ def _serialise_report(report) -> str:
     return json.dumps(payload, indent=2, default=str)
 
 
+def _parse_targets(raw: Optional[List[str]]) -> Optional[Dict[str, str]]:
+    """``["orders=status", "customers=tier"]`` → ``{"orders": "status", ...}``."""
+    if not raw:
+        return None
+    targets: Dict[str, str] = {}
+    for item in raw:
+        if "=" not in item:
+            raise ValueError(
+                f"--target expects TABLE=COLUMN, got {item!r}"
+            )
+        table, column = item.split("=", 1)
+        targets[table.strip()] = column.strip()
+    return targets
+
+
 def run_quality_report(args) -> int:
     """Run a statistical quality / fidelity / privacy report on generated data."""
     configure_logging(getattr(args, "verbose", False))
@@ -1959,6 +1981,9 @@ def run_quality_report(args) -> int:
             synthetic_dir=args.generated,
             source_dir=args.source,
             privacy_threshold=getattr(args, "privacy_threshold", 0.0),
+            with_utility=not getattr(args, "no_utility", False),
+            with_bias=not getattr(args, "no_bias", False),
+            targets=_parse_targets(getattr(args, "target", None)),
         )
     except Exception as exc:
         logger.error(f"quality-report failed: {exc}")
@@ -1981,13 +2006,22 @@ def run_quality_report(args) -> int:
             print("Overall fidelity score: not computable")
         else:
             print("(univariate-only — no source data provided)")
+        if report.overall_utility is not None:
+            print(f"Overall utility (TSTR): {report.overall_utility:.3f} "
+                  "(1.0 = as useful as real data)")
+        if report.bias_flagged_tables:
+            print(f"Bias flags: {', '.join(report.bias_flagged_tables)}")
         print()
         for name, t in report.tables.items():
             line = f"  {name:30s}  rows={t.row_count_synthetic:>8}"
             if t.fidelity_score is not None:
                 line += f"  fidelity={t.fidelity_score:.3f}"
+            if t.utility_ratio is not None:
+                line += f"  utility={t.utility_ratio:.3f}"
             if t.privacy_nn_too_close_rate is not None:
                 line += f"  privacy_too_close={t.privacy_nn_too_close_rate:.1%}"
+            if t.biased_columns:
+                line += f"  bias={len(t.biased_columns)}col"
             print(line)
 
     if getattr(args, "output_html", None):

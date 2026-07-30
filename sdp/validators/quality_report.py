@@ -13,6 +13,16 @@ Two modes:
     privacy proxy. Useful for "is this synthetic data faithful to the
     source distribution while not leaking individual rows?"
 
+    Also adds two measures that fidelity alone cannot answer:
+
+    - **utility** (``validators/utility.py``) — TSTR: train a model on
+      the synthetic data, test it on real data, compare against the same
+      model trained on real data. Answers "can this data still do the
+      job?", which faithful-looking data can still fail.
+    - **bias** (``validators/bias.py``) — group representation drift and
+      outcome disparity amplification. Answers "did generation skew who
+      is represented, or widen the gap between groups?"
+
 Inputs are pandas DataFrames keyed by table name. The report is a
 nested dataclass with `to_dict()` and `to_markdown()` methods. Renderers
 in the Streamlit UI and MCP server use those.
@@ -27,6 +37,9 @@ import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple, Union
+
+from sdp.validators.bias import ColumnBiasMetrics, compute_bias
+from sdp.validators.utility import UtilityMetrics, compute_utility
 
 logger = logging.getLogger(__name__)
 
@@ -102,11 +115,28 @@ class TableQualityMetrics:
     # 1.0 = perfect match, 0.0 = totally different. None when no source.
     fidelity_score: Optional[float] = None
 
+    # Utility (TSTR) — is the data still usable for a downstream task?
+    # None when there is no source, no usable target, or sklearn is absent.
+    utility: Optional[UtilityMetrics] = None
+
+    # Bias — per-column representation drift and outcome disparity.
+    # Empty when there is no source or no categorical grouping columns.
+    bias: List[ColumnBiasMetrics] = field(default_factory=list)
+
     notes: List[str] = field(default_factory=list)
 
     @property
     def has_source(self) -> bool:
         return self.row_count_source is not None
+
+    @property
+    def utility_ratio(self) -> Optional[float]:
+        return self.utility.utility_ratio if self.utility else None
+
+    @property
+    def biased_columns(self) -> List[str]:
+        """Columns whose representation drifted or whose outcome gap widened."""
+        return [b.column for b in self.bias if b.verdict != "faithful"]
 
 
 @dataclass
@@ -125,10 +155,26 @@ class QualityReport:
             return None
         return sum(scores) / len(scores)
 
+    @property
+    def overall_utility(self) -> Optional[float]:
+        """Average TSTR ratio across tables where it was computable."""
+        ratios = [t.utility_ratio for t in self.tables.values()
+                  if t.utility_ratio is not None]
+        if not ratios:
+            return None
+        return sum(ratios) / len(ratios)
+
+    @property
+    def bias_flagged_tables(self) -> List[str]:
+        """Tables with at least one column showing bias drift."""
+        return [name for name, t in self.tables.items() if t.biased_columns]
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "has_source": self.has_source,
             "overall_fidelity": self.overall_fidelity,
+            "overall_utility": self.overall_utility,
+            "bias_flagged_tables": self.bias_flagged_tables,
             "tables": {
                 name: _serialise_table(t) for name, t in self.tables.items()
             },
@@ -152,6 +198,9 @@ def quality_report(
     *,
     source: Optional[Mapping[str, "object"]] = None,
     privacy_threshold: float = 0.0,
+    with_utility: bool = True,
+    with_bias: bool = True,
+    targets: Optional[Mapping[str, str]] = None,
 ) -> QualityReport:
     """Compute a quality report for the given synthetic data.
 
@@ -168,6 +217,16 @@ def quality_report(
         a source row for the privacy proxy. ``0.0`` flags exact duplicates
         only. Pass a small positive value (e.g. 1e-6) to also flag
         floating-point near-duplicates.
+    with_utility:
+        Compute the TSTR utility score. Requires source data and fits two
+        models per table — by far the most expensive part of the report,
+        so it can be turned off for quick runs.
+    with_bias:
+        Compute representation drift and outcome disparity. Cheap.
+    targets:
+        Optional ``table_name → column`` map naming the column to predict
+        (utility) and measure outcomes against (bias). Auto-selected per
+        table when not given.
     """
     has_source = source is not None
     tables: Dict[str, TableQualityMetrics] = {}
@@ -178,6 +237,9 @@ def quality_report(
             tables[table_name] = _table_metrics(
                 table_name, syn_df, src_df,
                 privacy_threshold=privacy_threshold,
+                with_utility=with_utility,
+                with_bias=with_bias,
+                target=(targets or {}).get(table_name),
             )
         except Exception as exc:
             logger.warning("quality_report: %s — %s", table_name, exc)
@@ -197,12 +259,18 @@ def quality_report_from_paths(
     source_dir: Optional[Union[str, Path]] = None,
     *,
     privacy_threshold: float = 0.0,
+    with_utility: bool = True,
+    with_bias: bool = True,
+    targets: Optional[Mapping[str, str]] = None,
 ) -> QualityReport:
     """Like ``quality_report`` but reads Parquet directories from disk."""
     syn_dfs = _load_parquet_dir(Path(synthetic_dir))
     src_dfs = _load_parquet_dir(Path(source_dir)) if source_dir else None
     return quality_report(syn_dfs, source=src_dfs,
-                          privacy_threshold=privacy_threshold)
+                          privacy_threshold=privacy_threshold,
+                          with_utility=with_utility,
+                          with_bias=with_bias,
+                          targets=targets)
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +284,9 @@ def _table_metrics(
     src_df: Optional["object"],
     *,
     privacy_threshold: float,
+    with_utility: bool = True,
+    with_bias: bool = True,
+    target: Optional[str] = None,
 ) -> TableQualityMetrics:
     import pandas as pd
 
@@ -229,6 +300,8 @@ def _table_metrics(
     correlation_distance = None
     privacy_too_close = None
     fidelity_score = None
+    utility: Optional[UtilityMetrics] = None
+    bias: List[ColumnBiasMetrics] = []
 
     if src_df is not None:
         if not isinstance(src_df, type(syn_df)):
@@ -252,6 +325,28 @@ def _table_metrics(
         if scores:
             fidelity_score = sum(scores) / len(scores)
 
+        # Utility (TSTR) — expensive, so it is the one metric that is
+        # optional. Failures degrade to a note rather than losing the
+        # rest of the report.
+        if with_utility:
+            try:
+                utility = compute_utility(syn_df, src_df, target=target)
+                if utility is None:
+                    notes.append("no usable prediction target — utility skipped")
+            except Exception as exc:
+                logger.warning("utility: %s — %s", table_name, exc)
+                notes.append(f"utility failed: {type(exc).__name__}: {exc}")
+
+        # Bias — the outcome column is whatever utility predicted, so the
+        # two measures describe the same target.
+        if with_bias:
+            outcome = target or (utility.target_column if utility else None)
+            try:
+                bias = compute_bias(syn_df, src_df, outcome_column=outcome)
+            except Exception as exc:
+                logger.warning("bias: %s — %s", table_name, exc)
+                notes.append(f"bias failed: {type(exc).__name__}: {exc}")
+
     return TableQualityMetrics(
         table_name=table_name,
         row_count_synthetic=len(syn_df),
@@ -262,6 +357,8 @@ def _table_metrics(
         correlation_distance=correlation_distance,
         privacy_nn_too_close_rate=privacy_too_close,
         fidelity_score=fidelity_score,
+        utility=utility,
+        bias=bias,
         notes=notes,
     )
 
@@ -516,10 +613,44 @@ def _serialise_table(t: TableQualityMetrics) -> Dict[str, Any]:
         "fidelity_score": t.fidelity_score,
         "correlation_distance": t.correlation_distance,
         "privacy_nn_too_close_rate": t.privacy_nn_too_close_rate,
+        "utility": _serialise_utility(t.utility),
+        "bias": [_serialise_bias(b) for b in t.bias],
         "notes": t.notes,
         "columns": [asdict(c) for c in t.columns],
         "correlation_synthetic": t.correlation_synthetic,
         "correlation_columns": t.correlation_columns,
+    }
+
+
+def _serialise_utility(u: Optional[UtilityMetrics]) -> Optional[Dict[str, Any]]:
+    if u is None:
+        return None
+    data = asdict(u)
+    data["verdict"] = u.verdict          # property — not captured by asdict
+    return data
+
+
+def _serialise_bias(b: ColumnBiasMetrics) -> Dict[str, Any]:
+    return {
+        "column": b.column,
+        "max_representation_shift": b.max_representation_shift,
+        "flagged_groups": b.flagged_groups,
+        "verdict": b.verdict,
+        "outcome_column": b.outcome_column,
+        "source_disparity": b.source_disparity,
+        "synthetic_disparity": b.synthetic_disparity,
+        "disparity_amplification": b.disparity_amplification,
+        "notes": b.notes,
+        "groups": [
+            {
+                "group": g.group,
+                "source_share": g.source_share,
+                "synthetic_share": g.synthetic_share,
+                "delta": g.delta,
+                "ratio": g.ratio,
+            }
+            for g in b.groups
+        ],
     }
 
 
@@ -534,6 +665,13 @@ def _render_markdown(report: QualityReport, *, max_columns_shown: int) -> str:
         lines.append("**Overall fidelity score:** *not computable (insufficient data)*")
     else:
         lines.append("*No source data provided — univariate-only report.*")
+
+    if report.overall_utility is not None:
+        lines.append(f"**Overall utility (TSTR):** `{report.overall_utility:.3f}` "
+                     "(1.0 = models trained on synthetic data do as well as on real data)")
+    if report.bias_flagged_tables:
+        lines.append("**Bias flags:** " +
+                     ", ".join(f"`{n}`" for n in report.bias_flagged_tables))
     lines.append("")
 
     for name, t in report.tables.items():
@@ -555,6 +693,9 @@ def _render_markdown(report: QualityReport, *, max_columns_shown: int) -> str:
             lines.append(f"- *Note:* {note}")
         lines.append("")
 
+        _append_utility_section(lines, t)
+        _append_bias_section(lines, t)
+
         # Column table
         lines.append("| Column | Dtype | Null rate | Unique | Mean | Std | Top values | Score |")
         lines.append("|---|---|---:|---:|---:|---:|---|---:|")
@@ -571,6 +712,63 @@ def _render_markdown(report: QualityReport, *, max_columns_shown: int) -> str:
             lines.append(f"| ... and {len(t.columns) - max_columns_shown} more columns |||||||| |")
         lines.append("")
     return "\n".join(lines)
+
+
+def _append_utility_section(lines: List[str], t: TableQualityMetrics) -> None:
+    u = t.utility
+    if u is None:
+        return
+
+    lines.append(f"### Utility — can a model still learn from this data?")
+    lines.append("")
+    lines.append(f"Predicting **`{u.target_column}`** ({u.task}, scored by `{u.metric}`)")
+    lines.append("")
+    lines.append("| Trained on | Score | Rows |")
+    lines.append("|---|---:|---:|")
+    real = f"{u.score_real:.4f}" if u.score_real is not None else "—"
+    syn = f"{u.score_synthetic:.4f}" if u.score_synthetic is not None else "—"
+    lines.append(f"| Real data (baseline) | {real} | {u.n_train_real:,} |")
+    lines.append(f"| Synthetic data | {syn} | {u.n_train_synthetic:,} |")
+    lines.append("")
+    if u.utility_ratio is not None:
+        lines.append(f"**Utility ratio: {u.utility_ratio:.3f}** — {u.verdict}")
+    else:
+        lines.append(f"**Utility ratio: not computable** — {u.verdict}")
+    lines.append(f"*Both models scored on the same {u.n_test:,} held-out real rows.*")
+    for note in u.notes:
+        lines.append(f"- *Note:* {note}")
+    lines.append("")
+
+
+def _append_bias_section(lines: List[str], t: TableQualityMetrics) -> None:
+    if not t.bias:
+        return
+    # Only worth a section when something actually moved.
+    interesting = [b for b in t.bias if b.verdict != "faithful"]
+    if not interesting:
+        lines.append("### Bias — no representation drift detected")
+        lines.append("")
+        return
+
+    lines.append("### Bias — representation and outcome drift")
+    lines.append("")
+    lines.append("| Column | Verdict | Max share shift | Groups affected | Disparity amplification |")
+    lines.append("|---|---|---:|---|---:|")
+    for b in interesting:
+        groups = ", ".join(b.flagged_groups[:3]) or "—"
+        if len(b.flagged_groups) > 3:
+            groups += f" (+{len(b.flagged_groups) - 3})"
+        amp = (f"{b.disparity_amplification:+.1%}"
+               if b.disparity_amplification is not None else "—")
+        lines.append(
+            f"| {b.column} | {b.verdict} | {b.max_representation_shift:.1%} | "
+            f"{groups} | {amp} |"
+        )
+    lines.append("")
+    for b in interesting:
+        for note in b.notes:
+            lines.append(f"- *{b.column}:* {note}")
+    lines.append("")
 
 
 def _render_html(report: QualityReport) -> str:
