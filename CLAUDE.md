@@ -230,6 +230,7 @@ Excel / YAML Config
 | `synthesizers/registry.py` | Lazy name → engine-class registry (`sdv`, `gaussian-copula`, `ctgan`, `tvae`, `rule-based`). Registration is by import path so unused engines cost nothing at import time. |
 | `synthesizers/sdv_hma.py` | The default engine — SDV `HMASynthesizer`, the only one that models cross-table structure natively. |
 | `synthesizers/single_table.py` | Per-table engines (Gaussian copula, CTGAN, TVAE). No cross-table modelling; referential integrity comes from FK resolution after sampling. |
+| `synthesizers/dp_marginal.py` | Differentially private marginals — the only engine with a formal guarantee. Laplace-noised histograms over **config-declared** domains (`business_values`, `min_value`/`max_value`), so the domain never comes from the data. Budget composes within a table; the guarantee is per-row-per-table and says so. Columns with no declared domain are generated from config rules and spend nothing. |
 | `synthesizers/rule_based.py` | Explicit no-model path — makes "generate from config rules" a named choice rather than only a failure mode. |
 | `validators/utility.py` | TSTR utility — trains a model on synthetic data and scores it on held-out *real* rows, against the same model trained on real data. Answers "can this data still do the job?", which fidelity cannot: a generator can match every marginal while destroying the relationships between columns. ROC AUC ratios are chance-adjusted. |
 | `validators/bias.py` | Bias drift — per-group representation shift and outcome disparity amplification (does the gap in outcome rates *between* groups widen in synthetic data?). Descriptive, not prescriptive. pandas only. |
@@ -332,6 +333,7 @@ Tests live in `tests/`:
 - `test_sdk_and_api.py` — Python SDK facade (`generate`/`lint`/`run`, seed reproducibility) and REST API endpoints (`/healthz`, `/generate`, `/lint`); API tests skip without the `api` extra.
 - `test_contracts.py` — data contract testing: `contract-test` verdict/severity and `contract-diff` breaking-change classification; checker tests skip without the `gx` extra.
 - `test_pk_generation.py` — regression guard: primary-key columns must be non-null and unique through the SDV path and Parquet export.
+- `test_dp_marginal.py` — the DP engine, targeting the properties that make the ε claim real rather than just the code path: domain comes from config not data, epsilons compose, noise is genuinely applied, undeclared columns never reflect the training data, reported accounting matches what was spent.
 - `test_synthesizer_engines.py` — engine registry, shared sampling helper (including the `num_rows`→`scale` fallback), engine contract, `DataGenerator` wiring, and the back-compat guarantee that a directly-assigned `generator.synthesizer` still samples.
 - `test_utility_and_bias.py` — TSTR utility and bias drift. Fixtures carry a *known* answer (a learnable signal that synthetic data either preserves or destroys; a group skew that is either faithful or amplified), so the tests check the metrics measure what they claim — including the case fidelity misses: identical marginals, zero utility.
 
@@ -381,6 +383,7 @@ Both modules use a stable system prompt with `cache_control: ephemeral` for Anth
 - `Bruno_Workflow.md` — end-to-end recipe: OpenAPI spec → `mock-init` → `mock-render` → WireMock standalone → Bruno API client
 - `Data_Validation.md` — Great Expectations integration: auto-derived suites from `ColumnConfig`, the `validate-data` subcommand, and how to extend
 - `Quality_Reports.md` — Statistical fidelity / utility / bias / privacy reports: univariate, KS / TV-distance, correlation delta, TSTR utility, bias drift, NN privacy proxy, CLI + UI + MCP entry points
+- `Differential_Privacy.md` — The `dp-marginal` engine: what ε means, why config-declared domains make honest DP possible here, composition, the per-table limit, where the noise bites, and the caveat that ε over config-generated input is vacuous
 - `Synthesizer_Engines.md` — Pluggable generation engines: the `Synthesizer` contract, built-in engines and their relationship trade-offs, engine selection and options, cost reporting, and how to write your own
 - `Data_Contract_Testing.md` — data contracts: what/why, `contract-test` (verdict + severity), `contract-diff` (breaking-change detection), CLI / SDK / API / Streamlit
 - `Docker_Quickstart.md` — Run with or without Docker (additive); CLI / Streamlit / MCP run modes inside the image

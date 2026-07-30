@@ -57,6 +57,11 @@ def build_parser() -> argparse.ArgumentParser:
                                  help="Engine-specific option, repeatable (e.g. epochs=300)")
     generate_parser.add_argument("--list-engines", action="store_true",
                                  help="List available generation engines and exit")
+    generate_parser.add_argument("--epsilon", type=float, default=None,
+                                 help="Privacy budget per table for --engine dp-marginal "
+                                      "(lower = more private, less accurate; default 1.0)")
+    generate_parser.add_argument("--privacy-report-json", default=None,
+                                 help="Write the DP privacy accounting to this path")
     generate_parser.add_argument("--infer-relationships", action="store_true",
                                  help="Infer missing FK relationships before generation")
     generate_parser.add_argument("--method", choices=["ml", "llm", "both"], default="ml",
@@ -839,11 +844,17 @@ def run_generate(args) -> int:
     seed: Optional[int] = getattr(args, "seed", None)
 
     logger.info("Initializing SDV data generator...")
+    # CLI options win over the config's `engine_options` setting.
+    cli_engine_options = _parse_engine_options(getattr(args, "engine_option", None))
+    if getattr(args, "epsilon", None) is not None:
+        # --epsilon is a first-class flag because it is the one option whose
+        # value is a promise to a regulator, not a tuning knob.
+        cli_engine_options = {**(cli_engine_options or {}), "epsilon": args.epsilon}
+
     generator = DataGenerator(
         args.config, seed=seed,
         engine=getattr(args, "engine", None),
-        # CLI options win over the config's `engine_options` setting.
-        engine_options=_parse_engine_options(getattr(args, "engine_option", None)),
+        engine_options=cli_engine_options,
     )
     if not generator.load_configuration():
         logger.error("Failed to load configuration")
@@ -909,6 +920,24 @@ def run_generate(args) -> int:
             f"sample {stats['sample_seconds']}s "
             f"({stats['fit_rows']} training rows, {stats['sampled_rows']} sampled)"
         )
+
+    privacy = generator.privacy_report
+    if privacy:
+        measured = privacy["measured_columns"]
+        logger.info(
+            f"\nPrivacy: ε={privacy['epsilon_requested']} per table — "
+            f"{len(measured)} column(s) measured under DP, "
+            f"{len(privacy['unmeasured_columns'])} generated from config only"
+        )
+        logger.info(f"  Guarantee: {privacy['guarantee']}")
+        for warning in privacy["warnings"]:
+            logger.warning(f"  ! {warning}")
+        if getattr(args, "privacy_report_json", None):
+            import json
+            out = Path(args.privacy_report_json)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(privacy, indent=2, default=str), encoding="utf-8")
+            logger.info(f"  Wrote privacy report to {out}")
 
     logger.info("\nValidating generated data...")
     empty_tables = 0

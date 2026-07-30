@@ -28,7 +28,13 @@ of a default nobody revisits.
 | `gaussian-copula` | SDV `GaussianCopulaSynthesizer`, per table | FK resolution only | Fast |
 | `ctgan` | SDV `CTGANSynthesizer` — conditional GAN, per table | FK resolution only | Very slow (torch) |
 | `tvae` | SDV `TVAESynthesizer` — variational autoencoder, per table | FK resolution only | Slow (torch) |
+| `dp-marginal` | Laplace-noised marginals — **formal ε-DP guarantee** | FK resolution only | Fast |
 | `rule-based` | Config rules only — regex, business values, Faker | FK resolution only | Instant |
+
+`dp-marginal` is the only engine offering a *provable* privacy guarantee;
+everything else, including the NN privacy proxy in `quality-report`, is a
+heuristic. It also discards correlations between columns, which is a real
+cost. See **[Differential_Privacy.md](Differential_Privacy.md)**.
 
 ```bash
 python main.py generate --list-engines

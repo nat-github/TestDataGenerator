@@ -1382,6 +1382,18 @@ class DataGenerator:
         engine = self._engine
         return engine.stats.to_dict() if engine is not None else None
 
+    @property
+    def privacy_report(self) -> Optional[Dict[str, Any]]:
+        """Privacy accounting, when the engine provides a formal guarantee.
+
+        None for every engine except ``dp-marginal`` — absence here means
+        "no formal guarantee was made", which is the honest answer for the
+        engines that make none.
+        """
+        engine = self._engine
+        reporter = getattr(engine, "privacy_report", None)
+        return reporter() if callable(reporter) else None
+
     def _engine_options(self) -> Dict[str, Any]:
         """Engine constructor options from the config's ``engine_options``.
 
@@ -1410,6 +1422,84 @@ class DataGenerator:
                 options[key.strip()] = value
         return options
 
+    def build_column_domains(self) -> Dict[str, Dict[str, Any]]:
+        """Publicly declared value spaces, straight from the config.
+
+        Differential privacy needs a domain that does not come from the
+        data — deriving bin edges from the observed min/max, or the category
+        list from observed values, is itself a non-private query and makes
+        the published epsilon a fiction. The config already declares both
+        (``business_values``, ``min_value`` / ``max_value``), so the DP
+        engine can measure against it without ever inspecting the data.
+
+        Columns with no declared domain are simply absent here; the engine
+        generates them from config rules and spends no budget on them.
+
+        Primary and foreign keys are excluded deliberately: they are
+        identifiers, not distributions. PKs must stay unique and FKs are
+        overwritten by FK resolution, so modelling either would be pointless
+        as well as privacy-relevant.
+        """
+        from sdp.synthesizers.dp_marginal import ColumnDomain
+
+        # Base types as the config parser reports them: N38 → 'N', DC(18,2) →
+        # 'DC'. Use the parser rather than string-slicing the declared type,
+        # so this stays correct as the type grammar evolves.
+        integer_types = {"N"}
+        numeric_types = integer_types | {"DC"}
+
+        domains: Dict[str, Dict[str, Any]] = {}
+        for table_name, table_config in self.tables_config.items():
+            table_domains: Dict[str, Any] = {}
+            for column in table_config.columns:
+                if column.is_pk or column.is_fk:
+                    continue
+
+                values = self.helpers.parse_business_values(column.business_values) \
+                    if hasattr(self.helpers, "parse_business_values") else None
+                if not values and column.business_values:
+                    values = [v.strip() for v in str(column.business_values).split(";") if v.strip()]
+
+                if values:
+                    table_domains[column.column_name] = ColumnDomain(
+                        kind="categorical", values=list(values),
+                    )
+                    continue
+
+                base_type, *_ = self.config_parser.parse_data_type_details(
+                    column.data_type or ""
+                )
+                if base_type in numeric_types and column.min_value is not None \
+                        and column.max_value is not None:
+                    try:
+                        low = float(column.min_value)
+                        high = float(column.max_value)
+                    except (TypeError, ValueError):
+                        continue
+                    if high > low:
+                        table_domains[column.column_name] = ColumnDomain(
+                            kind="numeric", low=low, high=high,
+                            integer=base_type in integer_types,
+                        )
+
+            if table_domains:
+                domains[table_name] = table_domains
+        return domains
+
+    def _dp_engine_options(self) -> Dict[str, Any]:
+        """Domains and a config-only frame factory for the DP engine.
+
+        ``frame_factory`` is what keeps unprivatised columns honest: they
+        are generated purely from the config, so they never see the training
+        data and cost no privacy budget.
+        """
+        return {
+            "domains": self.build_column_domains(),
+            "frame_factory": lambda table, n: self._generate_table_data(
+                self.tables_config[table], n, for_training=False,
+            ),
+        }
+
     def train_synthesizer(self, sample_size: int = 200) -> bool:
         """Fit the configured engine. Returns False to mean "generate from
         config rules instead" — a normal outcome, not necessarily an error."""
@@ -1436,7 +1526,10 @@ class DataGenerator:
                 return True
 
             self._apply_seed(self.seed)
-            engine = create_engine(engine_name, seed=self.seed, **self._engine_options())
+            engine_options = dict(self._engine_options())
+            if engine_name == "dp-marginal":
+                engine_options = {**self._dp_engine_options(), **engine_options}
+            engine = create_engine(engine_name, seed=self.seed, **engine_options)
             self._engine = engine
 
             if not engine.__class__.handles_relationships and engine_name != "rule-based":
@@ -1471,7 +1564,7 @@ class DataGenerator:
                     aggressive=True,
                 )
                 # A fresh engine — a half-fitted model is not a safe retry base.
-                engine = create_engine(engine_name, seed=self.seed, **self._engine_options())
+                engine = create_engine(engine_name, seed=self.seed, **engine_options)
                 self._engine = engine
                 self.logger.info("🔁 Retrying synthesizer fit with aggressively sanitized sample data...")
                 if not engine.fit(retry_sample_data, self.metadata):
