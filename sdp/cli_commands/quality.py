@@ -5,21 +5,14 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Dict, List, Optional
 
-import pandas as pd
 
-from sdp.generators.data_generator import DataGenerator
 from sdp.services.common import (
     configure_logging,
-    create_output_directory,
     load_config_context,
     validate_config_file,
-    verify_export,
 )
-from sdp.utils.config_parser import ConfigParser
-from sdp.utils.data_validator import DataValidator
-from sdp.utils.parquet_post_processor import ParquetPostProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -46,16 +39,21 @@ def run_validate_data(args) -> int:
     parser = load_config_context(args.config)
     tables = parser.tables
 
-    report = validate_tables(
-        tables,
-        output_dir=args.input,
-        row_count_tolerance=args.tolerance,
-    )
+    try:
+        report = validate_tables(
+            tables,
+            output_dir=args.input,
+            row_count_tolerance=args.tolerance,
+        )
+    except (FileNotFoundError, OSError) as exc:
+        # A missing --input directory is a user error, not a crash. It used
+        # to escape as an uncaught traceback out of the command handler.
+        logger.error(f"validate-data failed: {exc}")
+        return 1
 
     print(format_report(report, verbose=getattr(args, "verbose", False)))
 
     if getattr(args, "report_json", None):
-        import json
         out_path = Path(args.report_json)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(_serialise_report(report), encoding="utf-8")

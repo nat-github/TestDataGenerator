@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from sdp.models.config_models import RelationshipConfig, TableConfig
-from sdp.llm.client import DEFAULT_MODEL, system_prompt
+from sdp.llm.client import system_prompt
 from sdp.llm.multi_provider import chat as llm_chat
 
 logger = logging.getLogger(__name__)

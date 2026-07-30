@@ -2,25 +2,18 @@
 """
 from __future__ import annotations
 
-import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import List
 
 import pandas as pd
 
-from sdp.generators.data_generator import DataGenerator
 from sdp.services.common import (
     configure_logging,
-    create_output_directory,
-    load_config_context,
     validate_config_file,
-    verify_export,
 )
 from sdp.utils.config_parser import ConfigParser
-from sdp.utils.data_validator import DataValidator
-from sdp.utils.parquet_post_processor import ParquetPostProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -197,14 +190,19 @@ def run_pii_scan(args) -> int:
                 df = pd.read_excel(input_path, nrows=sample_size)
             findings = detector.scan_dataframe(df, table_name=input_path.stem)
 
-        elif suffix in (".yaml", ".yml"):
-            # Scan config column names (no data values)
+        elif suffix in (".yaml", ".yml", ".json"):
+            # Scan config column names only — no data values are read.
             cp = ConfigParser(str(input_path))
-            tables_cfg, _ = cp.parse_config()
-            findings = detector.scan_config(tables_cfg)
+            if not cp.load_config():
+                logger.error(f"Failed to load configuration: {input_path}")
+                return 1
+            findings = detector.scan_config(cp.parse_tables())
 
         else:
-            logger.error(f"Unsupported file type: {suffix}. Use .csv, .parquet, .xlsx, .yaml")
+            logger.error(
+                f"Unsupported file type: {suffix}. "
+                f"Use .csv, .parquet, .xlsx, .yaml, .yml or .json"
+            )
             return 1
 
         report = detector.format_report(findings)

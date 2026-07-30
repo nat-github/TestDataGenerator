@@ -28,11 +28,9 @@ from sdp.mocks.config_parser import (
 from sdp.models.mock_models import (
     EndpointConfig,
     FieldSpec,
-    MockConfig,
     RequestMatcher,
     ResponseTemplate,
     SchemaConfig,
-    ServerConfig,
 )
 
 

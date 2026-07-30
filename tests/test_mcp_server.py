@@ -8,7 +8,6 @@ manual verification with Claude Desktop / Claude Code.
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 
 import pytest
@@ -228,8 +227,13 @@ def test_generate_data_caps_at_max_rows(tmp_path: Path, monkeypatch):
         return self.generated_data
 
     def fake_export(self, output_dir):
+        # A real (tiny) parquet file, not a zero-byte stub: the service
+        # verifies its own export, so an unreadable file fails the run.
+        import pandas as pd
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        (Path(output_dir) / "users.parquet").write_bytes(b"")
+        pd.DataFrame({"user_id": [1]}).to_parquet(
+            Path(output_dir) / "users.parquet", index=False,
+        )
 
     monkeypatch.setattr(DataGenerator, "generate_data", spy_generate)
     monkeypatch.setattr(DataGenerator, "export_to_parquet", fake_export)

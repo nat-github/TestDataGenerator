@@ -167,7 +167,6 @@ def validate_tables(
             "Run: poetry install --extras gx"
         )
 
-    import pandas as pd
 
     if dataframes is None:
         if output_dir is None:
@@ -472,7 +471,6 @@ def _evaluate_expectation(
     Where GX's API is awkward (e.g. column existence) we evaluate directly
     against the DataFrame for clarity.
     """
-    import great_expectations.expectations as gxe
 
     if kind == "column_exists":
         success = column in df.columns
@@ -663,7 +661,6 @@ def _summarise_gx_result(raw: Any) -> Dict[str, Any]:
 
 def _load_parquet_dir(path: Path) -> Dict[str, Any]:
     """Read every `<name>.parquet` in `path` into a dict[name → DataFrame]."""
-    import pandas as pd
     import pyarrow.parquet as pq
 
     out: Dict[str, Any] = {}

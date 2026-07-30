@@ -104,7 +104,6 @@ def lint_config(path: Path) -> Dict[str, Any]:
 def run_generation(config_path: Path, output_dir: Path, *, default_records: int, seed: int):
     """Run the generator in-process and return (per_table_dataframes, elapsed_seconds)."""
     from sdp.generators.data_generator import DataGenerator
-    import pandas as pd
     import pyarrow.parquet as pq
 
     gen = DataGenerator(str(config_path), seed=seed)

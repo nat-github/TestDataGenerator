@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from dataclasses import dataclass, field as dc_field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -13,7 +13,6 @@ from sdp.models.config_models import (
     CDCConfig,
     ColumnConfig,
     RelationshipConfig,
-    RuleAction,
     RuleConfig,
     TableConfig,
     WorkflowConfig,

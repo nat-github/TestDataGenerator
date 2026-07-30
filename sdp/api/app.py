@@ -12,7 +12,7 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
 try:
     from fastapi import FastAPI, File, Form, HTTPException, UploadFile

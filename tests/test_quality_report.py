@@ -9,9 +9,6 @@ import pandas as pd
 import pytest
 
 from sdp.validators.quality_report import (
-    ColumnQualityMetrics,
-    QualityReport,
-    TableQualityMetrics,
     quality_report,
     quality_report_from_paths,
 )

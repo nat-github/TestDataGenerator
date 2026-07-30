@@ -7,14 +7,13 @@ and a directly injected synthesizer double still working).
 """
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Optional
 
 import pandas as pd
 import pytest
 
 from sdp.synthesizers import (
     DEFAULT_ENGINE,
-    EngineStats,
     Synthesizer,
     create,
     describe,

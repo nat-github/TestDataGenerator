@@ -7,25 +7,13 @@ without loading a 2,400-line class.
 """
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import random
-import re
-import string
 import uuid
-from datetime import datetime, timezone
-from decimal import Decimal, ROUND_HALF_UP, localcontext, InvalidOperation
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, List, Set
 
-import numpy as np
 import pandas as pd
-import pyarrow as pa
-import pyarrow.compute as pc
-import pyarrow.parquet as pq
 
-from sdp.models.config_models import TableConfig, RelationshipConfig
+from sdp.models.config_models import TableConfig
 
 logger = logging.getLogger(__name__)
 
@@ -288,7 +276,22 @@ class PrimaryKeyMixin:
 
         # Perturb a non-FK member so foreign keys are never rewritten.
         non_fk = [c for c in pk_cols if not c.is_fk]
-        perturb = (non_fk or pk_cols)[-1]
+        if not non_fk:
+            # Every PK member is a foreign key — a pure junction table. There
+            # is nothing safe to perturb: changing any member would point the
+            # row at a parent that does not own it. Referential integrity
+            # beats PK uniqueness here, so drop the duplicate rows instead and
+            # say so, rather than silently inventing a broken reference.
+            deduped = df.drop_duplicates(subset=pk_names, keep="first")
+            self.logger.warning(
+                f"⚠️ {label}: every composite-PK member is a foreign key, so no "
+                f"member can be perturbed without breaking referential "
+                f"integrity. Dropped {len(df) - len(deduped)} duplicate row(s) "
+                f"instead — the table will be short of its requested count."
+            )
+            return deduped.reset_index(drop=True)
+
+        perturb = non_fk[-1]
         p_pos = pk_names.index(perturb.column_name)
 
         rows = df[pk_names].values.tolist()

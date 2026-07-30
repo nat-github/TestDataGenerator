@@ -288,7 +288,6 @@ def _table_metrics(
     with_bias: bool = True,
     target: Optional[str] = None,
 ) -> TableQualityMetrics:
-    import pandas as pd
 
     cols: List[ColumnQualityMetrics] = []
     for col_name in syn_df.columns:
@@ -415,7 +414,6 @@ def _column_metrics(name: str, syn: "object", src: Optional["object"] = None) ->
 
 def _populate_fidelity(cm: ColumnQualityMetrics, syn: "object", src: "object") -> None:
     """Add KS / chi-square / TV distance / distribution_score in place."""
-    import pandas as pd
 
     syn_clean = syn.dropna()
     src_clean = src.dropna()
@@ -594,7 +592,6 @@ def _safe_float(v: Any) -> float:
 
 
 def _load_parquet_dir(path: Path) -> Dict[str, "object"]:
-    import pandas as pd
     import pyarrow.parquet as pq
 
     out: Dict[str, "object"] = {}

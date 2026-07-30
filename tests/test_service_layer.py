@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ast
 import inspect
-import logging
 import pathlib
 
 import pandas as pd

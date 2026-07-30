@@ -33,7 +33,6 @@ does.
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import sys
@@ -90,35 +89,22 @@ def generate_data(
     Hard cap: 10,000 rows per table. For larger runs, instruct the user
     to invoke `python main.py generate` directly.
     """
-    from sdp.generators.data_generator import DataGenerator
-    from sdp.utils.config_parser import ConfigParser
+    # Delegates to the same service function the CLI and SDK call. This tool
+    # previously re-implemented the run sequence, which is how it drifted out
+    # of step with DataGenerator's signatures and stayed broken unnoticed.
+    from sdp.services.generation import GenerationRequest, generate_dataset
 
     cap = min(int(default_records), MAX_ROWS_PER_TABLE)
-    cfg_path = Path(config_path)
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    parser = ConfigParser(str(cfg_path))
-    if not parser.load_config():
-        return {"ok": False, "error": "Failed to load config"}
-    tables = parser.parse_tables()
-    parser.parse_relationships()
-
-    # DataGenerator takes the config *path* and parses it itself; the seed is
-    # a constructor argument, not a per-call one.
-    gen = DataGenerator(str(cfg_path), seed=seed)
-    if not gen.load_configuration():
-        return {"ok": False, "error": "Failed to load configuration"}
-
-    records_config = {
-        name: cap for name, cfg in tables.items() if cfg.active
-    }
-
     try:
-        gen.create_sdv_metadata()
-        gen.train_synthesizer(sample_size=min(cap, 200))
-        gen.generate_data(records_config)
-        gen.export_to_parquet(str(out_dir))
+        outcome = generate_dataset(GenerationRequest(
+            config=str(Path(config_path)),
+            output=str(out_dir),
+            default_records=cap,
+            seed=seed,
+        ))
     except Exception as exc:
         return {
             "ok": False,
@@ -126,12 +112,16 @@ def generate_data(
             "traceback": traceback.format_exc()[-2000:],
         }
 
-    parquet_files = sorted(p.name for p in out_dir.glob("*.parquet"))
+    if not outcome.ok:
+        return {"ok": False, "error": outcome.error or "generation failed"}
+
     return {
         "ok": True,
         "output_dir": str(out_dir.resolve()),
-        "tables": parquet_files,
+        "tables": sorted(p.name for p in out_dir.glob("*.parquet")),
         "rows_per_table": cap,
+        "row_counts": outcome.row_counts,
+        "total_records": outcome.total_records,
         "seed": seed,
         "capped_at": MAX_ROWS_PER_TABLE,
     }

@@ -14,7 +14,6 @@ import pytest
 
 from sdp.utils.schema_validator import (
     SchemaUnavailable,
-    SchemaViolation,
     load_document,
     load_schema,
     schema_supported,

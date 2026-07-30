@@ -5,7 +5,6 @@ import json
 import re
 from pathlib import Path
 
-import pytest
 
 from sdp.mocks.openapi_importer import import_openapi
 from sdp.mocks.renderers.json_fixture import render_json_fixtures

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Dict, List, Literal, Optional, Union
+from typing import Any, Dict, List, Literal, Optional
 import math
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator
 
 
 # Operators allowed inside a rule's `when:` condition.

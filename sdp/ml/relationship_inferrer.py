@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 import pandas as pd
 
@@ -34,7 +34,7 @@ from sdp.ml.relationship_signals import (
     value_subset,
 )
 from sdp.ml.relationship_feedback_store import FeedbackStore
-from sdp.ml.relationship_classifier import RelationshipClassifier, MIN_TRAINING_EXAMPLES
+from sdp.ml.relationship_classifier import RelationshipClassifier
 
 logger = logging.getLogger(__name__)
 

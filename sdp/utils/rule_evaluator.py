@@ -18,7 +18,7 @@ import datetime as _dt
 import logging
 import operator
 import re
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 

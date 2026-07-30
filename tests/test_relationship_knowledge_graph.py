@@ -11,7 +11,6 @@ from sdp.ml.relationship_knowledge_graph import KnowledgeGraphRelationshipInferr
 from sdp.ml.semantic_profile import (
     BANKING_PROFILE,
     GENERIC_PROFILE,
-    SemanticProfile,
     default_profile,
 )
 from sdp.models.config_models import ColumnConfig, TableConfig

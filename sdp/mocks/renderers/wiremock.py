@@ -40,11 +40,10 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from sdp.mocks.scenario_engine import ScenarioPlan, ScenarioStep, compile_scenarios
+from sdp.mocks.scenario_engine import ScenarioStep, compile_scenarios
 from sdp.mocks.template_engine import TemplateEngine
 from sdp.models.mock_models import (
     EndpointConfig,
-    FieldSpec,
     MockConfig,
     ResponseTemplate,
 )

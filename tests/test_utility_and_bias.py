@@ -11,10 +11,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from sdp.validators.bias import ColumnBiasMetrics, compute_bias
+from sdp.validators.bias import compute_bias
 from sdp.validators.quality_report import quality_report
 from sdp.validators.utility import (
-    UtilityMetrics,
     compute_utility,
     select_target_column,
 )

@@ -81,13 +81,21 @@ extend-exclude = ["build", "dist", ".venv", "output"]
 # names, unused imports, mutable default arguments, bare excepts) without
 # demanding a repo-wide restyle. Widen once these are clean.
 select = ["F", "E9", "B006", "B008", "E711", "E712", "E713", "E714", "E722"]
-ignore = ["F401"]   # re-exports in __init__.py are intentional
+# No blanket F401: an unused import is usually dead code. Re-exports are
+# scoped per file below, so a genuinely unused import still gets flagged.
+ignore = []
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["F811", "F841"]
 # FastAPI's Depends()/File()/Form() in defaults is the framework's idiom,
 # not the mutable-default bug B008 exists to catch.
 "sdp/api/app.py" = ["B008"]
+# Deliberate re-export surfaces: `__init__` packages, and `cli.py`, which
+# re-exports every command so `from main import *` keeps resolving.
+"sdp/__init__.py" = ["F401"]
+"sdp/*/__init__.py" = ["F401"]
+"sdp/cli.py" = ["F401"]
+"main.py" = ["F401", "F403"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

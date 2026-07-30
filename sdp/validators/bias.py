@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -131,7 +131,6 @@ def compute_bias(
         Cap on categorical columns examined, keeping wide tables fast.
         Lowest-cardinality columns are examined first.
     """
-    import pandas as pd
 
     candidates = _group_columns(syn_df, src_df, outcome_column)
     if not candidates:
@@ -197,7 +196,6 @@ def _column_bias(
     outcome_column: Optional[str],
     positive: Optional[str],
 ) -> ColumnBiasMetrics:
-    import pandas as pd
 
     metrics = ColumnBiasMetrics(column=col)
 

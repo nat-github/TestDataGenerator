@@ -28,7 +28,6 @@ from sdp.services.common import (
     verify_export,
     _looks_like_date_column,
 )
-from sdp.utils.config_parser import ConfigParser
 from sdp.utils.data_validator import DataValidator
 from sdp.utils.parquet_post_processor import ParquetPostProcessor
 
@@ -328,13 +327,25 @@ def _write_delta_outputs(output_dir: str, partition_col: str, partition_value,
             logger.info(f"  Skip:  {table:30s} (no write_delta flag -> kept as flat parquet)")
             continue
         df = pd.read_parquet(pq)
-        pq.unlink()
         col = overrides.get(table, partition_col)
         if col in df.columns:
             logger.warning(f"  {table}: existing column '{col}' will be overwritten with the run's partition value")
         df[col] = str(partition_value)
         delta_path = out / table
-        write_deltalake(str(delta_path), df, mode="append", partition_by=[col])
+
+        # Write first, delete the flat parquet only once the Delta write has
+        # succeeded. Unlinking first meant a failed write left neither the
+        # source nor the Delta table — the flat parquet was already gone.
+        try:
+            write_deltalake(str(delta_path), df, mode="append", partition_by=[col])
+        except Exception as exc:
+            logger.error(
+                f"  {table}: Delta write failed ({type(exc).__name__}: {exc}) — "
+                f"the flat parquet at {pq} was left in place"
+            )
+            raise
+
+        pq.unlink()
         converted += 1
         logger.info(f"  Delta: {table:30s} {len(df):6d} rows -> "
                     f"{delta_path}/{col}={partition_value}/  (+commit in _delta_log/)")

@@ -194,7 +194,6 @@ class DPMarginalEngine(Synthesizer):
         sample_data: Dict[str, "object"],
         metadata: Optional[Any] = None,
     ) -> bool:
-        import numpy as np
 
         rng = self._rng()
         if self.seed is not None:
@@ -344,8 +343,6 @@ class DPMarginalEngine(Synthesizer):
     # -- sample -----------------------------------------------------------
 
     def sample(self, records_per_table: Dict[str, int]) -> Dict[str, "object"]:
-        import numpy as np
-        import pandas as pd
 
         if self._frame_factory is None:
             raise ValueError(
@@ -386,7 +383,6 @@ class DPMarginalEngine(Synthesizer):
         rng: Any,
     ) -> List[Any]:
         """Draw from the noisy histogram — pure post-processing."""
-        import numpy as np
 
         picks = rng.choice(len(labels), size=count, p=probabilities)
         values: List[Any] = []

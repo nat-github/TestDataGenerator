@@ -47,7 +47,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -123,7 +123,6 @@ def compute_utility(
     random_state:
         Seeds the split and the model, so repeated runs agree.
     """
-    import pandas as pd
 
     shared = [c for c in syn_df.columns if c in src_df.columns]
     if not shared:
@@ -267,7 +266,6 @@ def _run_tstr(
     metric: str,
     random_state: int,
 ) -> None:
-    import numpy as np
     import pandas as pd
     from sklearn.model_selection import train_test_split
 
@@ -352,7 +350,6 @@ def _fit_and_score(
     label: str,
 ) -> Optional[float]:
     """Fit one model on ``train_df`` and score it on the shared real test set."""
-    import numpy as np
     import pandas as pd
 
     x_train = _encode(train_df, feature_cols, levels, fill)

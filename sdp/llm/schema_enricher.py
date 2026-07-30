@@ -24,14 +24,13 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 import yaml
 
-from sdp.models.config_models import ColumnConfig, TableConfig
-from sdp.llm.client import DEFAULT_MODEL, system_prompt
+from sdp.models.config_models import TableConfig
+from sdp.llm.client import system_prompt
 from sdp.llm.multi_provider import chat as llm_chat
 
 logger = logging.getLogger(__name__)

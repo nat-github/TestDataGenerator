@@ -13,14 +13,11 @@ is stubbed in-place.
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import pytest
 
-from sdp.llm import multi_provider
 from sdp.llm.multi_provider import (
-    PROVIDERS,
-    ResolvedConfig,
     chat,
     describe_provider,
     list_providers,

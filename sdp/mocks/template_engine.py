@@ -27,7 +27,7 @@ import random
 import string
 import uuid
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 
 from sdp.models.mock_models import FieldSpec, MockConfig, SchemaConfig
 

@@ -31,7 +31,6 @@ from sdp.models.mock_models import (
     MockSettings,
     RequestMatcher,
     ResponseTemplate,
-    SchemaConfig,
     ServerConfig,
 )
 

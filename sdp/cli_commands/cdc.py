@@ -2,28 +2,21 @@
 """
 from __future__ import annotations
 
-import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import List
 
-import pandas as pd
 
-from sdp.generators.data_generator import DataGenerator
 from sdp.services.common import (
-    configure_logging,
     create_output_directory,
     load_config_context,
     validate_config_file,
-    verify_export,
 )
 from sdp.services.generation import (
     _derive_changed_snapshot,
     _generate_snapshot,
     _strip_effective_date_columns,
 )
-from sdp.utils.config_parser import ConfigParser
-from sdp.utils.data_validator import DataValidator
 from sdp.utils.parquet_post_processor import ParquetPostProcessor
 
 logger = logging.getLogger(__name__)
@@ -31,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 def run_delta(args) -> int:
     if not validate_config_file(args.config):
+        return 1
+    if not _validate_snapshot_dirs(previous=args.previous, current=args.current):
         return 1
     if not create_output_directory(args.output):
         return 1
@@ -55,8 +50,33 @@ def run_delta(args) -> int:
         logger.info(f"  {table_name}: {metrics}")
     return 0
 
+def _validate_snapshot_dirs(*, previous: str, current: str) -> bool:
+    """Both snapshot directories must exist and hold parquet.
+
+    Without this a typo'd --previous produced "no output was generated" and
+    exit 0 — a CDC job that silently did nothing looks like a clean run,
+    which is the worst possible outcome for a scheduled pipeline. A run that
+    finds both snapshots and detects no changes still exits 0; that is a
+    genuine no-op, not a mistake.
+    """
+    ok = True
+    for label, raw in (("--previous", previous), ("--current", current)):
+        path = Path(raw)
+        if not path.is_dir():
+            logger.error(f"{label} snapshot directory does not exist: {path}")
+            ok = False
+        elif not any(path.glob("*.parquet")):
+            logger.error(f"{label} snapshot directory contains no parquet files: {path}")
+            ok = False
+    return ok
+
+
 def run_scd2(args) -> int:
     if not validate_config_file(args.config):
+        return 1
+    if not getattr(args, "simulate", False) and not _validate_snapshot_dirs(
+        previous=args.previous, current=args.current
+    ):
         return 1
     if not create_output_directory(args.output):
         return 1

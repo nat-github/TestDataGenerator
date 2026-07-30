@@ -4,13 +4,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
 
 from sdp.mocks.renderers.wiremock import render_wiremock
 from sdp.mocks.scenario_engine import (
     STARTED_STATE,
-    ScenarioPlan,
-    ScenarioStep,
     compile_scenarios,
 )
 from sdp.models.mock_models import (
