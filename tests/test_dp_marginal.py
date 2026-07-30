@@ -306,6 +306,19 @@ def test_unseeded_run_has_no_seed_warning():
     assert not any("seed" in w for w in engine.privacy_report()["warnings"])
 
 
+def test_measured_column_is_emitted_even_if_the_factory_omits_it():
+    """Regression: a privatised column must never be silently dropped just
+    because the config-only frame did not already contain it — budget was
+    already spent on measuring it."""
+    engine = DPMarginalEngine(epsilon=100.0, domains=_categorical_domain(),
+                              frame_factory=lambda t, n: pd.DataFrame({"id": range(n)}))
+    engine.fit(_skewed(200))
+    out = engine.sample({"loans": 100})["loans"]
+
+    assert "status" in out.columns
+    assert set(out["status"].dropna()) <= {"approved", "declined"}
+
+
 def test_sample_without_frame_factory_raises():
     engine = DPMarginalEngine(epsilon=1.0, domains=_categorical_domain())
     engine.fit(_skewed(100))

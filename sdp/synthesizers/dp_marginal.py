@@ -365,9 +365,10 @@ class DPMarginalEngine(Synthesizer):
                     raise ValueError(f"dp-marginal: no frame produced for {table_name}")
                 frame = frame.head(count).reset_index(drop=True)
 
+                # Every measured column is written, whether or not the factory
+                # produced it. Skipping absent ones would silently drop a
+                # column the engine had already spent privacy budget on.
                 for col, (labels, probabilities) in self._marginals.get(table_name, {}).items():
-                    if col not in frame.columns:
-                        continue
                     domain = self._domains.get(table_name, {}).get(col)
                     frame[col] = self._draw(labels, probabilities, count, domain, rng)
 

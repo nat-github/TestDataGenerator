@@ -15,21 +15,30 @@ train on, and both scores need a real test set.
 
 Scoring per task
 ----------------
-=================  ==========  ==========================================
-Task               Metric      Ratio basis
-=================  ==========  ==========================================
-binary class.      ROC AUC     chance-adjusted skill ``(auc-0.5)/0.5``
-multiclass class.  macro F1    raw score
-regression         R²          raw score
-=================  ==========  ==========================================
+=================  ==========  ====================
+Task               Metric      Chance level
+=================  ==========  ====================
+binary class.      ROC AUC     0.5
+multiclass class.  macro F1    1/k (k = classes)
+regression         R²          0.0
+=================  ==========  ====================
 
-ROC AUC is chance-adjusted because a raw ratio flatters synthetic data:
-0.55/0.60 reads as a respectable 0.92 when in truth both models are
-barely better than a coin toss. On skill it reads 0.10/0.20 = 0.50,
-which is the honest number.
+The ratio is always computed on **chance-adjusted skill**::
 
-When the real baseline is itself too weak to divide by, the ratio is left
-as ``None`` with a note rather than reporting a meaningless figure.
+    skill = (score - chance) / (1 - chance)      # clipped at 0
+    ratio = skill_synthetic / skill_real
+
+Raw ratios flatter synthetic data badly. Two models scoring 0.55 and 0.60
+AUC give a respectable-looking 0.92 when in truth both are barely better
+than a coin toss; on skill that reads 0.10/0.20 = 0.50, the honest number.
+The same trap is worse for multiclass: four classes at macro F1 0.233 and
+0.237 are *both* at chance (1/4 = 0.25), and a raw ratio calls that
+"excellent — as useful as real data".
+
+When the real baseline is itself at or near chance, no ratio is
+meaningful — nothing was learnable from the real data either — so the
+ratio is left as ``None`` with a note rather than reporting a figure that
+looks like a verdict.
 
 Uses scikit-learn, already a base dependency. Imports are deferred so
 importing this module stays cheap.
@@ -322,7 +331,9 @@ def _run_tstr(
 
     result.score_real = score_real
     result.score_synthetic = score_syn
-    result.utility_ratio = _ratio(score_real, score_syn, metric, result)
+    result.utility_ratio = _ratio(
+        score_real, score_syn, metric, max(len(classes), 2), result,
+    )
 
 
 def _fit_and_score(
@@ -398,27 +409,44 @@ def _fit_and_score(
     return float(f1_score(y_test_s, preds, average="macro", zero_division=0))
 
 
+def _chance_level(metric: str, n_classes: int) -> float:
+    """The score a model that learnt nothing would get.
+
+    Getting this wrong is how a utility metric ends up flattering useless
+    data: for macro F1 the floor is 1/k, not 0, so four classes at 0.233
+    look respectable against a 0.05 threshold while being pure chance.
+    """
+    if metric == "roc_auc":
+        return 0.5
+    if metric == "macro_f1":
+        return 1.0 / n_classes if n_classes > 1 else 0.0
+    return 0.0                                   # r2: 0 is the null model
+
+
 def _ratio(
     score_real: Optional[float],
     score_syn: Optional[float],
     metric: str,
+    n_classes: int,
     result: UtilityMetrics,
 ) -> Optional[float]:
-    """TSTR / TRTR, chance-adjusted for AUC. See the module docstring."""
+    """TSTR / TRTR on chance-adjusted skill. See the module docstring."""
     if score_real is None or score_syn is None:
         return None
 
-    if metric == "roc_auc":
-        real = max(0.0, (score_real - 0.5) / 0.5)
-        syn = max(0.0, (score_syn - 0.5) / 0.5)
-    else:
-        real = score_real
-        syn = max(0.0, score_syn)
+    chance = _chance_level(metric, n_classes)
+    span = 1.0 - chance
+    if span <= 0:                                # pragma: no cover - defensive
+        return None
+
+    real = max(0.0, (score_real - chance) / span)
+    syn = max(0.0, (score_syn - chance) / span)
 
     if real <= _MIN_BASELINE:
         result.notes.append(
-            "the real-data baseline is itself near chance — the synthetic "
-            "data cannot be judged against it on this target"
+            f"the real-data baseline scores {score_real:.4f} against a chance "
+            f"level of {chance:.4f} — nothing was learnable from the real data "
+            "either, so the synthetic data cannot be judged on this target"
         )
         return None
     return round(min(syn / real, 2.0), 4)

@@ -171,10 +171,29 @@ two says whether the synthetic data still carries the signal.
 | `utility_ratio` | **1.0 = as useful as real data, 0.0 = useless.** `None` when the real baseline is itself near chance. |
 | `verdict` | Plain-language reading of the ratio |
 
-For ROC AUC the ratio is computed on *chance-adjusted skill*
-`(auc − 0.5) / 0.5`, not the raw score. A raw ratio flatters synthetic data:
-0.55 / 0.60 reads as a respectable 0.92 when both models are barely better
-than a coin toss. On skill it reads 0.50, which is the honest number.
+The ratio is computed on **chance-adjusted skill**, never on raw scores:
+
+```
+skill = (score − chance) / (1 − chance)     # clipped at 0
+ratio = skill_synthetic / skill_real
+```
+
+| Metric | Chance level |
+|---|---|
+| `roc_auc` | 0.5 |
+| `macro_f1` | 1/k (k = classes in the real test set) |
+| `r2` | 0.0 |
+
+Raw ratios flatter synthetic data badly. Two models at 0.55 and 0.60 AUC
+give a respectable-looking 0.92 when both are barely better than a coin
+toss; on skill that reads 0.50. The trap is worse for multiclass — four
+classes at macro F1 0.233 and 0.237 are *both* at chance (1/4 = 0.25), and
+a raw ratio calls that "excellent — as useful as real data".
+
+When the real baseline is itself at or near chance, **no ratio is
+reported** (`None`, with a note naming the chance level). Nothing was
+learnable from the real data either, so there is no meaningful comparison
+to make — and a number there would read as a verdict.
 
 | `utility_ratio` | Verdict |
 |---|---|

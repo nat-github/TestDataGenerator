@@ -146,6 +146,57 @@ def test_regression_target_uses_r2():
     assert result.score_real is not None and result.score_real > 0.5
 
 
+def test_multiclass_at_chance_reports_no_ratio_not_a_flattering_one():
+    """Regression: macro F1's chance level is 1/k, not 0.
+
+    Four unpredictable classes score ~0.25 for both real and synthetic
+    models. A raw ratio calls that "excellent — as useful as real data";
+    the honest answer is that nothing was learnable either way.
+    """
+    rng = _rng(3)
+    n = 800
+    real = pd.DataFrame({
+        "a": rng.normal(0, 1, n),
+        "b": rng.normal(0, 1, n),
+        "grp": rng.choice(["w", "x", "y", "z"], n),      # independent of a/b
+    })
+    syn = pd.DataFrame({
+        "a": rng.normal(0, 1, n),
+        "b": rng.normal(0, 1, n),
+        "grp": rng.choice(["w", "x", "y", "z"], n),
+    })
+
+    result = compute_utility(syn, real, target="grp")
+    assert result is not None
+    assert result.metric == "macro_f1"
+    assert result.score_real == pytest.approx(0.25, abs=0.1)   # chance
+    assert result.utility_ratio is None, result.utility_ratio
+    assert any("chance level" in n for n in result.notes)
+    assert result.verdict == "not computable"
+
+
+def test_chance_level_per_metric():
+    from sdp.validators.utility import _chance_level
+
+    assert _chance_level("roc_auc", 2) == 0.5
+    assert _chance_level("macro_f1", 4) == 0.25
+    assert _chance_level("macro_f1", 10) == pytest.approx(0.1)
+    assert _chance_level("r2", 2) == 0.0
+
+
+def test_binary_at_chance_reports_no_ratio():
+    rng = _rng(4)
+    n = 600
+    frame = lambda seed: pd.DataFrame({
+        "a": _rng(seed).normal(0, 1, n),
+        "flag": _rng(seed + 50).integers(0, 2, n).astype(str),   # noise label
+    })
+    result = compute_utility(frame(2), frame(1), target="flag")
+    assert result is not None
+    assert result.utility_ratio is None
+    assert any("chance level" in n for n in result.notes)
+
+
 def test_too_few_source_rows_is_noted_not_raised():
     tiny = _learnable(8)
     result = compute_utility(tiny, tiny)

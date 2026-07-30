@@ -122,9 +122,36 @@ Seeded DP runs are fine for testing the pipeline. They are not private.
 preserved.** This is the standard DP baseline, and it is an honest trade:
 correlation structure is exactly what identifies individuals.
 
-Run `quality-report` against the output to see the cost in utility terms
-before deciding the trade is worth it. Expect the TSTR utility score to
-drop sharply — a model needs the relationships this engine discards.
+### Measured
+
+4,000 rows where approval genuinely depends on income and score, fitted on
+the real data, scored by `quality-report` against that same real data:
+
+| ε | Fidelity | Utility (TSTR) |
+|---:|---:|---:|
+| 10 | 0.988 | 0.003 |
+| 1.0 | 0.992 | 0.023 |
+| 0.05 | 0.953 | 0.058 |
+
+A model trained on the real data scores **0.9991** AUC. Trained on the
+ε=1.0 output it scores **0.5115** — a coin toss.
+
+Two things to take from that table.
+
+**Fidelity is not utility.** Every run looks near-perfect on fidelity
+(≈0.99): each column's distribution is faithfully reproduced. Every run is
+useless for prediction. If you only measured fidelity you would ship this
+believing it was excellent data.
+
+**The utility loss is structural, not budget-driven.** It does not improve
+as ε rises — ε=10 is no more useful than ε=0.05. The cost was paid the
+moment marginals were modelled independently, not by the noise. Raising ε
+buys you almost nothing here; it only weakens the guarantee.
+
+So: use `dp-marginal` when you need per-column distributions with a
+defensible privacy claim. Do **not** use it to produce training data for
+models, or test data whose value depends on realistic relationships between
+columns.
 
 ### Where the noise actually bites
 
