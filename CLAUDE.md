@@ -226,6 +226,11 @@ Excel / YAML Config
 | `sdp/mcp_server/server.py` | MCP server exposing `generate_data`, `lint_config`, `validate_data`, `infer_relationships`, `mock_init`, `mock_render`, `mock_enrich`, `list_examples`, `llm_diagnose` as tools so Claude Desktop / Claude Code / **LM Studio** / Cursor can drive the platform. LLM-using tools accept `llm_provider`/`llm_model`/`llm_base_url` for full provider portability. |
 | `validators/gx_validator.py` | Great Expectations 1.x adapter — auto-derives an expectation suite from each table's `ColumnConfig` (PK→unique+not-null, business_values→in_set, min/max→between, REGEX:→matches_regex, EMAIL/UUID/IBAN/IPV4 etc.→regex with canonical shape, length→value_lengths_to_be_between, num_rows→row_count_between with tolerance). |
 | `validators/quality_report.py` | Statistical quality reports — univariate stats + correlation matrix (always); KS test (numeric), TV-distance + chi-square (categorical), correlation-matrix delta, NN-distance privacy proxy, plus composed utility and bias sections (when source data is provided). JSON / HTML / Markdown outputs. Used by `quality-report` CLI, Streamlit UI, and MCP tool. |
+| `synthesizers/base.py` | `Synthesizer` ABC (`fit`/`sample`), `EngineStats` cost accounting, and the shared multi-table sampling helper used by both the HMA engine and directly-assigned synthesizers. |
+| `synthesizers/registry.py` | Lazy name → engine-class registry (`sdv`, `gaussian-copula`, `ctgan`, `tvae`, `rule-based`). Registration is by import path so unused engines cost nothing at import time. |
+| `synthesizers/sdv_hma.py` | The default engine — SDV `HMASynthesizer`, the only one that models cross-table structure natively. |
+| `synthesizers/single_table.py` | Per-table engines (Gaussian copula, CTGAN, TVAE). No cross-table modelling; referential integrity comes from FK resolution after sampling. |
+| `synthesizers/rule_based.py` | Explicit no-model path — makes "generate from config rules" a named choice rather than only a failure mode. |
 | `validators/utility.py` | TSTR utility — trains a model on synthetic data and scores it on held-out *real* rows, against the same model trained on real data. Answers "can this data still do the job?", which fidelity cannot: a generator can match every marginal while destroying the relationships between columns. ROC AUC ratios are chance-adjusted. |
 | `validators/bias.py` | Bias drift — per-group representation shift and outcome disparity amplification (does the gap in outcome rates *between* groups widen in synthetic data?). Descriptive, not prescriptive. pandas only. |
 | `contracts/checker.py` | Data contract testing — verifies data against the config-as-contract by reusing `gx_validator`, re-framing each GX result with a severity (error/warning) and an overall PASS/WARN/FAIL verdict. |
@@ -327,6 +332,7 @@ Tests live in `tests/`:
 - `test_sdk_and_api.py` — Python SDK facade (`generate`/`lint`/`run`, seed reproducibility) and REST API endpoints (`/healthz`, `/generate`, `/lint`); API tests skip without the `api` extra.
 - `test_contracts.py` — data contract testing: `contract-test` verdict/severity and `contract-diff` breaking-change classification; checker tests skip without the `gx` extra.
 - `test_pk_generation.py` — regression guard: primary-key columns must be non-null and unique through the SDV path and Parquet export.
+- `test_synthesizer_engines.py` — engine registry, shared sampling helper (including the `num_rows`→`scale` fallback), engine contract, `DataGenerator` wiring, and the back-compat guarantee that a directly-assigned `generator.synthesizer` still samples.
 - `test_utility_and_bias.py` — TSTR utility and bias drift. Fixtures carry a *known* answer (a learnable signal that synthetic data either preserves or destroys; a group skew that is either faithful or amplified), so the tests check the metrics measure what they claim — including the case fidelity misses: identical marginals, zero utility.
 
 CI (`.github/workflows/ci.yml`) runs the full suite with all extras on every
@@ -374,7 +380,8 @@ Both modules use a stable system prompt with `cache_control: ephemeral` for Anth
 - `Stubs_Mocks_Plan.md` — parallel-track plan for API stubs/mocks generation (`MockConfig` model, OpenAPI ingest, WireMock/Pact/Postman renderers)
 - `Bruno_Workflow.md` — end-to-end recipe: OpenAPI spec → `mock-init` → `mock-render` → WireMock standalone → Bruno API client
 - `Data_Validation.md` — Great Expectations integration: auto-derived suites from `ColumnConfig`, the `validate-data` subcommand, and how to extend
-- `Quality_Reports.md` — Statistical fidelity / privacy reports: univariate, KS / TV-distance, correlation delta, NN privacy proxy, CLI + UI + MCP entry points
+- `Quality_Reports.md` — Statistical fidelity / utility / bias / privacy reports: univariate, KS / TV-distance, correlation delta, TSTR utility, bias drift, NN privacy proxy, CLI + UI + MCP entry points
+- `Synthesizer_Engines.md` — Pluggable generation engines: the `Synthesizer` contract, built-in engines and their relationship trade-offs, engine selection and options, cost reporting, and how to write your own
 - `Data_Contract_Testing.md` — data contracts: what/why, `contract-test` (verdict + severity), `contract-diff` (breaking-change detection), CLI / SDK / API / Streamlit
 - `Docker_Quickstart.md` — Run with or without Docker (additive); CLI / Streamlit / MCP run modes inside the image
 - `MCP_Integration.md` — what MCP is, why it matters, how the server is implemented, and how to wire it into LM Studio / Claude Desktop / Claude Code / Cursor / Zed (with multi-provider LLM passthrough)

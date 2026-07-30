@@ -39,12 +39,22 @@ class DataGenerator:
     SAFE_DATETIME_MIN = pd.Timestamp("1900-01-01 00:00:00")
     SAFE_DATETIME_MAX = pd.Timestamp("2262-04-11 23:47:16")
 
-    def __init__(self, config_file: str, seed: Optional[int] = None):
+    def __init__(self, config_file: str, seed: Optional[int] = None,
+                 engine: Optional[str] = None,
+                 engine_options: Optional[Dict[str, Any]] = None):
         self.config_file = config_file
         self.config_parser = ConfigParser(config_file)
         self.helpers = DataHelpers()
         self.metadata: Optional[Metadata] = None
         self.synthesizer: Optional[HMASynthesizer] = None
+
+        # Generation engine. `engine=` wins over the config's
+        # `synthesizer_engine` setting, which wins over the registry default.
+        # `self.synthesizer` remains the underlying model object so existing
+        # callers (and the artifact cache) keep working unchanged.
+        self._engine_override = engine
+        self._engine_options_override = dict(engine_options) if engine_options else None
+        self._engine: Optional["object"] = None
 
         self.generated_data: Dict[str, pd.DataFrame] = {}
         # Anchored generation: real datasets loaded verbatim from `source:` files,
@@ -1353,7 +1363,58 @@ class DataGenerator:
     # ---------------------------------------------------------------------
     # SDV Training & Data Generation
     # ---------------------------------------------------------------------
+    def resolve_engine_name(self) -> str:
+        """Which engine this run will use.
+
+        Precedence: constructor argument → ``synthesizer_engine`` config
+        setting → registry default (``sdv``, the historical behaviour).
+        """
+        from sdp.synthesizers import DEFAULT_ENGINE
+
+        if self._engine_override:
+            return str(self._engine_override)
+        configured = self.config_parser.get_setting('synthesizer_engine', None)
+        return str(configured) if configured else DEFAULT_ENGINE
+
+    @property
+    def engine_stats(self) -> Optional[Dict[str, Any]]:
+        """Fit/sample cost for the engine used, or None if none was fitted."""
+        engine = self._engine
+        return engine.stats.to_dict() if engine is not None else None
+
+    def _engine_options(self) -> Dict[str, Any]:
+        """Engine constructor options from the config's ``engine_options``.
+
+        Accepts a dict, or a ``k=v;k=v`` string for Excel configs where a
+        cell cannot hold structured data.
+        """
+        if self._engine_options_override is not None:
+            return dict(self._engine_options_override)
+
+        raw = self.config_parser.get_setting('engine_options', None)
+        if not raw:
+            return {}
+        if isinstance(raw, dict):
+            return dict(raw)
+        options: Dict[str, Any] = {}
+        for pair in str(raw).split(';'):
+            if '=' not in pair:
+                continue
+            key, _, value = pair.partition('=')
+            value = value.strip()
+            # Numeric-looking values are far more common than string ones
+            # here (epochs, batch_size), so coerce when unambiguous.
+            if value.isdigit():
+                options[key.strip()] = int(value)
+            else:
+                options[key.strip()] = value
+        return options
+
     def train_synthesizer(self, sample_size: int = 200) -> bool:
+        """Fit the configured engine. Returns False to mean "generate from
+        config rules instead" — a normal outcome, not necessarily an error."""
+        from sdp.synthesizers import create as create_engine
+
         try:
             if self.metadata is None:
                 self.logger.error("❌ Metadata not created. Call create_sdv_metadata() first.")
@@ -1365,20 +1426,26 @@ class DataGenerator:
             except (TypeError, ValueError):
                 sample_size = sample_size
 
+            engine_name = self.resolve_engine_name()
+
             # Reuse a cached synthesizer when one matches this exact config and
             # SDV version — skips training entirely. Any mismatch falls through
-            # to a normal fit, so a stale model is never used.
-            if self._try_load_cached_synthesizer():
+            # to a normal fit, so a stale model is never used. Cached artifacts
+            # are SDV-specific.
+            if engine_name == "sdv" and self._try_load_cached_synthesizer():
                 return True
 
-            self.logger.info("🧑‍🤖 Initializing HMA Synthesizer...")
             self._apply_seed(self.seed)
+            engine = create_engine(engine_name, seed=self.seed, **self._engine_options())
+            self._engine = engine
 
-            self.synthesizer = HMASynthesizer(
-                metadata=self.metadata,
-                verbose=True,
-                locales=['nl_NL']
-            )
+            if not engine.__class__.handles_relationships and engine_name != "rule-based":
+                self.logger.info(
+                    f"ℹ️ Engine {engine_name!r} models tables independently — "
+                    "cross-table integrity comes from FK resolution after sampling."
+                )
+
+            self.logger.info(f"🧑‍🤖 Initializing synthesizer engine: {engine_name}")
 
             # Generate high-quality sample data
             sample_sizes = {t: min(sample_size, 100) for t in self.tables_config.keys()}
@@ -1389,31 +1456,42 @@ class DataGenerator:
             self.logger.info("🛠️ Fitting synthesizer with enhanced sample data...")
             fitted_sample_data = sample_data
 
-            try:
-                self.synthesizer.fit(sample_data)
-            except Exception as first_error:
-                self.logger.warning(f"⚠️ Initial synthesizer fit attempt failed: {first_error}")
+            if not engine.fit(sample_data, self.metadata):
+                # The rule-based engine has nothing to fit — that is the point
+                # of selecting it, so don't waste a retry on it.
+                if engine_name == "rule-based":
+                    self.synthesizer = None
+                    self.is_fitted = False
+                    return False
+
+                self.logger.warning("⚠️ Initial synthesizer fit attempt failed")
                 retry_sample_sizes = {t: max(25, min(sample_size, 75)) for t in self.tables_config.keys()}
                 retry_sample_data = self._sanitize_sample_data_for_sdv(
                     self._generate_high_quality_sample_data(retry_sample_sizes),
                     aggressive=True,
                 )
-                self.synthesizer = HMASynthesizer(
-                    metadata=self.metadata,
-                    verbose=True,
-                    locales=['nl_NL']
-                )
+                # A fresh engine — a half-fitted model is not a safe retry base.
+                engine = create_engine(engine_name, seed=self.seed, **self._engine_options())
+                self._engine = engine
                 self.logger.info("🔁 Retrying synthesizer fit with aggressively sanitized sample data...")
-                self.synthesizer.fit(retry_sample_data)
+                if not engine.fit(retry_sample_data, self.metadata):
+                    raise RuntimeError(
+                        "; ".join(engine.stats.notes) or "synthesizer fit failed"
+                    )
+                engine.stats.retries += 1
                 fitted_sample_data = retry_sample_data
 
+            self.synthesizer = engine.model
             self._fitted_sample_sizes = {
                 table_name: len(df)
                 for table_name, df in fitted_sample_data.items()
             }
             self.is_fitted = True
 
-            self.logger.info("✅ SDV synthesizer trained and fitted successfully")
+            self.logger.info(
+                f"✅ Synthesizer trained and fitted successfully "
+                f"(engine={engine_name}, {engine.stats.fit_seconds:.1f}s)"
+            )
             return True
 
         except Exception as e:
@@ -1518,6 +1596,18 @@ class DataGenerator:
 
         save_enabled = self.config_parser.get_setting('save_model_artifact', False)
         if not bool(save_enabled):
+            return None
+
+        # The artifact format (single pickled synthesizer + SDV-version
+        # sidecar) only describes the SDV engine. Other engines hold a model
+        # per table; silently writing an unloadable artifact would be worse
+        # than not caching.
+        engine_name = self.resolve_engine_name()
+        if engine_name != "sdv":
+            self.logger.info(
+                f"ℹ️ Model artifact caching is only supported for the 'sdv' engine "
+                f"(current: {engine_name!r}) — skipping save."
+            )
             return None
 
         artifact_dir = self._model_artifact_dir(output_dir)
@@ -1706,40 +1796,24 @@ class DataGenerator:
         return sample_data
 
     def _sample_from_synthesizer(self, records_per_table: Dict[str, int]) -> Dict[str, pd.DataFrame]:
-        if self.synthesizer is None:
-            raise ValueError("Synthesizer is not initialized")
+        """Draw rows from the fitted engine.
 
-        try:
-            sampled = self.synthesizer.sample(num_rows=records_per_table)
-        except TypeError as exc:
-            if "num_rows" not in str(exc):
-                raise
+        When an engine owns the current model we delegate to it, so
+        engine-specific sampling (per-table for single-table engines) and
+        cost accounting both apply. When a synthesizer was assigned
+        directly — the artifact cache, or a test injecting a double — we
+        fall back to the shared multi-table helper, which is the same logic
+        the SDV engine uses.
+        """
+        from sdp.synthesizers import sample_multi_table
 
-            requested_ratios = []
-            for table_name, requested_count in records_per_table.items():
-                fitted_count = self._fitted_sample_sizes.get(table_name)
-                if fitted_count:
-                    requested_ratios.append(requested_count / max(1, fitted_count))
+        engine = self._engine
+        if engine is not None and engine.is_fitted and engine.model is self.synthesizer:
+            return engine.sample(records_per_table)
 
-            scale = max(requested_ratios) if requested_ratios else 1.0
-            scale = max(scale, 1e-6)
-            sampled = self.synthesizer.sample(scale=scale)
-
-        if not isinstance(sampled, dict):
-            raise ValueError("SDV synthesizer returned a non-dictionary result")
-
-        trimmed: Dict[str, pd.DataFrame] = {}
-        for table_name, requested_count in records_per_table.items():
-            table_df = sampled.get(table_name)
-            if table_df is None or table_df.empty:
-                raise ValueError(f"SDV returned no rows for table {table_name}")
-            if len(table_df) < requested_count:
-                raise ValueError(
-                    f"SDV returned only {len(table_df)} rows for table {table_name}; expected at least {requested_count}"
-                )
-            trimmed[table_name] = table_df.head(requested_count).reset_index(drop=True)
-
-        return trimmed
+        return sample_multi_table(
+            self.synthesizer, records_per_table, self._fitted_sample_sizes,
+        )
 
     def generate_data(self, records_per_table: Dict[str, int]) -> Dict[str, pd.DataFrame]:
         """

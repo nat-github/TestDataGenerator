@@ -7,7 +7,7 @@ import argparse
 import logging
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 import pandas as pd
 
@@ -40,7 +40,9 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     generate_parser = subparsers.add_parser("generate", help="Generate parquet snapshots from an Excel or YAML config")
-    generate_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
+    # Not `required=True`: --list-engines is a valid invocation on its own.
+    # run_generate rejects a missing --config for every other path.
+    generate_parser.add_argument("--config", default=None, help="Path to Excel or YAML configuration file")
     generate_parser.add_argument("--output", default="output", help="Output directory for parquet files")
     generate_parser.add_argument("--default-records", type=int, default=None, help="Default records per table")
     generate_parser.add_argument("--records", nargs="+", help="Table-specific records: table_name:count")
@@ -49,6 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
     generate_parser.add_argument("--stream", action="store_true", help="Use streaming/chunked generation and direct export")
     generate_parser.add_argument("--chunk-size", type=int, default=100_000, help="Chunk size for streaming generation")
     generate_parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible generation")
+    generate_parser.add_argument("--engine", default=None,
+                                 help="Generation engine (default: sdv). See --list-engines")
+    generate_parser.add_argument("--engine-option", action="append", default=None, metavar="KEY=VALUE",
+                                 help="Engine-specific option, repeatable (e.g. epochs=300)")
+    generate_parser.add_argument("--list-engines", action="store_true",
+                                 help="List available generation engines and exit")
     generate_parser.add_argument("--infer-relationships", action="store_true",
                                  help="Infer missing FK relationships before generation")
     generate_parser.add_argument("--method", choices=["ml", "llm", "both"], default="ml",
@@ -816,6 +824,13 @@ def run_generate(args) -> int:
     logger.info("SDV Test Data Generator")
     logger.info("=" * 50)
 
+    if getattr(args, "list_engines", False):
+        _print_engines()
+        return 0
+
+    if not args.config:
+        logger.error("--config is required (omit it only with --list-engines)")
+        return 1
     if not validate_config_file(args.config):
         return 1
     if not create_output_directory(args.output):
@@ -824,7 +839,12 @@ def run_generate(args) -> int:
     seed: Optional[int] = getattr(args, "seed", None)
 
     logger.info("Initializing SDV data generator...")
-    generator = DataGenerator(args.config, seed=seed)
+    generator = DataGenerator(
+        args.config, seed=seed,
+        engine=getattr(args, "engine", None),
+        # CLI options win over the config's `engine_options` setting.
+        engine_options=_parse_engine_options(getattr(args, "engine_option", None)),
+    )
     if not generator.load_configuration():
         logger.error("Failed to load configuration")
         return 1
@@ -857,11 +877,15 @@ def run_generate(args) -> int:
     if seed is not None:
         logger.info(f"  Seed: {seed}")
 
-    logger.info("\nTraining SDV synthesizer...")
+    engine_name = generator.resolve_engine_name()
+    logger.info(f"\nTraining synthesizer (engine: {engine_name})...")
     if generator.train_synthesizer():
-        logger.info("SDV synthesizer trained successfully")
+        logger.info(f"Synthesizer trained successfully (engine: {engine_name})")
+    elif engine_name == "rule-based":
+        # Not a failure — this engine has no model by design.
+        logger.info("Generating directly from config rules (no model fitted)")
     else:
-        logger.warning("SDV synthesizer training failed - using fallback generation")
+        logger.warning(f"Synthesizer training failed (engine: {engine_name}) - using fallback generation")
 
     logger.info("\nStarting data generation...")
     if args.stream:
@@ -877,6 +901,14 @@ def run_generate(args) -> int:
     if not data:
         logger.error("No data generated")
         return 1
+
+    stats = generator.engine_stats
+    if stats:
+        logger.info(
+            f"\nEngine cost: {stats['engine']} — fit {stats['fit_seconds']}s, "
+            f"sample {stats['sample_seconds']}s "
+            f"({stats['fit_rows']} training rows, {stats['sampled_rows']} sampled)"
+        )
 
     logger.info("\nValidating generated data...")
     empty_tables = 0
@@ -1954,6 +1986,38 @@ def _serialise_report(report) -> str:
         },
     }
     return json.dumps(payload, indent=2, default=str)
+
+
+def _parse_engine_options(raw: Optional[List[str]]) -> Optional[Dict[str, Any]]:
+    """``["epochs=300", "batch_size=500"]`` → ``{"epochs": 300, ...}``.
+
+    Digit-only values become ints — engine options are overwhelmingly
+    numeric (epochs, batch_size), and passing "300" where an int is
+    expected fails deep inside the engine with a poor message.
+    """
+    if not raw:
+        return None
+    options: Dict[str, Any] = {}
+    for item in raw:
+        if "=" not in item:
+            raise ValueError(f"--engine-option expects KEY=VALUE, got {item!r}")
+        key, _, value = item.partition("=")
+        value = value.strip()
+        options[key.strip()] = int(value) if value.isdigit() else value
+    return options
+
+
+def _print_engines() -> None:
+    """Print the engine registry — name, availability, description."""
+    from sdp.synthesizers import DEFAULT_ENGINE, describe
+
+    print("Available generation engines:\n")
+    for name, description, available in describe():
+        mark = "  " if available else "! "
+        default = "  (default)" if name == DEFAULT_ENGINE else ""
+        print(f"{mark}{name:<16}{description}{default}")
+    print("\n  ! = registered but dependencies unavailable")
+    print("  Select with --engine NAME, or `synthesizer_engine` in Run_Settings.")
 
 
 def _parse_targets(raw: Optional[List[str]]) -> Optional[Dict[str, str]]:
