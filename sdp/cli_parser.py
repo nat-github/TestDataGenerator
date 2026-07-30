@@ -136,6 +136,9 @@ def build_parser() -> argparse.ArgumentParser:
     lint_parser = subparsers.add_parser("lint", help="Validate config and report issues with exact sheet/row/column location")
     lint_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")
     lint_parser.add_argument("--verbose", action="store_true", help="Show all issues including warnings")
+    lint_parser.add_argument("--strict-schema", action="store_true",
+                             help="Treat JSON Schema violations as errors (exit non-zero). "
+                                  "Reported as warnings by default. YAML/JSON configs only.")
 
     enrich_parser = subparsers.add_parser("enrich", help="Use LLM to enrich schema with semantic suggestions")
     enrich_parser.add_argument("--config", required=True, help="Path to Excel or YAML configuration file")

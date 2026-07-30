@@ -290,6 +290,39 @@ Add this at the top of your JSON file (or configure your editor's JSON Schema ma
 
 VS Code with the built-in JSON Language Server will give you autocompletion for every field, enum value, and operator name.
 
+## Schema validation in `lint`
+
+The same schema is enforced by `lint` for YAML and JSON configs:
+
+```bash
+python main.py lint --config config/orders.yaml                  # violations as warnings
+python main.py lint --config config/orders.yaml --strict-schema  # violations as errors, exit 1
+```
+
+```
+[WARN]  (sheet=schema, field=workflows[0]) schema: Additional properties are not allowed ('typo_field' was unexpected)
+[WARN]  (sheet=schema, field=workflows[0].step_hours) schema: [1] is too short
+[WARN]  (sheet=schema, field=workflows[0].transitions[0].probability) schema: 1.7 is greater than the maximum of 1
+[WARN]  (sheet=schema, field=workflows[0].transitions[1]) schema: 'from' is a required property
+```
+
+### Why warnings by default
+
+The parser is deliberately tolerant — an unrecognised key is skipped so one
+bad rule cannot stop a run. That is right for generation and wrong for
+authoring, where a mistyped `transitons:` silently does nothing.
+
+Schema violations are therefore reported but non-fatal by default, so a
+working config never breaks on an upgrade. Use `--strict-schema` in CI,
+where you want the typo to fail the build.
+
+**Excel configs are skipped** — the schema describes a YAML/JSON document,
+and a workbook has no such document to validate. Excel configs still get
+every semantic check `lint` performs.
+
+Every config in `examples/configs/` is validated against this schema by the
+test suite, so the shipped examples cannot drift from it.
+
 ---
 
 ## Conversion between formats

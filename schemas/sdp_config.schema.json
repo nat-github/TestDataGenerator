@@ -32,6 +32,11 @@
     "relationships": {
       "type": "array",
       "items": { "$ref": "#/$defs/Relationship" }
+    },
+    "workflows": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Workflow" },
+      "description": "Layer C — lifecycle state machines. See Rules_and_Workflows.md."
     }
   },
   "$defs": {
@@ -212,6 +217,65 @@
           ]
         },
         "special_rules": { "type": "string" }
+      }
+    },
+    "Workflow": {
+      "type": "object",
+      "description": "Layer C — walks each row of a table through a state machine, back-filling only the timestamps for states actually visited.",
+      "required": ["name", "table", "state_column", "transitions"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string", "description": "Identifier, used in logs and the generation report." },
+        "table": { "type": "string", "description": "Table this workflow applies to." },
+        "state_column": {
+          "type": "string",
+          "description": "Column that receives the terminal state. Overwritten — whatever generation produced is replaced."
+        },
+        "timestamps": {
+          "type": "object",
+          "description": "Map of column name -> state that produces it. The column is set when that state is visited and NULL when it is not.",
+          "additionalProperties": { "type": "string" }
+        },
+        "transitions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/WorkflowTransition" }
+        },
+        "start_state": {
+          "type": "string",
+          "description": "Where every row starts. Inferred when exactly one state is never a transition target; required otherwise (e.g. any cyclic workflow)."
+        },
+        "start_between": {
+          "type": "array",
+          "description": "[min, max] ISO dates bounding the first timestamp. Defaults to the last 365 days.",
+          "items": { "type": "string" },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "step_hours": {
+          "type": "array",
+          "description": "[min, max] gap in hours between consecutive state timestamps. Defaults to [1, 72].",
+          "items": { "type": "number", "minimum": 0 },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "note": { "type": "string" }
+      }
+    },
+    "WorkflowTransition": {
+      "type": "object",
+      "description": "One edge of the state machine. Probabilities are read per source state; where they sum below 1, the remainder is the chance of stopping in that state.",
+      "required": ["from", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "from": { "type": "string" },
+        "to": { "type": "string" },
+        "probability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Chance of taking this edge given the row is in `from`. Defaults to 1.0."
+        }
       }
     },
     "Relationship": {

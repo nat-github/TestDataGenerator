@@ -25,6 +25,37 @@ from sdp.utils.parquet_post_processor import ParquetPostProcessor
 logger = logging.getLogger(__name__)
 
 
+def _schema_issues(config_path: str, *, strict: bool) -> List["object"]:
+    """Validate against `schemas/sdp_config.schema.json`, as ConfigIssues.
+
+    Returns an empty list for Excel configs (the schema describes the
+    YAML/JSON document shape) and for an unavailable schema, which is a
+    packaging problem rather than a config problem.
+    """
+    from sdp.utils.config_parser import ConfigIssue
+    from sdp.utils.schema_validator import (
+        SchemaUnavailable,
+        schema_supported,
+        validate_config_file as validate_against_schema,
+    )
+
+    if not schema_supported(config_path):
+        return []
+
+    try:
+        violations = validate_against_schema(config_path)
+    except SchemaUnavailable as exc:
+        logger.warning(f"Schema validation unavailable: {exc}")
+        return []
+
+    level = "error" if strict else "warning"
+    return [
+        ConfigIssue(level=level, message=f"schema: {violation.message}",
+                    sheet="schema", field_name=violation.path or None)
+        for violation in violations
+    ]
+
+
 def run_lint(args) -> int:
     if not validate_config_file(args.config):
         return 1
@@ -37,6 +68,14 @@ def run_lint(args) -> int:
     parser.parse_relationships()
 
     issues = parser.lint_config()
+
+    # JSON Schema check. Reported as warnings by default: the schema is
+    # deliberately permissive and the parser is deliberately tolerant, so a
+    # violation means "this is probably not what you meant", not "this
+    # cannot run". --strict-schema promotes them for CI.
+    strict = getattr(args, "strict_schema", False)
+    issues.extend(_schema_issues(args.config, strict=strict))
+
     errors = [i for i in issues if i.level == "error"]
     warnings = [i for i in issues if i.level == "warning"]
 

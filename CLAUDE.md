@@ -61,6 +61,9 @@ python main.py mock-lint --config mocks/tasks.yaml
 
 # Validate config with full sheet/row/column error context (no data generated)
 python main.py lint --config config/Acct_bkng.xlsx
+# YAML/JSON configs are also checked against schemas/sdp_config.schema.json.
+# Violations are warnings by default; --strict-schema makes them errors (for CI).
+python main.py lint --config config/orders.yaml --strict-schema
 
 # Enrich a bare config with Claude-suggested business_values and special_rules
 python main.py enrich --config config/bare.xlsx --output config/enriched.yaml --confidence 0.7
@@ -227,6 +230,7 @@ Excel / YAML Config
 | `utils/helpers.py` | Regex generation, Faker integration (18 locales), type coercion, NULL rate logic, 60+ special rules |
 | `utils/parquet_post_processor.py` | Delta (I/U/D) and SCD2 effective-dating logic with delta-log rollback safety. Delta writes honour `delta_write_mode` (`overwrite` default / `append` / `error`); the overwrite path warns before discarding an existing table's change history. |
 | `utils/rule_evaluator.py` | Layer A (when/then) and Layer B (derived expressions) post-generation pass — operates on plain dicts so it can be reused by stub/mock renderers later |
+| `utils/schema_validator.py` | JSON Schema enforcement for YAML/JSON configs against `schemas/sdp_config.schema.json`. Reports every violation with a document path (`workflows[0].transitions[1].probability`). Wired into `lint` as warnings; `--strict-schema` promotes them to errors. Excel configs are skipped — the schema describes a document shape. |
 | `utils/workflow_engine.py` | Layer C — lifecycle state machines. Walks each row through declared transitions, back-fills only the visited states' timestamps in increasing order, NULLs the rest. `validate_workflow()` is called by `lint`. |
 | `utils/mimesis_provider.py` | Optional Mimesis adapter — handles `MIMESIS_*` special rules. Lazy import; the library is an optional poetry extra |
 | `utils/data_validator.py` | Post-generation FK relationship validation |
@@ -382,6 +386,7 @@ Tests live in `tests/`:
 - `test_synthesizer_engines.py` — engine registry, shared sampling helper (including the `num_rows`→`scale` fallback), engine contract, `DataGenerator` wiring, and the back-compat guarantee that a directly-assigned `generator.synthesizer` still samples.
 - `test_utility_and_bias.py` — TSTR utility and bias drift. Fixtures carry a *known* answer (a learnable signal that synthetic data either preserves or destroys; a group skew that is either faithful or amplified), so the tests check the metrics measure what they claim — including the case fidelity misses: identical marginals, zero utility.
 
+- `test_schema_validation.py` — JSON Schema enforcement: the `workflows` block the schema previously did not cover, violation paths, warning-vs-strict levels, Excel skipping, and a parametrised check that **every shipped example config validates against the schema** so the examples cannot drift from it.
 - `test_workflows.py` — Layer C: the model (`from`/`to` aliasing, start-state inference), validation, the walk (only legal transitions, probability distribution, residual-stop rule, cycle capping), and the invariants on generated data — unvisited states NULL, visited states populated, timestamps strictly increasing. Plus config parsing and an end-to-end run through `generate_dataset`.
 - `test_service_layer.py` — the extracted units directly: `services/common.py`, `GenerationRequest`/`GenerationOutcome`, `generate_dataset` (end-to-end, seed reproducibility, failure paths, engine stats, DP report), the mixin composition (including a guard that no method is defined twice across mixins, which would make behaviour depend on MRO order), the `cli_commands` handler surface, and size ratchets on `cli.py` / `data_generator.py`.
 - `test_error_handling.py` — degraded paths must still work *and* leave a trace: invalid rules, malformed `cdc:` blocks, unparseable `null_rate`, unknown Faker locales, bad distribution descriptors. Plus two codebase-wide guards — no bare `except:`, and a ratchet on broad handlers that swallow without any signal.
