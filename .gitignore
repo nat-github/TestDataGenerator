@@ -380,6 +380,28 @@ k8s/
 # Never commit these
 # ============================================
 
+# Local-only working files (never commit) — see session note 2026-06-19
+# Documents / binaries dropped in the repo root
+*.pdf
+*.pptx
+*.zip
+
+# Local scratch script
+/duckDB.py
+
+# Local-only legacy / hand-off codebases and platform files
+/Mac/
+/OldGeneration/
+/Patched_OldSolution/
+
+# Local-only config artifacts (ignored by exact path — do NOT blanket-ignore config/*.yaml)
+/config/Acct_bkng_2021_v3.canonical.yaml
+/config/Acct_bkng_2021_v3.sample.yaml
+/config/Natural_Person_template.xlsx
+/config/inferred_guide.yaml
+/config/inferred_test.yaml
+/config/sample_workflow.yaml
+
 # Personal notes
 TODO.md
 notes/
