@@ -402,6 +402,10 @@ k8s/
 /config/inferred_test.yaml
 /config/sample_workflow.yaml
 
+# Generated handbook — rebuild with `python docs/build_handbook.py`.
+# The PDF is already covered by *.pdf above.
+/docs/SDP_Handbook.html
+
 # Personal notes
 TODO.md
 notes/
